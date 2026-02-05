@@ -10,34 +10,40 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
+const (
+	defaultReadBufferSize  int64 = 16 * 1024 * 1024
+	defaultWriteBufferSize int64 = 16 * 1024 * 1024
+)
+
 var logger *slog.Logger
 
 var version = "0.2.0"
 
-var (
-	errObjectNotFound       = errors.New("object not found")
-	errObjectExists         = errors.New("object exists")
-	errHashMismatch         = errors.New("hash mismatch")
-	hexBlobIDRegex          = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-	stripedBlobIDRegex      = regexp.MustCompile(`^[0-9a-fA-F]{64}\.[0-9a-f]{16}$`)
-	firstStripedBlobIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}\.0000000000000000$`)
-	errClientAborted        = errors.New("client aborted request")
-)
+type Config struct {
+	Verbose         bool
+	Listeners       listenerFlags
+	UseStdio        bool
+	ShutdownTimeout time.Duration
+	AppendOnly      bool
+	MaxIdleTime     time.Duration
+	LogFile         string
+	KeyringPath     string
+	ClientID        string
+	PoolSpecs       poolFlags
+	CephConf        string
+	EnableStriper   bool
+	ReadBufferSize  int64
+	WriteBufferSize int64
+	MaxObjectSize   int64
+}
 
-const (
-	stripeSuffixLen              = 17
-	defaultMaxObjectSize   int64 = 128 * 1024 * 1024
-	defaultReadBufferSize  int64 = 16 * 1024 * 1024
-	defaultWriteBufferSize int64 = 16 * 1024 * 1024
-	defaultMaxWriteSize    int64 = 90 * 1024 * 1024
-)
+type poolFlags []string
 
 func initLogger(verbose bool, logFilePath string) error {
 	logOutput := io.Writer(os.Stderr)
@@ -80,26 +86,6 @@ func parseInt64Env(key string, defaultVal int64) int64 {
 	}
 	return parsed
 }
-
-type Config struct {
-	Verbose         bool
-	Listeners       listenerFlags
-	UseStdio        bool
-	ShutdownTimeout time.Duration
-	AppendOnly      bool
-	MaxIdleTime     time.Duration
-	LogFile         string
-	KeyringPath     string
-	ClientID        string
-	PoolSpecs       poolFlags
-	CephConf        string
-	EnableStriper   bool
-	ReadBufferSize  int64
-	WriteBufferSize int64
-	MaxObjectSize   int64
-}
-
-type poolFlags []string
 
 func (p *poolFlags) String() string {
 	if p == nil {
@@ -242,6 +228,108 @@ func parseConfig() (Config, error) {
 	}, nil
 }
 
+func ParsePoolSpecs(specs []string) (ServerConfigPools, error) {
+	if len(specs) == 0 {
+		return ServerConfigPools{}, errors.New("no pool specifications provided")
+	}
+
+	typeToPool := make(map[BlobType]string)
+	var catchAllPool string
+
+	for _, spec := range specs {
+		poolName, types, err := parsePoolSpec(spec)
+		if err != nil {
+			return ServerConfigPools{}, err
+		}
+
+		if len(types) == 0 || (len(types) == 1 && types[0] == "*") {
+			if catchAllPool != "" {
+				return ServerConfigPools{}, fmt.Errorf("multiple catch-all pools specified: %q and %q", catchAllPool, poolName)
+			}
+			catchAllPool = poolName
+			continue
+		}
+
+		for _, t := range types {
+			if t == "*" {
+				return ServerConfigPools{}, fmt.Errorf("pool %q: wildcard '*' cannot be mixed with explicit types", poolName)
+			}
+			blobType := BlobType(t)
+			if !isValidBlobTypeForMapping(blobType) {
+				return ServerConfigPools{}, fmt.Errorf("pool %q: unknown blob type %q", poolName, t)
+			}
+			if existing, ok := typeToPool[blobType]; ok {
+				return ServerConfigPools{}, fmt.Errorf("blob type %q assigned to multiple pools: %q and %q", t, existing, poolName)
+			}
+			typeToPool[blobType] = poolName
+		}
+	}
+
+	for _, bt := range AllBlobTypes {
+		if _, ok := typeToPool[bt]; !ok && catchAllPool != "" {
+			typeToPool[bt] = catchAllPool
+		}
+	}
+
+	return ServerConfigPools{
+		Config:    typeToPool[BlobTypeConfig],
+		Keys:      typeToPool[BlobTypeKeys],
+		Locks:     typeToPool[BlobTypeLocks],
+		Snapshots: typeToPool[BlobTypeSnapshots],
+		Data:      typeToPool[BlobTypeData],
+		Index:     typeToPool[BlobTypeIndex],
+	}, nil
+}
+
+func parsePoolSpec(spec string) (poolName string, types []string, err error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", nil, errors.New("empty pool specification")
+	}
+
+	colonIdx := strings.Index(spec, ":")
+	if colonIdx == -1 {
+		return spec, []string{"*"}, nil
+	}
+
+	poolName = strings.TrimSpace(spec[:colonIdx])
+	if poolName == "" {
+		return "", nil, fmt.Errorf("empty pool name in specification: %q", spec)
+	}
+
+	typesPart := strings.TrimSpace(spec[colonIdx+1:])
+	if typesPart == "" {
+		return "", nil, fmt.Errorf("empty types list in specification: %q", spec)
+	}
+
+	if typesPart == "*" {
+		return poolName, []string{"*"}, nil
+	}
+
+	for _, t := range strings.Split(typesPart, ",") {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		types = append(types, t)
+	}
+
+	if len(types) == 0 {
+		return "", nil, fmt.Errorf("no valid types in specification: %q", spec)
+	}
+
+	return poolName, types, nil
+}
+
+func isValidBlobTypeForMapping(bt BlobType) bool {
+	for _, valid := range AllBlobTypes {
+		if bt == valid {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	config, err := parseConfig()
 	if err != nil {
@@ -259,18 +347,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	poolMapping, err := ParsePoolMapping(config.PoolSpecs)
+	cliPools, err := ParsePoolSpecs(config.PoolSpecs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid pool configuration: %v\n", err)
 		os.Exit(1)
 	}
 
+	if cliPools.Config == "" {
+		fmt.Fprintln(os.Stderr, "config pool must be specified (use 'poolname' or 'poolname:config,...')")
+		os.Exit(1)
+	}
+
 	cephConfig := CephConfig{
-		PoolMapping:   poolMapping,
-		KeyringPath:   config.KeyringPath,
-		ClientID:      config.ClientID,
-		CephConf:      config.CephConf,
-		MaxObjectSize: config.MaxObjectSize,
+		ConfigPoolName: cliPools.Config,
+		KeyringPath:    config.KeyringPath,
+		ClientID:       config.ClientID,
+		CephConf:       config.CephConf,
+		MaxObjectSize:  config.MaxObjectSize,
 	}
 
 	connMgr := NewConnectionManager(cephConfig)
@@ -286,9 +379,13 @@ func main() {
 	}
 
 	h := &Handler{
-		connMgr:         connMgr,
+		connMgr: connMgr,
+		serverConfigTemplate: &ServerConfig{
+			Version:        1,
+			Pools:          cliPools,
+			StriperEnabled: config.EnableStriper,
+		},
 		appendOnly:      config.AppendOnly,
-		striperEnabled:  config.EnableStriper,
 		readBufferPool:  NewBufferPool(config.ReadBufferSize),
 		writeBufferPool: NewBufferPool(config.WriteBufferSize),
 	}

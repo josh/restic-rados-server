@@ -1,0 +1,46 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock --enable-striper &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec rados --pool $CEPH_POOL get server-config $WORK/server-config.json
+exec cat $WORK/server-config.json
+stdout '"striper_enabled":true'
+
+bin-file zeros large-blob 40000000
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
+
+exec rados --pool $CEPH_POOL ls
+stdout 'data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562\.0000000000000000'
+stdout 'data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562\.0000000000000001'
+
+kill server
+
+exec restic-rados-server --listen $WORK/restic2.sock &server2&
+wait4socket $WORK/restic2.sock
+
+exec curl --silent --unix-socket $WORK/restic2.sock --head --include 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 40000000'
+
+exec curl --silent --unix-socket $WORK/restic2.sock 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562' --output downloaded-blob
+bin-cmp downloaded-blob large-blob
+
+bin-file zeros large-blob2 40000001
+
+exec curl --silent --unix-socket $WORK/restic2.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob2 'http://localhost/data/a7cd354f287768dadab40fb9911091078f799de618504d457ba9f1ce8c3d02cd'
+
+exec rados --pool $CEPH_POOL ls
+stdout 'data/a7cd354f287768dadab40fb9911091078f799de618504d457ba9f1ce8c3d02cd\.0000000000000000'
+stdout 'data/a7cd354f287768dadab40fb9911091078f799de618504d457ba9f1ce8c3d02cd\.0000000000000001'
+
+kill server2
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}

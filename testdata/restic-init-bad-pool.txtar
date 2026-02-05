@@ -4,7 +4,7 @@ create-pool
 env CEPH_POOL=bad
 ! exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
 cmp stdout out.txt
-stderr 'unexpected HTTP response \(503\)'
+stderr 'unexpected HTTP response \(404\)'
 
 -- out.txt --
 -- password.txt --
