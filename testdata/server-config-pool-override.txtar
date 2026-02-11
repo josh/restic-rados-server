@@ -1,0 +1,60 @@
+tail-logs
+create-pool meta
+create-pool data
+
+exec restic-rados-server --pool=$CEPH_POOL_DATA:data,snapshots --pool=$CEPH_POOL_META:* --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec rados --pool $CEPH_POOL_META get server-config $WORK/server-config.json
+exec jq -r '.pools.data' $WORK/server-config.json
+stdout $CEPH_POOL_DATA
+
+exec jq -r '.pools.config' $WORK/server-config.json
+stdout $CEPH_POOL_META
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @test-data 'http://localhost/data/93a3db23375375c9addf55503ab78bf1e8183b42af211e85adc80405da969f2a'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @keys-data 'http://localhost/keys/d977c57ed0489165b24538ce57feaf0951478565d009d0809eb6e8bb530a7f54'
+
+exec rados --pool $CEPH_POOL_DATA ls
+stdout 'data/93a3db23375375c9addf55503ab78bf1e8183b42af211e85adc80405da969f2a'
+
+exec rados --pool $CEPH_POOL_META ls
+stdout 'keys/d977c57ed0489165b24538ce57feaf0951478565d009d0809eb6e8bb530a7f54'
+
+kill server
+
+exec restic-rados-server --pool=$CEPH_POOL_META --listen $WORK/restic2.sock &server2&
+wait4socket $WORK/restic2.sock
+
+exec curl --silent --unix-socket $WORK/restic2.sock --head --include 'http://localhost/data/93a3db23375375c9addf55503ab78bf1e8183b42af211e85adc80405da969f2a'
+stdout 'HTTP/.* 200'
+
+exec curl --silent --unix-socket $WORK/restic2.sock 'http://localhost/data/93a3db23375375c9addf55503ab78bf1e8183b42af211e85adc80405da969f2a' --output downloaded-data
+cmp downloaded-data test-data
+
+exec curl --silent --unix-socket $WORK/restic2.sock 'http://localhost/keys/d977c57ed0489165b24538ce57feaf0951478565d009d0809eb6e8bb530a7f54' --output downloaded-keys
+cmp downloaded-keys keys-data
+
+exec curl --silent --unix-socket $WORK/restic2.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @test-data2 'http://localhost/data/da0b6d2fe3fa4c2d1a10aab902aae1d60ac85e401debea2646ad2d05ca8ab9c8'
+
+exec rados --pool $CEPH_POOL_DATA ls
+stdout 'data/da0b6d2fe3fa4c2d1a10aab902aae1d60ac85e401debea2646ad2d05ca8ab9c8'
+
+exec rados --pool $CEPH_POOL_META ls
+! stdout 'data/da0b6d2fe3fa4c2d1a10aab902aae1d60ac85e401debea2646ad2d05ca8ab9c8'
+
+kill server2
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- test-data --
+hello from data pool
+-- test-data2 --
+another blob for data pool
+-- keys-data --
+keys data goes here

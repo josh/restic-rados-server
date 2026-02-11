@@ -1,0 +1,39 @@
+tail-logs
+create-pool meta
+create-pool data
+
+exec restic-rados-server --pool=$CEPH_POOL_DATA:data,snapshots --pool=$CEPH_POOL_META:* --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec rados --pool $CEPH_POOL_META get server-config $WORK/server-config.json
+
+exec cat $WORK/server-config.json
+stdout '"version":1'
+stdout '"striper_enabled":false'
+
+exec jq -r '.pools.data' $WORK/server-config.json
+stdout $CEPH_POOL_DATA
+
+exec jq -r '.pools.snapshots' $WORK/server-config.json
+stdout $CEPH_POOL_DATA
+
+exec jq -r '.pools.config' $WORK/server-config.json
+stdout $CEPH_POOL_META
+
+exec jq -r '.pools.keys' $WORK/server-config.json
+stdout $CEPH_POOL_META
+
+exec jq -r '.pools.locks' $WORK/server-config.json
+stdout $CEPH_POOL_META
+
+exec jq -r '.pools.index' $WORK/server-config.json
+stdout $CEPH_POOL_META
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}

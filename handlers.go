@@ -10,6 +10,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,12 +19,27 @@ import (
 	"github.com/ceph/go-ceph/rados"
 )
 
+const (
+	configObjectName = "config"
+	stripeSuffixLen  = 17
+)
+
+var (
+	errObjectNotFound       = errors.New("object not found")
+	errObjectExists         = errors.New("object exists")
+	errHashMismatch         = errors.New("hash mismatch")
+	errClientAborted        = errors.New("client aborted request")
+	hexBlobIDRegex          = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+	stripedBlobIDRegex      = regexp.MustCompile(`^[0-9a-fA-F]{64}\.[0-9a-f]{16}$`)
+	firstStripedBlobIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}\.0000000000000000$`)
+)
+
 type Handler struct {
-	connMgr         *ConnectionManager
-	appendOnly      bool
-	striperEnabled  bool
-	readBufferPool  *BufferPool
-	writeBufferPool *BufferPool
+	connMgr              *ConnectionManager
+	serverConfigTemplate *ServerConfig
+	appendOnly           bool
+	readBufferPool       *BufferPool
+	writeBufferPool      *BufferPool
 }
 
 type HandlerContext struct {
@@ -34,15 +50,30 @@ type HandlerContext struct {
 	radosCalls    uint64
 }
 
-func (hctx *HandlerContext) Destroy() {
-	hctx.ioctx.Destroy()
-}
-
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode    int
 	bytesWritten  int64
 	headerWritten bool
+}
+
+type errorCoder interface {
+	ErrorCode() int
+}
+
+type blobInfo struct {
+	Name string `json:"name"`
+	Size uint64 `json:"size"`
+}
+
+type httpRange struct {
+	start  int64
+	end    int64
+	status int
+}
+
+func (hctx *HandlerContext) Destroy() {
+	hctx.ioctx.Destroy()
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
@@ -77,7 +108,7 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, err := h.connMgr.GetIOContextForType(blobType)
+	ioctx, poolName, err := h.connMgr.GetIOContextForType(blobType)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +118,14 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		return nil, fmt.Errorf("get max object size: %w", err)
 	}
 
-	poolName := h.connMgr.config.PoolMapping.GetPoolForType(blobType)
+	sc, err := h.connMgr.GetServerConfig()
+	if err != nil {
+		return nil, fmt.Errorf("get server config: %w", err)
+	}
+	if sc == nil {
+		return nil, errRepoNotInitialized
+	}
+
 	_, alignment, _ := h.connMgr.GetPoolAlignment(poolName)
 
 	hctx := &HandlerContext{
@@ -103,14 +141,10 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		alignment:   alignment,
 	}
 
-	if h.striperEnabled {
-		maxObjectSize, err := h.connMgr.GetMaxObjectSize()
-		if err != nil {
-			return nil, fmt.Errorf("get max object size: %w", err)
-		}
+	if sc.StriperEnabled {
 		hctx.striperIO = &striperIOContextWrapper{
 			ioctx:       ioctx,
-			objectSize:  uint64(maxObjectSize),
+			objectSize:  uint64(maxSize),
 			radosCalls:  &hctx.radosCalls,
 			readBuffer:  h.readBufferPool,
 			writeBuffer: h.writeBufferPool,
@@ -127,6 +161,8 @@ func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request, blob
 		switch {
 		case errors.Is(err, errConnectionUnavailable):
 			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		case errors.Is(err, errPoolNotConfigured), errors.Is(err, errRepoNotInitialized):
+			http.Error(w, "repository not initialized", http.StatusServiceUnavailable)
 		case errors.Is(err, rados.ErrNotFound):
 			http.NotFound(w, r)
 		default:
@@ -154,10 +190,6 @@ func canStripeBlobType(blobType string) bool {
 	default:
 		return false
 	}
-}
-
-type errorCoder interface {
-	ErrorCode() int
 }
 
 func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, object string, err error) {
@@ -220,8 +252,8 @@ func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 		hctx.Destroy()
 	}()
 
-	if err := hctx.serveRadosObject(rw, r, "config"); err != nil {
-		h.handleRadosError(rw, r, "config", err)
+	if err := hctx.serveRadosObject(rw, r, configObjectName); err != nil {
+		h.handleRadosError(rw, r, configObjectName, err)
 	}
 }
 
@@ -243,8 +275,18 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 		hctx.Destroy()
 	}()
 
-	if err := hctx.createRadosObject(rw, r, "config", "config", false); err != nil {
-		h.handleRadosError(rw, r, "config", err)
+	_, err := hctx.radosIO.Stat(serverConfigObjectName)
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			http.Error(rw, "repo not initialized", http.StatusServiceUnavailable)
+		} else {
+			h.handleRadosError(rw, r, serverConfigObjectName, fmt.Errorf("stat server-config: %w", err))
+		}
+		return
+	}
+
+	if err := hctx.createRadosObject(rw, r, configObjectName, configObjectName, false); err != nil {
+		h.handleRadosError(rw, r, configObjectName, err)
 	}
 }
 
@@ -258,7 +300,7 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	if h.appendOnly {
-		slog.Debug("delete blocked in append-only mode", "object", "config")
+		slog.Debug("delete blocked in append-only mode", "object", configObjectName)
 		http.Error(rw, "delete not allowed in append-only mode", http.StatusForbidden)
 		return
 	}
@@ -272,20 +314,21 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		hctx.Destroy()
 	}()
 
-	_, err := hctx.radosIO.Stat("config")
+	_, err := hctx.radosIO.Stat(configObjectName)
 	if errors.Is(err, rados.ErrNotFound) {
 		rw.WriteHeader(http.StatusOK)
 		return
 	}
 	if err != nil {
-		h.handleRadosError(rw, r, "config", fmt.Errorf("stat object config: %w", err))
+		h.handleRadosError(rw, r, configObjectName, fmt.Errorf("stat object %s: %w", configObjectName, err))
 		return
 	}
 
-	if err := hctx.radosIO.Remove("config"); err != nil {
-		h.handleRadosError(rw, r, "config", fmt.Errorf("delete object %s: %w", "config", err))
+	if err := hctx.radosIO.Remove(configObjectName); err != nil {
+		h.handleRadosError(rw, r, configObjectName, fmt.Errorf("delete object %s: %w", configObjectName, err))
 		return
 	}
+
 	rw.WriteHeader(http.StatusOK)
 }
 
@@ -309,7 +352,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, poolName := range h.connMgr.config.PoolMapping.Pools() {
+	for _, poolName := range h.serverConfigTemplate.Pools.UniquePools() {
 		_, err = conn.GetPoolByName(poolName)
 		if err != nil {
 			slog.Warn("pool check failed", "pool", poolName, "error", err)
@@ -328,14 +371,52 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hctx, ok := h.openHTTPIOContext(rw, r, BlobTypeConfig)
-	if !ok {
+	slog.Debug("rados.OpenIOContext", "pool", h.serverConfigTemplate.Pools.Config)
+	radosCalls++
+	configIoctx, err := conn.OpenIOContext(h.serverConfigTemplate.Pools.Config)
+	if err != nil {
+		slog.Error("failed to open config pool", "error", err)
+		http.Error(rw, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	defer func() {
-		radosCalls = hctx.radosCalls
-		hctx.Destroy()
-	}()
+	defer configIoctx.Destroy()
+
+	slog.Debug("rados.Stat", "object", serverConfigObjectName)
+	radosCalls++
+	_, err = configIoctx.Stat(serverConfigObjectName)
+	if errors.Is(err, rados.ErrNotFound) {
+		sc := *h.serverConfigTemplate
+
+		data, err := json.Marshal(sc)
+		if err != nil {
+			slog.Error("failed to marshal server-config", "error", err)
+			http.Error(rw, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		op := rados.CreateWriteOp()
+		defer op.Release()
+		op.Create(rados.CreateExclusive)
+		op.WriteFull(data)
+
+		slog.Debug("rados.Operate", "object", serverConfigObjectName)
+		radosCalls++
+		if err := op.Operate(configIoctx, serverConfigObjectName, rados.OperationNoFlag); err != nil {
+			if !errors.Is(err, rados.ErrObjectExists) {
+				slog.Error("failed to create server-config", "error", err)
+				http.Error(rw, "internal server error", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			slog.Info("created server-config", "version", sc.Version, "striper_enabled", sc.StriperEnabled)
+		}
+
+		h.connMgr.InvalidateServerConfig()
+	} else if err != nil {
+		slog.Error("failed to stat server-config", "error", err)
+		http.Error(rw, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	rw.WriteHeader(http.StatusOK)
 }
@@ -579,11 +660,6 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	rw.WriteHeader(http.StatusOK)
 }
 
-type blobInfo struct {
-	Name string `json:"name"`
-	Size uint64 `json:"size"`
-}
-
 func acceptsBlobListV2(r *http.Request) bool {
 	for _, value := range r.Header.Values("Accept") {
 		for _, mediaRange := range strings.Split(value, ",") {
@@ -626,7 +702,7 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 }
 
 func parseExpectedHash(object string) ([32]byte, error) {
-	if object == "config" {
+	if object == configObjectName || object == serverConfigObjectName {
 		return [32]byte{}, nil
 	}
 
@@ -639,12 +715,6 @@ func parseExpectedHash(object string) ([32]byte, error) {
 	}
 
 	return [32]byte(hashBytes), nil
-}
-
-type httpRange struct {
-	start  int64
-	end    int64
-	status int
 }
 
 func parseRange(r *http.Request, size int64) (*httpRange, error) {
