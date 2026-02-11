@@ -142,12 +142,21 @@ func (p *ServerConfigPools) UniquePools() iter.Seq[string] {
 }
 
 func LoadServerConfig(conn *rados.Conn, poolName string) (*ServerConfig, error) {
+	var radosCalls uint64
+	defer func() {
+		slog.Debug("LoadServerConfig", "rados_calls", radosCalls)
+	}()
+
+	radosCalls++
+	slog.Debug("rados.OpenIOContext", "pool", poolName)
 	ioctx, err := conn.OpenIOContext(poolName)
 	if err != nil {
 		return nil, fmt.Errorf("open config pool %q: %w", poolName, err)
 	}
 	defer ioctx.Destroy()
 
+	radosCalls++
+	slog.Debug("rados.Stat", "object", serverConfigObjectName)
 	stat, err := ioctx.Stat(serverConfigObjectName)
 	if err != nil {
 		if errors.Is(err, rados.ErrNotFound) {
@@ -157,6 +166,8 @@ func LoadServerConfig(conn *rados.Conn, poolName string) (*ServerConfig, error) 
 	}
 
 	data := make([]byte, stat.Size)
+	radosCalls++
+	slog.Debug("rados.Read", "object", serverConfigObjectName, "size", stat.Size)
 	n, err := ioctx.Read(serverConfigObjectName, data, 0)
 	if err != nil {
 		return nil, fmt.Errorf("read server-config: %w", err)
@@ -305,6 +316,11 @@ func (cm *ConnectionManager) connect() error {
 }
 
 func (cm *ConnectionManager) GetIOContextForPool(poolName string) (*rados.IOContext, error) {
+	var radosCalls uint64
+	defer func() {
+		slog.Debug("GetIOContextForPool", "pool", poolName, "rados_calls", radosCalls)
+	}()
+
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		cm.mu.RLock()
@@ -325,6 +341,8 @@ func (cm *ConnectionManager) GetIOContextForPool(poolName string) (*rados.IOCont
 			}
 		}
 
+		radosCalls++
+		slog.Debug("rados.OpenIOContext", "pool", poolName)
 		ioctx, err := conn.OpenIOContext(poolName)
 		if err != nil {
 			if errors.Is(err, rados.ErrNotFound) {
@@ -550,8 +568,15 @@ func (cm *ConnectionManager) calculateBackoff(timeSinceLastReconnect time.Durati
 }
 
 func detectPoolProperties(conn *rados.Conn, poolNames []string) map[string]*PoolProperties {
+	var radosCalls uint64
+	defer func() {
+		slog.Debug("detectPoolProperties", "rados_calls", radosCalls)
+	}()
+
 	poolProps := make(map[string]*PoolProperties)
 	for _, poolName := range poolNames {
+		radosCalls++
+		slog.Debug("rados.OpenIOContext", "pool", poolName)
 		ioctx, err := conn.OpenIOContext(poolName)
 		if err != nil {
 			if errors.Is(err, rados.ErrNotFound) {
@@ -563,8 +588,12 @@ func detectPoolProperties(conn *rados.Conn, poolNames []string) map[string]*Pool
 		}
 
 		props := &PoolProperties{RequiresAlignment: false, Alignment: 1}
+		radosCalls++
+		slog.Debug("rados.RequiresAlignment", "pool", poolName)
 		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
 			props.RequiresAlignment = true
+			radosCalls++
+			slog.Debug("rados.Alignment", "pool", poolName)
 			if align, err := ioctx.Alignment(); err == nil && align > 1 {
 				props.Alignment = align
 				slog.Debug("pool requires alignment", "pool", poolName, "alignment", align)

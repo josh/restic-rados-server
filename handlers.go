@@ -365,6 +365,8 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Debug("rados.OpenIOContext", "pool", h.serverConfigTemplate.Pools.Config)
+	radosCalls++
 	configIoctx, err := conn.OpenIOContext(h.serverConfigTemplate.Pools.Config)
 	if err != nil {
 		slog.Error("failed to open config pool", "error", err)
@@ -373,6 +375,8 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	defer configIoctx.Destroy()
 
+	slog.Debug("rados.Stat", "object", serverConfigObjectName)
+	radosCalls++
 	_, err = configIoctx.Stat(serverConfigObjectName)
 	if errors.Is(err, rados.ErrNotFound) {
 		sc := *h.serverConfigTemplate
@@ -389,6 +393,8 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		op.Create(rados.CreateExclusive)
 		op.WriteFull(data)
 
+		slog.Debug("rados.Operate", "object", serverConfigObjectName)
+		radosCalls++
 		if err := op.Operate(configIoctx, serverConfigObjectName, rados.OperationNoFlag); err != nil {
 			if !errors.Is(err, rados.ErrObjectExists) {
 				slog.Error("failed to create server-config", "error", err)
