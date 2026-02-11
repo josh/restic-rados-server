@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"iter"
 	"log/slog"
 	"math"
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
@@ -86,7 +86,7 @@ type CephConfig struct {
 	MaxObjectSize  int64
 }
 
-func (p *ServerConfigPools) GetPoolForType(bt BlobType) string {
+func (p *ServerConfigPools) getPoolForType(bt BlobType) string {
 	switch bt {
 	case BlobTypeConfig:
 		return p.Config
@@ -105,80 +105,33 @@ func (p *ServerConfigPools) GetPoolForType(bt BlobType) string {
 	}
 }
 
-func (p *ServerConfigPools) UniquePools() iter.Seq[string] {
-	return func(yield func(string) bool) {
-		poolSet := make(map[string]struct{})
-		if p.Config != "" {
-			poolSet[p.Config] = struct{}{}
-		}
-		if p.Keys != "" {
-			poolSet[p.Keys] = struct{}{}
-		}
-		if p.Locks != "" {
-			poolSet[p.Locks] = struct{}{}
-		}
-		if p.Snapshots != "" {
-			poolSet[p.Snapshots] = struct{}{}
-		}
-		if p.Data != "" {
-			poolSet[p.Data] = struct{}{}
-		}
-		if p.Index != "" {
-			poolSet[p.Index] = struct{}{}
-		}
-
-		pools := make([]string, 0, len(poolSet))
-		for pool := range poolSet {
-			pools = append(pools, pool)
-		}
-		slices.Sort(pools)
-
-		for _, pool := range pools {
-			if !yield(pool) {
-				return
-			}
-		}
+func (p *ServerConfigPools) UniquePools() []string {
+	poolSet := make(map[string]struct{})
+	if p.Config != "" {
+		poolSet[p.Config] = struct{}{}
 	}
-}
-
-func LoadServerConfig(conn *rados.Conn, poolName string) (*ServerConfig, error) {
-	var radosCalls uint64
-	defer func() {
-		slog.Debug("LoadServerConfig", "rados_calls", radosCalls)
-	}()
-
-	radosCalls++
-	slog.Debug("rados.OpenIOContext", "pool", poolName)
-	ioctx, err := conn.OpenIOContext(poolName)
-	if err != nil {
-		return nil, fmt.Errorf("open config pool %q: %w", poolName, err)
+	if p.Keys != "" {
+		poolSet[p.Keys] = struct{}{}
 	}
-	defer ioctx.Destroy()
-
-	radosCalls++
-	slog.Debug("rados.Stat", "object", serverConfigObjectName)
-	stat, err := ioctx.Stat(serverConfigObjectName)
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("stat server-config: %w", err)
+	if p.Locks != "" {
+		poolSet[p.Locks] = struct{}{}
+	}
+	if p.Snapshots != "" {
+		poolSet[p.Snapshots] = struct{}{}
+	}
+	if p.Data != "" {
+		poolSet[p.Data] = struct{}{}
+	}
+	if p.Index != "" {
+		poolSet[p.Index] = struct{}{}
 	}
 
-	data := make([]byte, stat.Size)
-	radosCalls++
-	slog.Debug("rados.Read", "object", serverConfigObjectName, "size", stat.Size)
-	n, err := ioctx.Read(serverConfigObjectName, data, 0)
-	if err != nil {
-		return nil, fmt.Errorf("read server-config: %w", err)
+	pools := make([]string, 0, len(poolSet))
+	for pool := range poolSet {
+		pools = append(pools, pool)
 	}
-
-	var sc ServerConfig
-	if err := json.Unmarshal(data[:n], &sc); err != nil {
-		return nil, fmt.Errorf("parse server-config: %w", err)
-	}
-
-	return &sc, nil
+	slices.Sort(pools)
+	return pools
 }
 
 func NewConnectionManager(config CephConfig) *ConnectionManager {
@@ -315,12 +268,7 @@ func (cm *ConnectionManager) connect() error {
 	return nil
 }
 
-func (cm *ConnectionManager) GetIOContextForPool(poolName string) (*rados.IOContext, error) {
-	var radosCalls uint64
-	defer func() {
-		slog.Debug("GetIOContextForPool", "pool", poolName, "rados_calls", radosCalls)
-	}()
-
+func (cm *ConnectionManager) getIOContextForPool(poolName string, radosCalls *uint64) (*rados.IOContext, error) {
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		cm.mu.RLock()
@@ -341,7 +289,7 @@ func (cm *ConnectionManager) GetIOContextForPool(poolName string) (*rados.IOCont
 			}
 		}
 
-		radosCalls++
+		atomic.AddUint64(radosCalls, 1)
 		slog.Debug("rados.OpenIOContext", "pool", poolName)
 		ioctx, err := conn.OpenIOContext(poolName)
 		if err != nil {
@@ -367,12 +315,17 @@ func (cm *ConnectionManager) GetIOContextForPool(poolName string) (*rados.IOCont
 }
 
 func (cm *ConnectionManager) GetIOContextForType(blobType BlobType) (*rados.IOContext, string, error) {
+	var radosCalls uint64
+	defer func() {
+		slog.Debug("GetIOContextForType", "blob_type", blobType, "rados_calls", atomic.LoadUint64(&radosCalls))
+	}()
+
 	if blobType == BlobTypeConfig {
-		ioctx, err := cm.GetIOContextForPool(cm.config.ConfigPoolName)
+		ioctx, err := cm.getIOContextForPool(cm.config.ConfigPoolName, &radosCalls)
 		return ioctx, cm.config.ConfigPoolName, err
 	}
 
-	sc, err := cm.getServerConfig()
+	sc, err := cm.GetServerConfig()
 	if err != nil {
 		return nil, "", err
 	}
@@ -380,16 +333,16 @@ func (cm *ConnectionManager) GetIOContextForType(blobType BlobType) (*rados.IOCo
 		return nil, "", errRepoNotInitialized
 	}
 
-	poolName := sc.Pools.GetPoolForType(blobType)
+	poolName := sc.Pools.getPoolForType(blobType)
 	if poolName == "" {
 		return nil, "", fmt.Errorf("%w: %s", errPoolNotConfigured, blobType)
 	}
 
-	ioctx, err := cm.GetIOContextForPool(poolName)
+	ioctx, err := cm.getIOContextForPool(poolName, &radosCalls)
 	return ioctx, poolName, err
 }
 
-func (cm *ConnectionManager) getServerConfig() (*ServerConfig, error) {
+func (cm *ConnectionManager) GetServerConfig() (*ServerConfig, error) {
 	cm.mu.RLock()
 	if cm.serverConfigLoaded {
 		sc := cm.serverConfig
@@ -405,25 +358,87 @@ func (cm *ConnectionManager) getServerConfig() (*ServerConfig, error) {
 		return cm.serverConfig, nil
 	}
 
+	var radosCalls uint64
+	defer func() {
+		slog.Debug("GetServerConfig", "rados_calls", atomic.LoadUint64(&radosCalls))
+	}()
+
 	conn := cm.conn
 	if conn == nil {
 		return nil, errConnectionUnavailable
 	}
 
-	sc, err := LoadServerConfig(conn, cm.config.ConfigPoolName)
+	atomic.AddUint64(&radosCalls, 1)
+	slog.Debug("rados.OpenIOContext", "pool", cm.config.ConfigPoolName)
+	cfgIoctx, err := conn.OpenIOContext(cm.config.ConfigPoolName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open config pool %q: %w", cm.config.ConfigPoolName, err)
+	}
+	defer cfgIoctx.Destroy()
+
+	atomic.AddUint64(&radosCalls, 1)
+	slog.Debug("rados.Stat", "object", serverConfigObjectName)
+	stat, err := cfgIoctx.Stat(serverConfigObjectName)
+	if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
+			cm.serverConfig = nil
+			cm.serverConfigLoaded = true
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat server-config: %w", err)
 	}
 
-	if sc != nil {
-		slog.Info("loaded server-config", "version", sc.Version,
-			"striper_enabled", sc.StriperEnabled)
-		cm.poolProperties = detectPoolProperties(conn, slices.Collect(sc.Pools.UniquePools()))
+	data := make([]byte, stat.Size)
+	atomic.AddUint64(&radosCalls, 1)
+	slog.Debug("rados.Read", "object", serverConfigObjectName, "size", stat.Size)
+	n, err := cfgIoctx.Read(serverConfigObjectName, data, 0)
+	if err != nil {
+		return nil, fmt.Errorf("read server-config: %w", err)
 	}
 
-	cm.serverConfig = sc
+	var sc ServerConfig
+	if err := json.Unmarshal(data[:n], &sc); err != nil {
+		return nil, fmt.Errorf("parse server-config: %w", err)
+	}
+
+	slog.Info("loaded server-config", "version", sc.Version,
+		"striper_enabled", sc.StriperEnabled)
+
+	poolNames := sc.Pools.UniquePools()
+	poolProps := make(map[string]*PoolProperties)
+	for _, poolName := range poolNames {
+		atomic.AddUint64(&radosCalls, 1)
+		slog.Debug("rados.OpenIOContext", "pool", poolName)
+		ioctx, err := conn.OpenIOContext(poolName)
+		if err != nil {
+			if errors.Is(err, rados.ErrNotFound) {
+				slog.Debug("pool does not exist, skipping property probe", "pool", poolName)
+			} else {
+				slog.Warn("failed to probe pool properties", "pool", poolName, "error", err)
+			}
+			continue
+		}
+
+		props := &PoolProperties{RequiresAlignment: false, Alignment: 1}
+		atomic.AddUint64(&radosCalls, 1)
+		slog.Debug("rados.RequiresAlignment", "pool", poolName)
+		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
+			props.RequiresAlignment = true
+			atomic.AddUint64(&radosCalls, 1)
+			slog.Debug("rados.Alignment", "pool", poolName)
+			if align, err := ioctx.Alignment(); err == nil && align > 1 {
+				props.Alignment = align
+				slog.Debug("pool requires alignment", "pool", poolName, "alignment", align)
+			}
+		}
+		poolProps[poolName] = props
+		ioctx.Destroy()
+	}
+	cm.poolProperties = poolProps
+
+	cm.serverConfig = &sc
 	cm.serverConfigLoaded = true
-	return sc, nil
+	return &sc, nil
 }
 
 func (cm *ConnectionManager) InvalidateServerConfig() {
@@ -431,17 +446,6 @@ func (cm *ConnectionManager) InvalidateServerConfig() {
 	defer cm.mu.Unlock()
 	cm.serverConfigLoaded = false
 	cm.serverConfig = nil
-}
-
-func (cm *ConnectionManager) GetStriperEnabled() (bool, error) {
-	sc, err := cm.getServerConfig()
-	if err != nil {
-		return false, err
-	}
-	if sc == nil {
-		return false, errRepoNotInitialized
-	}
-	return sc.StriperEnabled, nil
 }
 
 func (cm *ConnectionManager) GetConnection() (*rados.Conn, error) {
@@ -565,44 +569,6 @@ func (cm *ConnectionManager) calculateBackoff(timeSinceLastReconnect time.Durati
 	}
 
 	return backoff
-}
-
-func detectPoolProperties(conn *rados.Conn, poolNames []string) map[string]*PoolProperties {
-	var radosCalls uint64
-	defer func() {
-		slog.Debug("detectPoolProperties", "rados_calls", radosCalls)
-	}()
-
-	poolProps := make(map[string]*PoolProperties)
-	for _, poolName := range poolNames {
-		radosCalls++
-		slog.Debug("rados.OpenIOContext", "pool", poolName)
-		ioctx, err := conn.OpenIOContext(poolName)
-		if err != nil {
-			if errors.Is(err, rados.ErrNotFound) {
-				slog.Debug("pool does not exist, skipping property probe", "pool", poolName)
-			} else {
-				slog.Warn("failed to probe pool properties", "pool", poolName, "error", err)
-			}
-			continue
-		}
-
-		props := &PoolProperties{RequiresAlignment: false, Alignment: 1}
-		radosCalls++
-		slog.Debug("rados.RequiresAlignment", "pool", poolName)
-		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
-			props.RequiresAlignment = true
-			radosCalls++
-			slog.Debug("rados.Alignment", "pool", poolName)
-			if align, err := ioctx.Alignment(); err == nil && align > 1 {
-				props.Alignment = align
-				slog.Debug("pool requires alignment", "pool", poolName, "alignment", align)
-			}
-		}
-		poolProps[poolName] = props
-		ioctx.Destroy()
-	}
-	return poolProps
 }
 
 func (cm *ConnectionManager) Shutdown() {

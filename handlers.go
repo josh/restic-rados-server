@@ -118,7 +118,13 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		return nil, fmt.Errorf("get max object size: %w", err)
 	}
 
-	striperEnabled, _ := h.connMgr.GetStriperEnabled()
+	sc, err := h.connMgr.GetServerConfig()
+	if err != nil {
+		return nil, fmt.Errorf("get server config: %w", err)
+	}
+	if sc == nil {
+		return nil, errRepoNotInitialized
+	}
 
 	_, alignment, _ := h.connMgr.GetPoolAlignment(poolName)
 
@@ -135,7 +141,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		alignment:   alignment,
 	}
 
-	if striperEnabled {
+	if sc.StriperEnabled {
 		hctx.striperIO = &striperIOContextWrapper{
 			ioctx:       ioctx,
 			objectSize:  uint64(maxSize),
@@ -346,7 +352,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for poolName := range h.serverConfigTemplate.Pools.UniquePools() {
+	for _, poolName := range h.serverConfigTemplate.Pools.UniquePools() {
 		_, err = conn.GetPoolByName(poolName)
 		if err != nil {
 			slog.Warn("pool check failed", "pool", poolName, "error", err)
