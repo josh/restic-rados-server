@@ -162,6 +162,19 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 		return fmt.Errorf("delete first object: %w", err)
 	}
 
+	for i := numObjects; ; i++ {
+		objectID := s.getObjectID(object, i)
+		_, err := s.ioctx.Stat(objectID)
+		if err != nil {
+			break
+		}
+		slog.Debug("rados.Delete", "object", objectID, "orphaned", true)
+		atomic.AddUint64(s.radosCalls, 1)
+		if delErr := s.ioctx.Delete(objectID); delErr != nil {
+			return fmt.Errorf("delete orphaned object %d: %w", i, delErr)
+		}
+	}
+
 	return nil
 }
 

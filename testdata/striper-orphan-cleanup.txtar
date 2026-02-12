@@ -1,0 +1,31 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock --enable-striper &server&
+wait4socket $WORK/restic.sock
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand legit-blob 40000000
+sha256 legit-blob HASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @legit-blob http://localhost/data/$HASH --output /dev/null
+stdout '200'
+
+kill server
+
+bin-file zeros orphan-data 1024
+exec rados --pool $CEPH_POOL --conf $CEPH_CONF put data/$HASH.0000000000000002 orphan-data
+
+rados-object-count data/$HASH
+stdout '3'
+
+exec restic-rados-server --listen $WORK/restic.sock --enable-striper &server2&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE http://localhost/data/$HASH --output /dev/null
+stdout '200'
+
+rados-object-count data/
+stdout '0'
+
+kill server2
