@@ -142,9 +142,13 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 	}
 
 	if sc.StriperEnabled {
+		objectSize := uint64(maxSize)
+		if alignment > 1 {
+			objectSize = objectSize / alignment * alignment
+		}
 		hctx.striperIO = &striperIOContextWrapper{
 			ioctx:       ioctx,
-			objectSize:  uint64(maxSize),
+			objectSize:  objectSize,
 			radosCalls:  &hctx.radosCalls,
 			readBuffer:  h.readBufferPool,
 			writeBuffer: h.writeBufferPool,

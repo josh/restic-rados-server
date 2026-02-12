@@ -1,0 +1,32 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock --enable-striper --max-object-size 10000000 --write-buffer-size 4194304 &server&
+wait4socket $WORK/restic.sock
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand multi-stripe-blob 30000000
+sha256 multi-stripe-blob HASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @multi-stripe-blob http://localhost/data/$HASH
+stdout '200'
+
+exec rados --pool $CEPH_POOL ls
+stdout 'data/'$HASH'\.0000000000000000'
+stdout 'data/'$HASH'\.0000000000000001'
+stdout 'data/'$HASH'\.0000000000000002'
+
+exec curl --silent --unix-socket $WORK/restic.sock --head --include http://localhost/data/$HASH
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 30000000'
+
+exec curl --silent --unix-socket $WORK/restic.sock http://localhost/data/$HASH --output downloaded
+bin-cmp downloaded multi-stripe-blob
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE http://localhost/data/$HASH --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL ls
+! stdout 'data/'
+
+kill server
