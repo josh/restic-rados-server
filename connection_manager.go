@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -16,51 +15,17 @@ import (
 )
 
 const (
-	BlobTypeConfig    BlobType = "config"
-	BlobTypeKeys      BlobType = "keys"
-	BlobTypeLocks     BlobType = "locks"
-	BlobTypeSnapshots BlobType = "snapshots"
-	BlobTypeData      BlobType = "data"
-	BlobTypeIndex     BlobType = "index"
-
 	serverConfigObjectName = "server-config"
 
 	defaultMaxObjectSize int64 = 128 * 1024 * 1024
 	defaultMaxWriteSize  int64 = 90 * 1024 * 1024
 )
 
-var AllBlobTypes = []BlobType{
-	BlobTypeConfig, BlobTypeKeys, BlobTypeLocks,
-	BlobTypeSnapshots, BlobTypeData, BlobTypeIndex,
-}
-
 var (
 	errConnectionUnavailable = errors.New("ceph connection unavailable")
 	errPoolNotConfigured     = errors.New("pool not configured for blob type")
 	errRepoNotInitialized    = errors.New("repository not initialized")
 )
-
-type BlobType string
-
-type ServerConfigPools struct {
-	Config    string `json:"config"`
-	Keys      string `json:"keys"`
-	Locks     string `json:"locks"`
-	Snapshots string `json:"snapshots"`
-	Data      string `json:"data"`
-	Index     string `json:"index"`
-}
-
-type ServerConfig struct {
-	Version        int               `json:"version"`
-	Pools          ServerConfigPools `json:"pools"`
-	StriperEnabled bool              `json:"striper_enabled"`
-}
-
-type PoolProperties struct {
-	RequiresAlignment bool
-	Alignment         uint64
-}
 
 type ConnectionManager struct {
 	mu                sync.RWMutex
@@ -72,66 +37,10 @@ type ConnectionManager struct {
 	maxReconnectDelay time.Duration
 	maxObjectSize     int64
 	maxWriteSize      int64
-	poolProperties    map[string]*PoolProperties
+	poolConfigs       map[BlobType]*PoolConfig
 
 	serverConfig       *ServerConfig
 	serverConfigLoaded bool
-}
-
-type CephConfig struct {
-	ConfigPoolName string
-	KeyringPath    string
-	ClientID       string
-	CephConf       string
-	MaxObjectSize  int64
-}
-
-func (p *ServerConfigPools) getPoolForType(bt BlobType) string {
-	switch bt {
-	case BlobTypeConfig:
-		return p.Config
-	case BlobTypeKeys:
-		return p.Keys
-	case BlobTypeLocks:
-		return p.Locks
-	case BlobTypeSnapshots:
-		return p.Snapshots
-	case BlobTypeData:
-		return p.Data
-	case BlobTypeIndex:
-		return p.Index
-	default:
-		return ""
-	}
-}
-
-func (p *ServerConfigPools) UniquePools() []string {
-	poolSet := make(map[string]struct{})
-	if p.Config != "" {
-		poolSet[p.Config] = struct{}{}
-	}
-	if p.Keys != "" {
-		poolSet[p.Keys] = struct{}{}
-	}
-	if p.Locks != "" {
-		poolSet[p.Locks] = struct{}{}
-	}
-	if p.Snapshots != "" {
-		poolSet[p.Snapshots] = struct{}{}
-	}
-	if p.Data != "" {
-		poolSet[p.Data] = struct{}{}
-	}
-	if p.Index != "" {
-		poolSet[p.Index] = struct{}{}
-	}
-
-	pools := make([]string, 0, len(poolSet))
-	for pool := range poolSet {
-		pools = append(pools, pool)
-	}
-	slices.Sort(pools)
-	return pools
 }
 
 func NewConnectionManager(config CephConfig) *ConnectionManager {
@@ -139,7 +48,6 @@ func NewConnectionManager(config CephConfig) *ConnectionManager {
 		config:            config,
 		minReconnectDelay: 1 * time.Second,
 		maxReconnectDelay: 30 * time.Second,
-		poolProperties:    make(map[string]*PoolProperties),
 	}
 
 	if err := cm.connect(); err != nil {
@@ -314,32 +222,48 @@ func (cm *ConnectionManager) getIOContextForPool(poolName string, radosCalls *ui
 	return nil, errConnectionUnavailable
 }
 
-func (cm *ConnectionManager) GetIOContextForType(blobType BlobType) (*rados.IOContext, string, error) {
+func (cm *ConnectionManager) GetPoolConfigForType(bt BlobType) (*PoolConfig, error) {
+	cm.mu.RLock()
+	if cm.poolConfigs != nil {
+		pc := cm.poolConfigs[bt]
+		cm.mu.RUnlock()
+		if pc == nil {
+			return nil, fmt.Errorf("%w: %s", errPoolNotConfigured, bt)
+		}
+		return pc, nil
+	}
+	cm.mu.RUnlock()
+
+	sc, err := cm.GetServerConfig()
+	if err != nil {
+		return nil, err
+	}
+	if sc == nil {
+		return nil, errRepoNotInitialized
+	}
+
+	cm.mu.RLock()
+	pc := cm.poolConfigs[bt]
+	cm.mu.RUnlock()
+	if pc == nil {
+		return nil, fmt.Errorf("%w: %s", errPoolNotConfigured, bt)
+	}
+	return pc, nil
+}
+
+func (cm *ConnectionManager) GetIOContextForType(blobType BlobType) (*rados.IOContext, *PoolConfig, error) {
 	var radosCalls uint64
 	defer func() {
 		slog.Debug("GetIOContextForType", "blob_type", blobType, "rados_calls", atomic.LoadUint64(&radosCalls))
 	}()
 
-	if blobType == BlobTypeConfig {
-		ioctx, err := cm.getIOContextForPool(cm.config.ConfigPoolName, &radosCalls)
-		return ioctx, cm.config.ConfigPoolName, err
-	}
-
-	sc, err := cm.GetServerConfig()
+	pc, err := cm.GetPoolConfigForType(blobType)
 	if err != nil {
-		return nil, "", err
-	}
-	if sc == nil {
-		return nil, "", errRepoNotInitialized
+		return nil, nil, err
 	}
 
-	poolName := sc.Pools.getPoolForType(blobType)
-	if poolName == "" {
-		return nil, "", fmt.Errorf("%w: %s", errPoolNotConfigured, blobType)
-	}
-
-	ioctx, err := cm.getIOContextForPool(poolName, &radosCalls)
-	return ioctx, poolName, err
+	ioctx, err := cm.getIOContextForPool(pc.Name, &radosCalls)
+	return ioctx, pc, err
 }
 
 func (cm *ConnectionManager) GetServerConfig() (*ServerConfig, error) {
@@ -405,7 +329,7 @@ func (cm *ConnectionManager) GetServerConfig() (*ServerConfig, error) {
 		"striper_enabled", sc.StriperEnabled)
 
 	poolNames := sc.Pools.UniquePools()
-	poolProps := make(map[string]*PoolProperties)
+	poolAlignments := make(map[string]uint64)
 	for _, poolName := range poolNames {
 		atomic.AddUint64(&radosCalls, 1)
 		slog.Debug("rados.OpenIOContext", "pool", poolName)
@@ -419,22 +343,47 @@ func (cm *ConnectionManager) GetServerConfig() (*ServerConfig, error) {
 			continue
 		}
 
-		props := &PoolProperties{RequiresAlignment: false, Alignment: 1}
+		var alignment uint64 = 1
 		atomic.AddUint64(&radosCalls, 1)
 		slog.Debug("rados.RequiresAlignment", "pool", poolName)
 		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
-			props.RequiresAlignment = true
 			atomic.AddUint64(&radosCalls, 1)
 			slog.Debug("rados.Alignment", "pool", poolName)
 			if align, err := ioctx.Alignment(); err == nil && align > 1 {
-				props.Alignment = align
+				alignment = align
 				slog.Debug("pool requires alignment", "pool", poolName, "alignment", align)
 			}
 		}
-		poolProps[poolName] = props
+		poolAlignments[poolName] = alignment
 		ioctx.Destroy()
 	}
-	cm.poolProperties = poolProps
+
+	poolConfigsByName := make(map[string]*PoolConfig)
+	for poolName, alignment := range poolAlignments {
+		poolConfigsByName[poolName] = &PoolConfig{
+			Name:      poolName,
+			Alignment: alignment,
+			Striped:   sc.StriperEnabled,
+		}
+	}
+
+	configs := make(map[BlobType]*PoolConfig)
+	for _, bt := range AllBlobTypes {
+		poolName := sc.Pools.getPoolForType(bt)
+		if poolName == "" {
+			continue
+		}
+		if pc, ok := poolConfigsByName[poolName]; ok {
+			configs[bt] = pc
+		} else {
+			configs[bt] = &PoolConfig{
+				Name:      poolName,
+				Alignment: 1,
+				Striped:   sc.StriperEnabled,
+			}
+		}
+	}
+	cm.poolConfigs = configs
 
 	cm.serverConfig = &sc
 	cm.serverConfigLoaded = true
@@ -446,6 +395,7 @@ func (cm *ConnectionManager) InvalidateServerConfig() {
 	defer cm.mu.Unlock()
 	cm.serverConfigLoaded = false
 	cm.serverConfig = nil
+	cm.poolConfigs = nil
 }
 
 func (cm *ConnectionManager) GetConnection() (*rados.Conn, error) {
@@ -490,22 +440,6 @@ func (cm *ConnectionManager) GetMaxWriteSize() (int64, error) {
 	}
 
 	return cm.maxWriteSize, nil
-}
-
-func (cm *ConnectionManager) GetPoolAlignment(poolName string) (bool, uint64, error) {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-
-	if cm.conn == nil {
-		return false, 0, errConnectionUnavailable
-	}
-
-	props, ok := cm.poolProperties[poolName]
-	if !ok {
-		return false, 1, nil
-	}
-
-	return props.RequiresAlignment, props.Alignment, nil
 }
 
 func (cm *ConnectionManager) markConnectionBroken() {

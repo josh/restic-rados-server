@@ -108,7 +108,7 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, poolName, err := h.connMgr.GetIOContextForType(blobType)
+	ioctx, poolConfig, err := h.connMgr.GetIOContextForType(blobType)
 	if err != nil {
 		return nil, err
 	}
@@ -118,15 +118,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		return nil, fmt.Errorf("get max object size: %w", err)
 	}
 
-	sc, err := h.connMgr.GetServerConfig()
-	if err != nil {
-		return nil, fmt.Errorf("get server config: %w", err)
-	}
-	if sc == nil {
-		return nil, errRepoNotInitialized
-	}
-
-	_, alignment, _ := h.connMgr.GetPoolAlignment(poolName)
+	alignment := poolConfig.Alignment
 
 	hctx := &HandlerContext{
 		ioctx:         ioctx,
@@ -141,7 +133,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		alignment:   alignment,
 	}
 
-	if sc.StriperEnabled {
+	if poolConfig.Striped {
 		objectSize := uint64(maxSize)
 		if alignment > 1 {
 			objectSize = objectSize / alignment * alignment
