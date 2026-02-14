@@ -85,3 +85,24 @@ go build ./...
 ## Comments
 
 Do not add inline comments to code. Code should be self-documenting through clear naming and structure.
+
+## Architecture
+
+The non-test `*.go` files form a strict DAG with no cycles:
+
+```
+main.go
+├── config.go
+├── connection_manager.go  → config.go
+├── handlers.go            → config.go, connection_manager.go, rados.go
+├── listener.go            → stdio_conn.go, idle.go
+├── idle.go
+└── rados.go
+```
+
+### Design rules
+
+1. `main.go` is the only root — it depends on everything else; nothing depends on it.
+2. Leaf files have zero cross-file dependencies — `config.go`, `rados.go`, `stdio_conn.go`, and `idle.go` are self-contained.
+3. Dependencies flow in one direction — interior nodes never depend on each other in a cycle.
+4. Keep related symbols together — constants, sentinel errors, and helpers belong in the file that gives them meaning, even if other files also consume them.
