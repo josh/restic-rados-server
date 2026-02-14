@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +17,10 @@ const (
 	xattrStripeCount = "striper.layout.stripe_count"
 	xattrObjectSize  = "striper.layout.object_size"
 	xattrSize        = "striper.size"
+
+	stripeSuffixLen    = 17
+	stripeSuffixFormat = ".%016x"
+	firstStripeSuffix  = ".0000000000000000"
 )
 
 type RadosIOContext interface {
@@ -27,59 +30,75 @@ type RadosIOContext interface {
 	WriteObject(object string, r io.Reader) (n int64, sum [32]byte, err error)
 }
 
-type BufferPool struct {
-	pool *sync.Pool
-	size int64
-}
-
 type StatInfo struct {
 	Size    uint64
 	ModTime time.Time
 }
 
 type radosIOContextWrapper struct {
-	ioctx       *rados.IOContext
-	radosCalls  *uint64
-	readBuffer  *BufferPool
-	writeBuffer *BufferPool
-	alignment   uint64
+	ioctx      *rados.IOContext
+	radosCalls *uint64
+	readBuf    []byte
+	writeBuf   []byte
 }
 
 type striperIOContextWrapper struct {
-	ioctx       *rados.IOContext
-	objectSize  uint64
-	radosCalls  *uint64
-	readBuffer  *BufferPool
-	writeBuffer *BufferPool
-	alignment   uint64
+	ioctx      *rados.IOContext
+	objectSize uint64
+	radosCalls *uint64
+	readBuf    []byte
+	writeBuf   []byte
 }
 
-func NewBufferPool(size int64) *BufferPool {
-	return &BufferPool{
-		pool: &sync.Pool{
-			New: func() interface{} {
-				buf := make([]byte, size)
-				return &buf
-			},
-		},
-		size: size,
+func NewRadosIO(ioctx *rados.IOContext, alignment uint64, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
+	if alignment == 0 {
+		panic("alignment must be >= 1")
+	}
+	if radosCalls == nil {
+		radosCalls = new(uint64)
+	}
+
+	if alignment > 1 {
+		if aligned := len(writeBuf) / int(alignment) * int(alignment); aligned > 0 {
+			slog.Debug("NewRadosIO writeBuf aligned", "from", len(writeBuf), "to", aligned, "alignment", alignment)
+			writeBuf = writeBuf[:aligned]
+		}
+	}
+
+	return &radosIOContextWrapper{
+		ioctx:      ioctx,
+		radosCalls: radosCalls,
+		readBuf:    readBuf,
+		writeBuf:   writeBuf,
 	}
 }
 
-func (bp *BufferPool) Get() *[]byte {
-	return bp.pool.Get().(*[]byte)
-}
+func NewStripedIO(ioctx *rados.IOContext, objectSize uint64, alignment uint64, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
+	if alignment == 0 {
+		panic("alignment must be >= 1")
+	}
+	if radosCalls == nil {
+		radosCalls = new(uint64)
+	}
+	if alignment > 1 {
+		objectSize = objectSize / alignment * alignment
+		if aligned := len(writeBuf) / int(alignment) * int(alignment); aligned > 0 {
+			slog.Debug("NewStripedIO writeBuf aligned", "from", len(writeBuf), "to", aligned, "alignment", alignment)
+			writeBuf = writeBuf[:aligned]
+		}
+	}
 
-func (bp *BufferPool) Put(bufPtr *[]byte) {
-	bp.pool.Put(bufPtr)
-}
-
-func (bp *BufferPool) Size() int64 {
-	return bp.size
+	return &striperIOContextWrapper{
+		ioctx:      ioctx,
+		objectSize: objectSize,
+		radosCalls: radosCalls,
+		readBuf:    readBuf,
+		writeBuf:   writeBuf,
+	}
 }
 
 func (s *striperIOContextWrapper) getObjectID(soid string, objectno uint64) string {
-	return fmt.Sprintf("%s.%016x", soid, objectno)
+	return fmt.Sprintf("%s"+stripeSuffixFormat, soid, objectno)
 }
 
 func (r *radosIOContextWrapper) Stat(object string) (StatInfo, error) {
@@ -179,9 +198,7 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 }
 
 func (r *radosIOContextWrapper) ReadObject(object string, offset, length int64, w io.Writer) (n int64, sum [32]byte, err error) {
-	bufPtr := r.readBuffer.Get()
-	defer r.readBuffer.Put(bufPtr)
-	buffer := *bufPtr
+	buffer := r.readBuf
 
 	hasher := sha256.New()
 
@@ -256,9 +273,7 @@ func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64
 		readLen = totalSize - uint64(offset)
 	}
 
-	bufPtr := s.readBuffer.Get()
-	defer s.readBuffer.Put(bufPtr)
-	buffer := *bufPtr
+	buffer := s.readBuf
 
 	hasher := sha256.New()
 
@@ -310,9 +325,7 @@ func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64
 }
 
 func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int64, sum [32]byte, err error) {
-	bufPtr := r.writeBuffer.Get()
-	defer r.writeBuffer.Put(bufPtr)
-	buffer := *bufPtr
+	buffer := r.writeBuf
 
 	hasher := sha256.New()
 
@@ -324,14 +337,6 @@ func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int6
 	err = op.Operate(r.ioctx, object, rados.OperationNoFlag)
 	if err != nil && err != rados.ErrObjectExists {
 		return 0, [32]byte{}, fmt.Errorf("create object: %w", err)
-	}
-
-	alignment := int(r.alignment)
-	if alignment == 0 {
-		alignment = 1
-	}
-	if len(buffer) < alignment {
-		slog.Warn("write buffer smaller than alignment", "bufferSize", len(buffer), "alignment", alignment)
 	}
 
 	totalRead := int64(0)
@@ -351,7 +356,7 @@ func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int6
 		if isEOF {
 			flushSize = bufferFilled
 		} else if bufferFilled >= len(buffer) {
-			flushSize = (bufferFilled / alignment) * alignment
+			flushSize = len(buffer)
 		} else {
 			continue
 		}
@@ -360,7 +365,7 @@ func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int6
 			data := buffer[:flushSize]
 			hasher.Write(data)
 
-			slog.Debug("rados.Append", "object", object, "size", len(data), "aligned", len(data)%alignment == 0)
+			slog.Debug("rados.Append", "object", object, "size", len(data))
 			atomic.AddUint64(r.radosCalls, 1)
 			if err := r.ioctx.Append(object, data); err != nil {
 				return totalRead, [32]byte{}, fmt.Errorf("append: %w", err)
@@ -380,9 +385,7 @@ func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int6
 }
 
 func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n int64, sum [32]byte, err error) {
-	bufPtr := s.writeBuffer.Get()
-	defer s.writeBuffer.Put(bufPtr)
-	buffer := *bufPtr
+	buffer := s.writeBuf
 
 	hasher := sha256.New()
 
@@ -403,14 +406,6 @@ func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n in
 		return 0, [32]byte{}, fmt.Errorf("create object: %w", err)
 	}
 
-	alignment := int(s.alignment)
-	if alignment == 0 {
-		alignment = 1
-	}
-	if len(buffer) < alignment {
-		slog.Warn("write buffer smaller than alignment", "bufferSize", len(buffer), "alignment", alignment)
-	}
-
 	totalRead := int64(0)
 	totalWritten := uint64(0)
 	bufferFilled := 0
@@ -429,7 +424,7 @@ func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n in
 		if isEOF {
 			flushSize = bufferFilled
 		} else if bufferFilled >= len(buffer) {
-			flushSize = (bufferFilled / alignment) * alignment
+			flushSize = len(buffer)
 		} else {
 			continue
 		}
@@ -449,7 +444,7 @@ func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n in
 				}
 
 				objectID := s.getObjectID(object, objectNo)
-				slog.Debug("rados.Append", "object", objectID, "size", toWrite, "aligned", toWrite%uint64(alignment) == 0)
+				slog.Debug("rados.Append", "object", objectID, "size", toWrite)
 				atomic.AddUint64(s.radosCalls, 1)
 				if err := s.ioctx.Append(objectID, data[:toWrite]); err != nil {
 					return totalRead, [32]byte{}, fmt.Errorf("append to %s: %w", objectID, err)

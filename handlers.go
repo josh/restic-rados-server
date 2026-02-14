@@ -19,16 +19,16 @@ import (
 	"github.com/ceph/go-ceph/rados"
 )
 
-const (
-	configObjectName = "config"
-	stripeSuffixLen  = 17
+const configObjectName = "config"
+
+var (
+	errObjectNotFound = errors.New("object not found")
+	errObjectExists   = errors.New("object exists")
+	errHashMismatch   = errors.New("hash mismatch")
+	errClientAborted  = errors.New("client aborted request")
 )
 
 var (
-	errObjectNotFound       = errors.New("object not found")
-	errObjectExists         = errors.New("object exists")
-	errHashMismatch         = errors.New("hash mismatch")
-	errClientAborted        = errors.New("client aborted request")
 	hexBlobIDRegex          = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 	stripedBlobIDRegex      = regexp.MustCompile(`^[0-9a-fA-F]{64}\.[0-9a-f]{16}$`)
 	firstStripedBlobIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}\.0000000000000000$`)
@@ -43,11 +43,15 @@ type Handler struct {
 }
 
 type HandlerContext struct {
-	ioctx         *rados.IOContext
-	radosIO       RadosIOContext
-	striperIO     RadosIOContext
-	maxObjectSize int64
-	radosCalls    uint64
+	ioctx           *rados.IOContext
+	radosIO         RadosIOContext
+	striperIO       RadosIOContext
+	maxObjectSize   int64
+	radosCalls      uint64
+	readBufferPool  *BufferPool
+	readBufPtr      *[]byte
+	writeBufferPool *BufferPool
+	writeBufPtr     *[]byte
 }
 
 type responseWriter struct {
@@ -74,6 +78,29 @@ type httpRange struct {
 
 func (hctx *HandlerContext) Destroy() {
 	hctx.ioctx.Destroy()
+	if hctx.readBufPtr != nil {
+		hctx.readBufferPool.Put(hctx.readBufPtr)
+	}
+	if hctx.writeBufPtr != nil {
+		hctx.writeBufferPool.Put(hctx.writeBufPtr)
+	}
+}
+
+func (hctx *HandlerContext) statRadosObject(object string) (RadosIOContext, StatInfo, error) {
+	if hctx.striperIO != nil {
+		stat, err := hctx.radosIO.Stat(object)
+		if !errors.Is(err, rados.ErrNotFound) {
+			return hctx.radosIO, stat, err
+		}
+		_, stripeErr := hctx.radosIO.Stat(object + firstStripeSuffix)
+		if !errors.Is(stripeErr, rados.ErrNotFound) {
+			stat, err = hctx.striperIO.Stat(object)
+			return hctx.striperIO, stat, err
+		}
+		return hctx.radosIO, StatInfo{}, err
+	}
+	stat, err := hctx.radosIO.Stat(object)
+	return hctx.radosIO, stat, err
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
@@ -120,32 +147,22 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 
 	alignment := poolConfig.Alignment
 
+	readBufPtr := h.readBufferPool.Get()
+	writeBufPtr := h.writeBufferPool.Get()
+
 	hctx := &HandlerContext{
-		ioctx:         ioctx,
-		maxObjectSize: maxSize,
+		ioctx:           ioctx,
+		maxObjectSize:   maxSize,
+		readBufferPool:  h.readBufferPool,
+		readBufPtr:      readBufPtr,
+		writeBufferPool: h.writeBufferPool,
+		writeBufPtr:     writeBufPtr,
 	}
 
-	hctx.radosIO = &radosIOContextWrapper{
-		ioctx:       ioctx,
-		radosCalls:  &hctx.radosCalls,
-		readBuffer:  h.readBufferPool,
-		writeBuffer: h.writeBufferPool,
-		alignment:   alignment,
-	}
+	hctx.radosIO = NewRadosIO(ioctx, alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
 
 	if poolConfig.Striped {
-		objectSize := uint64(maxSize)
-		if alignment > 1 {
-			objectSize = objectSize / alignment * alignment
-		}
-		hctx.striperIO = &striperIOContextWrapper{
-			ioctx:       ioctx,
-			objectSize:  objectSize,
-			radosCalls:  &hctx.radosCalls,
-			readBuffer:  h.readBufferPool,
-			writeBuffer: h.writeBufferPool,
-			alignment:   alignment,
-		}
+		hctx.striperIO = NewStripedIO(ioctx, uint64(maxSize), alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
 	}
 
 	return hctx, nil
@@ -888,21 +905,4 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 
 	w.WriteHeader(http.StatusOK)
 	return nil
-}
-
-func (hctx *HandlerContext) statRadosObject(object string) (RadosIOContext, StatInfo, error) {
-	if hctx.striperIO != nil {
-		stat, err := hctx.radosIO.Stat(object)
-		if !errors.Is(err, rados.ErrNotFound) {
-			return hctx.radosIO, stat, err
-		}
-		_, stripeErr := hctx.radosIO.Stat(object + ".0000000000000000")
-		if !errors.Is(stripeErr, rados.ErrNotFound) {
-			stat, err = hctx.striperIO.Stat(object)
-			return hctx.striperIO, stat, err
-		}
-		return hctx.radosIO, StatInfo{}, err
-	}
-	stat, err := hctx.radosIO.Stat(object)
-	return hctx.radosIO, stat, err
 }
