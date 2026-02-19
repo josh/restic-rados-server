@@ -1,8 +1,9 @@
 ! exec restic-rados-server --config config.json --listen $WORK/restic.sock
-stderr 'failed to load config file'
+stderr 'reserved repo name'
 
 -- config.json --
 {
-    "verbose": true,
-    "typo_field": "bad"
+    "repos": {
+        "data": {"pools": ["my-pool"]}
+    }
 }

@@ -15,7 +15,11 @@ kill server
 
 -- config.json --
 {
-    "append_only": true
+    "repos": {
+        "default": {
+            "append_only": true
+        }
+    }
 }
 -- blob-data --
 test blob content

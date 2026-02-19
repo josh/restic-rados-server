@@ -36,6 +36,7 @@ var (
 
 type Handler struct {
 	connMgr         *ConnectionManager
+	repo            string
 	appendOnly      bool
 	readBufferPool  *BufferPool
 	writeBufferPool *BufferPool
@@ -122,7 +123,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 }
 
 func (h *Handler) logRequest(method, path string, status int, duration time.Duration, reqBytes, respBytes int64, radosCalls uint64) {
-	slog.Info("request",
+	attrs := []any{
 		"method", method,
 		"path", path,
 		"status", status,
@@ -130,16 +131,20 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 		"req_bytes", reqBytes,
 		"resp_bytes", respBytes,
 		"rados_calls", radosCalls,
-	)
+	}
+	if h.repo != "default" {
+		attrs = append(attrs, "repo", h.repo)
+	}
+	slog.Info("request", attrs...)
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, poolConfig, err := h.connMgr.GetIOContextForType(blobType)
+	ioctx, poolConfig, err := h.connMgr.GetIOContextForRepo(h.repo, blobType)
 	if err != nil {
 		return nil, err
 	}
 
-	maxSize, err := h.connMgr.GetMaxObjectSize()
+	maxSize, err := h.connMgr.GetMaxObjectSizeForRepo(h.repo)
 	if err != nil {
 		return nil, fmt.Errorf("get max object size: %w", err)
 	}
@@ -634,6 +639,25 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /{type}/{id}", h.deleteBlob)
 
 	mux.HandleFunc("POST /", h.createRepo)
+}
+
+func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[string]*RepoConfig, readPool, writePool *BufferPool) {
+	for name, repo := range repos {
+		h := &Handler{
+			connMgr:         connMgr,
+			repo:            name,
+			appendOnly:      repo.AppendOnly,
+			readBufferPool:  readPool,
+			writeBufferPool: writePool,
+		}
+		repoMux := http.NewServeMux()
+		h.setupRoutes(repoMux)
+		if name == "default" {
+			mux.Handle("/", repoMux)
+		} else {
+			mux.Handle("/"+name+"/", http.StripPrefix("/"+name, repoMux))
+		}
+	}
 }
 
 func parseExpectedHash(object string) ([32]byte, error) {

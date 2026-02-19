@@ -1,0 +1,53 @@
+tail-logs
+create-pool alpha
+create-pool beta
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @test-data 'http://localhost/data/f3003cd71256a032ce4f7b6c61c4a4caccb2b527a2a5fb6ea2b8157aee875cb9'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/backup/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/backup/config
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @test-data2 'http://localhost/backup/data/9892ac37ff0405ab5bd0402443d92de3205b40dfc02ef48501cf56757c3bfc80'
+
+exec rados --pool $CEPH_POOL_ALPHA ls
+stdout 'data/f3003cd71256a032ce4f7b6c61c4a4caccb2b527a2a5fb6ea2b8157aee875cb9'
+! stdout 'data/9892ac37ff0405ab5bd0402443d92de3205b40dfc02ef48501cf56757c3bfc80'
+
+exec rados --pool $CEPH_POOL_BETA ls
+stdout 'data/9892ac37ff0405ab5bd0402443d92de3205b40dfc02ef48501cf56757c3bfc80'
+! stdout 'data/f3003cd71256a032ce4f7b6c61c4a4caccb2b527a2a5fb6ea2b8157aee875cb9'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/f3003cd71256a032ce4f7b6c61c4a4caccb2b527a2a5fb6ea2b8157aee875cb9' --output downloaded-default
+cmp downloaded-default test-data
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/backup/data/9892ac37ff0405ab5bd0402443d92de3205b40dfc02ef48501cf56757c3bfc80' --output downloaded-backup
+cmp downloaded-backup test-data2
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --head 'http://localhost/backup/data/f3003cd71256a032ce4f7b6c61c4a4caccb2b527a2a5fb6ea2b8157aee875cb9' --output /dev/null
+stdout '404'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {"pools": ["$CEPH_POOL_ALPHA"]},
+        "backup": {"pools": ["$CEPH_POOL_BETA"]}
+    }
+}
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- test-data --
+hello from default repo
+-- test-data2 --
+hello from backup repo

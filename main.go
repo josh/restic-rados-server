@@ -57,26 +57,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	if config.BlobPools == nil {
+	if len(config.Repos) == 0 {
 		fmt.Fprintln(os.Stderr, "Ceph pool not set (use --pool, CEPH_POOL, or config file)")
 		os.Exit(1)
 	}
-	if config.BlobPools.Config == "" {
-		fmt.Fprintln(os.Stderr, "config pool must be specified (use 'poolname' or 'poolname:config,...')")
-		os.Exit(1)
+	for name, repo := range config.Repos {
+		if repo.BlobPools == nil {
+			fmt.Fprintf(os.Stderr, "repo %q: no pools configured\n", name)
+			os.Exit(1)
+		}
+		if repo.BlobPools.Config == "" {
+			fmt.Fprintf(os.Stderr, "repo %q: config pool must be specified (use 'poolname' or 'poolname:config,...')\n", name)
+			os.Exit(1)
+		}
 	}
 
 	cephConfig := CephConfig{
-		KeyringPath:   config.Keyring,
-		ClientID:      config.ClientID,
-		CephConf:      config.CephConf,
-		MaxObjectSize: config.MaxObjectSize,
+		KeyringPath: config.Keyring,
+		ClientID:    config.ClientID,
+		CephConf:    config.CephConf,
 	}
 
 	connMgr := NewConnectionManager(cephConfig)
 	defer connMgr.Shutdown()
 
-	if err := connMgr.InitializePoolConfigs(config.BlobPools, !config.DisableStriper); err != nil {
+	if err := connMgr.InitializeAllPoolConfigs(config.Repos); err != nil {
 		slog.Error("failed to initialize pool configs", "error", err)
 		os.Exit(1)
 	}
@@ -90,15 +95,11 @@ func main() {
 			"cluster_max_write_size", maxWriteSize)
 	}
 
-	h := &Handler{
-		connMgr:         connMgr,
-		appendOnly:      config.AppendOnly,
-		readBufferPool:  NewBufferPool(config.ReadBufferSize),
-		writeBufferPool: NewBufferPool(config.WriteBufferSize),
-	}
+	readPool := NewBufferPool(config.ReadBufferSize)
+	writePool := NewBufferPool(config.WriteBufferSize)
 
 	mux := http.NewServeMux()
-	h.setupRoutes(mux)
+	setupAllRoutes(mux, connMgr, config.Repos, readPool, writePool)
 
 	ctx := context.Background()
 
