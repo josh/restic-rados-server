@@ -13,7 +13,7 @@ exec rados --pool $CEPH_POOL_META get server-config $WORK/server-config.json
 
 exec cat $WORK/server-config.json
 stdout '"version":1'
-stdout '"striper_enabled":false'
+stdout '"striper_enabled":true'
 
 exec jq -r '.pools.data' $WORK/server-config.json
 stdout $CEPH_POOL_DATA

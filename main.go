@@ -37,7 +37,7 @@ type Config struct {
 	ClientID        string
 	PoolSpecs       poolFlags
 	CephConf        string
-	EnableStriper   bool
+	DisableStriper  bool
 	ReadBufferSize  int64
 	WriteBufferSize int64
 	MaxObjectSize   int64
@@ -117,7 +117,7 @@ func parseConfig() (Config, error) {
 	var clientID string
 	var poolSpecs poolFlags
 	var cephConf string
-	var enableStriper bool
+	var disableStriper bool
 	var readBufferSize int64
 	var writeBufferSize int64
 	var maxObjectSize int64
@@ -135,7 +135,7 @@ func parseConfig() (Config, error) {
 	flag.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
 	flag.Var(&poolSpecs, "pool", "Pool specification: 'poolname' or 'poolname:types' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
 	flag.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
-	flag.BoolVar(&enableStriper, "enable-striper", false, "use librados striper for large objects")
+	flag.BoolVar(&disableStriper, "disable-striper", false, "disable librados striper for large objects")
 	flag.Int64Var(&readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
 	flag.Int64Var(&writeBufferSize, "write-buffer-size", defaultWriteBufferSize, "buffer size for writing objects in bytes")
 	flag.Int64Var(&maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
@@ -154,8 +154,8 @@ func parseConfig() (Config, error) {
 		appendOnly = parseBoolEnv("CEPH_SERVER_APPEND_ONLY")
 	}
 
-	if !enableStriper {
-		enableStriper = parseBoolEnv("CEPH_SERVER_ENABLE_STRIPER")
+	if !disableStriper {
+		disableStriper = parseBoolEnv("CEPH_SERVER_DISABLE_STRIPER")
 	}
 
 	if logFile == "" {
@@ -221,7 +221,7 @@ func parseConfig() (Config, error) {
 		ClientID:        clientID,
 		PoolSpecs:       poolSpecs,
 		CephConf:        cephConf,
-		EnableStriper:   enableStriper,
+		DisableStriper:  disableStriper,
 		ReadBufferSize:  readBufferSize,
 		WriteBufferSize: writeBufferSize,
 		MaxObjectSize:   maxObjectSize,
@@ -383,7 +383,7 @@ func main() {
 		serverConfigTemplate: &ServerConfig{
 			Version:        1,
 			Pools:          cliPools,
-			StriperEnabled: config.EnableStriper,
+			StriperEnabled: !config.DisableStriper,
 		},
 		appendOnly:      config.AppendOnly,
 		readBufferPool:  NewBufferPool(config.ReadBufferSize),

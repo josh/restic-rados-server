@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --listen $WORK/restic.sock --enable-striper --max-object-size 10000000 --write-buffer-size 4194304 &server&
+exec restic-rados-server --listen $WORK/restic.sock --max-object-size 10000000 --write-buffer-size 4194304 &server&
 wait4socket $WORK/restic.sock
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
 

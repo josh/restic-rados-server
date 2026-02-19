@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --listen $WORK/restic.sock &server1&
+exec restic-rados-server --listen $WORK/restic.sock --disable-striper &server1&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
@@ -16,7 +16,7 @@ stdout 'data/7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9'
 
 kill server1
 
-exec restic-rados-server --listen $WORK/restic.sock --enable-striper &server2&
+exec restic-rados-server --listen $WORK/restic.sock &server2&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --output downloaded-blob 'http://localhost/data/7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9'
