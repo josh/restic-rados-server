@@ -86,23 +86,27 @@ func (p *poolFlags) Set(value string) error {
 	return nil
 }
 
+type RepoConfig struct {
+	Pools          poolFlags          `json:"pools,omitempty"`
+	BlobPools      *ServerConfigPools `json:"blob_pools,omitempty"`
+	AppendOnly     bool               `json:"append_only,omitempty"`
+	DisableStriper bool               `json:"disable_striper,omitempty"`
+	MaxObjectSize  int64              `json:"max_object_size,omitempty"`
+}
+
 type Config struct {
-	Verbose         bool               `json:"verbose,omitempty"`
-	Listeners       listenerFlags      `json:"listen,omitempty"`
-	Stdio           bool               `json:"-"`
-	ShutdownTimeout Duration           `json:"shutdown_timeout,omitempty"`
-	AppendOnly      bool               `json:"append_only,omitempty"`
-	MaxIdleTime     Duration           `json:"max_idle_time,omitempty"`
-	LogFile         string             `json:"log_file,omitempty"`
-	Keyring         string             `json:"keyring,omitempty"`
-	ClientID        string             `json:"client_id,omitempty"`
-	Pools           poolFlags          `json:"pools,omitempty"`
-	BlobPools       *ServerConfigPools `json:"blob_pools,omitempty"`
-	CephConf        string             `json:"ceph_conf,omitempty"`
-	DisableStriper  bool               `json:"disable_striper,omitempty"`
-	ReadBufferSize  int64              `json:"read_buffer_size,omitempty"`
-	WriteBufferSize int64              `json:"write_buffer_size,omitempty"`
-	MaxObjectSize   int64              `json:"max_object_size,omitempty"`
+	Verbose         bool                   `json:"verbose,omitempty"`
+	Listeners       listenerFlags          `json:"listen,omitempty"`
+	Stdio           bool                   `json:"-"`
+	ShutdownTimeout Duration               `json:"shutdown_timeout,omitempty"`
+	MaxIdleTime     Duration               `json:"max_idle_time,omitempty"`
+	LogFile         string                 `json:"log_file,omitempty"`
+	Keyring         string                 `json:"keyring,omitempty"`
+	ClientID        string                 `json:"client_id,omitempty"`
+	CephConf        string                 `json:"ceph_conf,omitempty"`
+	ReadBufferSize  int64                  `json:"read_buffer_size,omitempty"`
+	WriteBufferSize int64                  `json:"write_buffer_size,omitempty"`
+	Repos           map[string]*RepoConfig `json:"repos,omitempty"`
 }
 
 func (c *Config) loadFromFile(path string) error {
@@ -175,9 +179,6 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	if set["shutdown-timeout"] {
 		c.ShutdownTimeout = Duration(shutdownTimeout)
 	}
-	if set["append-only"] {
-		c.AppendOnly = appendOnly
-	}
 	if set["max-idle-time"] {
 		c.MaxIdleTime = Duration(maxIdleTime)
 	}
@@ -190,15 +191,8 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	if set["id"] {
 		c.ClientID = clientID
 	}
-	if set["pool"] {
-		c.Pools = poolSpecs
-		c.BlobPools = nil
-	}
 	if set["ceph-conf"] {
 		c.CephConf = cephConf
-	}
-	if set["disable-striper"] {
-		c.DisableStriper = disableStriper
 	}
 	if set["read-buffer-size"] {
 		c.ReadBufferSize = readBufferSize
@@ -206,8 +200,28 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	if set["write-buffer-size"] {
 		c.WriteBufferSize = writeBufferSize
 	}
-	if set["max-object-size"] {
-		c.MaxObjectSize = maxObjectSize
+
+	if set["pool"] || set["append-only"] || set["disable-striper"] || set["max-object-size"] {
+		if c.Repos == nil {
+			c.Repos = make(map[string]*RepoConfig)
+		}
+		if c.Repos["default"] == nil {
+			c.Repos["default"] = &RepoConfig{}
+		}
+		def := c.Repos["default"]
+		if set["pool"] {
+			def.Pools = poolSpecs
+			def.BlobPools = nil
+		}
+		if set["append-only"] {
+			def.AppendOnly = appendOnly
+		}
+		if set["disable-striper"] {
+			def.DisableStriper = disableStriper
+		}
+		if set["max-object-size"] {
+			def.MaxObjectSize = maxObjectSize
+		}
 	}
 
 	return configFile, showVersion, nil
@@ -237,12 +251,6 @@ func (c *Config) loadFromEnv() {
 	if v, ok := parseBoolEnv("CEPH_SERVER_VERBOSE"); ok {
 		c.Verbose = v
 	}
-	if v, ok := parseBoolEnv("CEPH_SERVER_APPEND_ONLY"); ok {
-		c.AppendOnly = v
-	}
-	if v, ok := parseBoolEnv("CEPH_SERVER_DISABLE_STRIPER"); ok {
-		c.DisableStriper = v
-	}
 	if v := os.Getenv("CEPH_SERVER_LOG_FILE"); v != "" {
 		c.LogFile = v
 	}
@@ -251,16 +259,6 @@ func (c *Config) loadFromEnv() {
 	}
 	if v := os.Getenv("CEPH_ID"); v != "" {
 		c.ClientID = v
-	}
-	if envPool := os.Getenv("CEPH_POOL"); envPool != "" {
-		c.Pools = nil
-		c.BlobPools = nil
-		for _, spec := range strings.Split(envPool, ";") {
-			spec = strings.TrimSpace(spec)
-			if spec != "" {
-				c.Pools = append(c.Pools, spec)
-			}
-		}
 	}
 	if v := os.Getenv("CEPH_CONF"); v != "" {
 		c.CephConf = v
@@ -271,8 +269,39 @@ func (c *Config) loadFromEnv() {
 	if v, ok := parseInt64Env("CEPH_SERVER_WRITE_BUFFER_SIZE"); ok {
 		c.WriteBufferSize = v
 	}
-	if v, ok := parseInt64Env("CEPH_SERVER_MAX_OBJECT_SIZE"); ok {
-		c.MaxObjectSize = v
+
+	appendOnly, hasAppendOnly := parseBoolEnv("CEPH_SERVER_APPEND_ONLY")
+	disableStriper, hasDisableStriper := parseBoolEnv("CEPH_SERVER_DISABLE_STRIPER")
+	maxObjectSize, hasMaxObjectSize := parseInt64Env("CEPH_SERVER_MAX_OBJECT_SIZE")
+	envPool := os.Getenv("CEPH_POOL")
+
+	if hasAppendOnly || hasDisableStriper || hasMaxObjectSize || envPool != "" {
+		if c.Repos == nil {
+			c.Repos = make(map[string]*RepoConfig)
+		}
+		if c.Repos["default"] == nil {
+			c.Repos["default"] = &RepoConfig{}
+		}
+		def := c.Repos["default"]
+		if hasAppendOnly {
+			def.AppendOnly = appendOnly
+		}
+		if hasDisableStriper {
+			def.DisableStriper = disableStriper
+		}
+		if envPool != "" {
+			def.Pools = nil
+			def.BlobPools = nil
+			for _, spec := range strings.Split(envPool, ";") {
+				spec = strings.TrimSpace(spec)
+				if spec != "" {
+					def.Pools = append(def.Pools, spec)
+				}
+			}
+		}
+		if hasMaxObjectSize {
+			def.MaxObjectSize = maxObjectSize
+		}
 	}
 }
 
@@ -303,15 +332,7 @@ func loadConfig(args []string) (Config, bool, error) {
 	}
 
 	config.loadFromEnv()
-	config.loadFromArgs(args)
-
-	if config.BlobPools == nil && len(config.Pools) > 0 {
-		pools, err := parsePoolSpecs(config.Pools)
-		if err != nil {
-			return Config{}, false, fmt.Errorf("invalid pool configuration: %v", err)
-		}
-		config.BlobPools = &pools
-	}
+	_, _, _ = config.loadFromArgs(args)
 
 	if config.ReadBufferSize <= 0 {
 		return Config{}, false, fmt.Errorf("read-buffer-size must be positive, got %d", config.ReadBufferSize)
@@ -321,11 +342,41 @@ func loadConfig(args []string) (Config, bool, error) {
 		return Config{}, false, fmt.Errorf("write-buffer-size must be positive, got %d", config.WriteBufferSize)
 	}
 
-	if config.MaxObjectSize < 0 {
-		return Config{}, false, fmt.Errorf("max-object-size cannot be negative, got %d", config.MaxObjectSize)
+	if err := config.normalizeRepos(); err != nil {
+		return Config{}, false, err
 	}
 
 	return config, false, nil
+}
+
+func isReservedRepoName(name string) bool {
+	switch name {
+	case "keys", "locks", "snapshots", "data", "index", "config":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Config) normalizeRepos() error {
+	for name, repo := range c.Repos {
+		if name != "default" && isReservedRepoName(name) {
+			return fmt.Errorf("reserved repo name %q (conflicts with blob type)", name)
+		}
+
+		if repo.BlobPools == nil && len(repo.Pools) > 0 {
+			pools, err := parsePoolSpecs(repo.Pools)
+			if err != nil {
+				return fmt.Errorf("repo %q: invalid pool configuration: %v", name, err)
+			}
+			repo.BlobPools = &pools
+		}
+
+		if repo.MaxObjectSize < 0 {
+			return fmt.Errorf("repo %q: max-object-size cannot be negative, got %d", name, repo.MaxObjectSize)
+		}
+	}
+	return nil
 }
 
 type ServerConfigPools struct {
@@ -338,10 +389,9 @@ type ServerConfigPools struct {
 }
 
 type CephConfig struct {
-	KeyringPath   string
-	ClientID      string
-	CephConf      string
-	MaxObjectSize int64
+	KeyringPath string
+	ClientID    string
+	CephConf    string
 }
 
 type PoolConfig struct {

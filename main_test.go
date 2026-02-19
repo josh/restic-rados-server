@@ -80,6 +80,7 @@ func TestScript(t *testing.T) {
 					"sha256":             cmdSHA256,
 					"byte-count":         cmdByteCount,
 					"create-pool":        cmdCreatePool,
+					"envsubst":           cmdEnvsubst,
 					"rados-object-count": cmdRadosObjectCount,
 					"scrubhex":           cmdScrubHex,
 					"tail-logs":          cmdTailLogs,
@@ -600,6 +601,26 @@ func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
 				}
 			}
 		}
+	}
+}
+
+func cmdEnvsubst(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! envsubst")
+	}
+	if len(args) != 2 {
+		ts.Fatalf("usage: envsubst <input> <output>")
+	}
+
+	data, err := os.ReadFile(ts.MkAbs(args[0]))
+	if err != nil {
+		ts.Fatalf("failed to read input: %v", err)
+	}
+
+	result := os.Expand(string(data), ts.Getenv)
+
+	if err := os.WriteFile(ts.MkAbs(args[1]), []byte(result), 0o644); err != nil {
+		ts.Fatalf("failed to write output: %v", err)
 	}
 }
 

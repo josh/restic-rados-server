@@ -46,9 +46,6 @@ func TestLoadConfigArgs(t *testing.T) {
 	if time.Duration(config.ShutdownTimeout) != 30*time.Second {
 		t.Errorf("expected 30s shutdown timeout, got %s", config.ShutdownTimeout)
 	}
-	if !config.AppendOnly {
-		t.Error("expected AppendOnly true")
-	}
 	if time.Duration(config.MaxIdleTime) != 5*time.Minute {
 		t.Errorf("expected 5m max idle time, got %s", config.MaxIdleTime)
 	}
@@ -61,26 +58,8 @@ func TestLoadConfigArgs(t *testing.T) {
 	if config.ClientID != "restic" {
 		t.Errorf("expected client_id restic, got %s", config.ClientID)
 	}
-	if config.BlobPools == nil {
-		t.Fatal("expected BlobPools to be set")
-	}
-	for _, field := range []struct{ name, val string }{
-		{"Config", config.BlobPools.Config},
-		{"Keys", config.BlobPools.Keys},
-		{"Locks", config.BlobPools.Locks},
-		{"Snapshots", config.BlobPools.Snapshots},
-		{"Data", config.BlobPools.Data},
-		{"Index", config.BlobPools.Index},
-	} {
-		if field.val != "my-pool" {
-			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
-		}
-	}
 	if config.CephConf != "/etc/ceph/ceph.conf" {
 		t.Errorf("expected ceph_conf /etc/ceph/ceph.conf, got %s", config.CephConf)
-	}
-	if !config.DisableStriper {
-		t.Error("expected DisableStriper true")
 	}
 	if config.ReadBufferSize != 1024 {
 		t.Errorf("expected read_buffer_size 1024, got %d", config.ReadBufferSize)
@@ -88,8 +67,34 @@ func TestLoadConfigArgs(t *testing.T) {
 	if config.WriteBufferSize != 2048 {
 		t.Errorf("expected write_buffer_size 2048, got %d", config.WriteBufferSize)
 	}
-	if config.MaxObjectSize != 4096 {
-		t.Errorf("expected max_object_size 4096, got %d", config.MaxObjectSize)
+
+	def := config.Repos["default"]
+	if def == nil {
+		t.Fatal("expected Repos[\"default\"] to be set")
+	}
+	if !def.AppendOnly {
+		t.Error("expected AppendOnly true")
+	}
+	if !def.DisableStriper {
+		t.Error("expected DisableStriper true")
+	}
+	if def.MaxObjectSize != 4096 {
+		t.Errorf("expected max_object_size 4096, got %d", def.MaxObjectSize)
+	}
+	if def.BlobPools == nil {
+		t.Fatal("expected BlobPools to be set")
+	}
+	for _, field := range []struct{ name, val string }{
+		{"Config", def.BlobPools.Config},
+		{"Keys", def.BlobPools.Keys},
+		{"Locks", def.BlobPools.Locks},
+		{"Snapshots", def.BlobPools.Snapshots},
+		{"Data", def.BlobPools.Data},
+		{"Index", def.BlobPools.Index},
+	} {
+		if field.val != "my-pool" {
+			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
+		}
 	}
 }
 
@@ -123,17 +128,21 @@ func TestLoadConfigFile(t *testing.T) {
 		"verbose": true,
 		"listen": ["tcp://0.0.0.0:8080", "unix:///var/run/restic.sock"],
 		"shutdown_timeout": "90s",
-		"append_only": true,
 		"max_idle_time": "5m",
 		"log_file": "/var/log/restic.log",
 		"keyring": "/etc/ceph/keyring",
 		"client_id": "restic",
-		"pools": ["my-pool"],
 		"ceph_conf": "/etc/ceph/ceph.conf",
-		"disable_striper": true,
 		"read_buffer_size": 1024,
 		"write_buffer_size": 2048,
-		"max_object_size": 4096
+		"repos": {
+			"default": {
+				"pools": ["my-pool"],
+				"append_only": true,
+				"disable_striper": true,
+				"max_object_size": 4096
+			}
+		}
 	}`
 	path := writeTemp(t, json)
 
@@ -151,9 +160,6 @@ func TestLoadConfigFile(t *testing.T) {
 	if time.Duration(config.ShutdownTimeout) != 90*time.Second {
 		t.Errorf("expected 90s shutdown timeout, got %s", config.ShutdownTimeout)
 	}
-	if !config.AppendOnly {
-		t.Error("expected AppendOnly true")
-	}
 	if time.Duration(config.MaxIdleTime) != 5*time.Minute {
 		t.Errorf("expected 5m max idle time, got %s", config.MaxIdleTime)
 	}
@@ -166,26 +172,8 @@ func TestLoadConfigFile(t *testing.T) {
 	if config.ClientID != "restic" {
 		t.Errorf("expected client_id restic, got %s", config.ClientID)
 	}
-	if config.BlobPools == nil {
-		t.Fatal("expected BlobPools to be set")
-	}
-	for _, field := range []struct{ name, val string }{
-		{"Config", config.BlobPools.Config},
-		{"Keys", config.BlobPools.Keys},
-		{"Locks", config.BlobPools.Locks},
-		{"Snapshots", config.BlobPools.Snapshots},
-		{"Data", config.BlobPools.Data},
-		{"Index", config.BlobPools.Index},
-	} {
-		if field.val != "my-pool" {
-			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
-		}
-	}
 	if config.CephConf != "/etc/ceph/ceph.conf" {
 		t.Errorf("expected ceph_conf /etc/ceph/ceph.conf, got %s", config.CephConf)
-	}
-	if !config.DisableStriper {
-		t.Error("expected DisableStriper true")
 	}
 	if config.ReadBufferSize != 1024 {
 		t.Errorf("expected read_buffer_size 1024, got %d", config.ReadBufferSize)
@@ -193,8 +181,34 @@ func TestLoadConfigFile(t *testing.T) {
 	if config.WriteBufferSize != 2048 {
 		t.Errorf("expected write_buffer_size 2048, got %d", config.WriteBufferSize)
 	}
-	if config.MaxObjectSize != 4096 {
-		t.Errorf("expected max_object_size 4096, got %d", config.MaxObjectSize)
+
+	def := config.Repos["default"]
+	if def == nil {
+		t.Fatal("expected Repos[\"default\"] to be set")
+	}
+	if !def.AppendOnly {
+		t.Error("expected AppendOnly true")
+	}
+	if !def.DisableStriper {
+		t.Error("expected DisableStriper true")
+	}
+	if def.MaxObjectSize != 4096 {
+		t.Errorf("expected max_object_size 4096, got %d", def.MaxObjectSize)
+	}
+	if def.BlobPools == nil {
+		t.Fatal("expected BlobPools to be set")
+	}
+	for _, field := range []struct{ name, val string }{
+		{"Config", def.BlobPools.Config},
+		{"Keys", def.BlobPools.Keys},
+		{"Locks", def.BlobPools.Locks},
+		{"Snapshots", def.BlobPools.Snapshots},
+		{"Data", def.BlobPools.Data},
+		{"Index", def.BlobPools.Index},
+	} {
+		if field.val != "my-pool" {
+			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
+		}
 	}
 }
 
@@ -205,6 +219,27 @@ func TestLoadConfigFileUnknownField(t *testing.T) {
 	_, _, err := loadConfig([]string{"--config", path})
 	if err == nil {
 		t.Fatal("expected error for unknown field")
+	}
+}
+
+func TestLoadConfigFlatFieldsRejected(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+	}{
+		{"pools at top level", `{"pools": ["my-pool"]}`},
+		{"append_only at top level", `{"append_only": true}`},
+		{"disable_striper at top level", `{"disable_striper": true}`},
+		{"max_object_size at top level", `{"max_object_size": 4096}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTemp(t, tt.json)
+			_, _, err := loadConfig([]string{"--config", path})
+			if err == nil {
+				t.Fatal("expected error for flat per-repo field at top level")
+			}
+		})
 	}
 }
 
@@ -234,12 +269,6 @@ func TestLoadConfigEnv(t *testing.T) {
 	if !config.Verbose {
 		t.Error("expected Verbose true")
 	}
-	if !config.AppendOnly {
-		t.Error("expected AppendOnly true")
-	}
-	if !config.DisableStriper {
-		t.Error("expected DisableStriper true")
-	}
 	if config.LogFile != "/var/log/test.log" {
 		t.Errorf("expected LogFile /var/log/test.log, got %s", config.LogFile)
 	}
@@ -248,23 +277,6 @@ func TestLoadConfigEnv(t *testing.T) {
 	}
 	if config.ClientID != "restic" {
 		t.Errorf("expected ClientID restic, got %s", config.ClientID)
-	}
-	if config.BlobPools == nil {
-		t.Fatal("expected BlobPools to be set")
-	}
-	if config.BlobPools.Data != "other-pool" {
-		t.Errorf("expected BlobPools.Data = other-pool, got %s", config.BlobPools.Data)
-	}
-	for _, field := range []struct{ name, val string }{
-		{"Config", config.BlobPools.Config},
-		{"Keys", config.BlobPools.Keys},
-		{"Locks", config.BlobPools.Locks},
-		{"Snapshots", config.BlobPools.Snapshots},
-		{"Index", config.BlobPools.Index},
-	} {
-		if field.val != "my-pool" {
-			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
-		}
 	}
 	if config.CephConf != "/etc/ceph/ceph.conf" {
 		t.Errorf("expected CephConf /etc/ceph/ceph.conf, got %s", config.CephConf)
@@ -275,8 +287,36 @@ func TestLoadConfigEnv(t *testing.T) {
 	if config.WriteBufferSize != 2048 {
 		t.Errorf("expected WriteBufferSize 2048, got %d", config.WriteBufferSize)
 	}
-	if config.MaxObjectSize != 4096 {
-		t.Errorf("expected MaxObjectSize 4096, got %d", config.MaxObjectSize)
+
+	def := config.Repos["default"]
+	if def == nil {
+		t.Fatal("expected Repos[\"default\"] to be set")
+	}
+	if !def.AppendOnly {
+		t.Error("expected AppendOnly true")
+	}
+	if !def.DisableStriper {
+		t.Error("expected DisableStriper true")
+	}
+	if def.MaxObjectSize != 4096 {
+		t.Errorf("expected MaxObjectSize 4096, got %d", def.MaxObjectSize)
+	}
+	if def.BlobPools == nil {
+		t.Fatal("expected BlobPools to be set")
+	}
+	if def.BlobPools.Data != "other-pool" {
+		t.Errorf("expected BlobPools.Data = other-pool, got %s", def.BlobPools.Data)
+	}
+	for _, field := range []struct{ name, val string }{
+		{"Config", def.BlobPools.Config},
+		{"Keys", def.BlobPools.Keys},
+		{"Locks", def.BlobPools.Locks},
+		{"Snapshots", def.BlobPools.Snapshots},
+		{"Index", def.BlobPools.Index},
+	} {
+		if field.val != "my-pool" {
+			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
+		}
 	}
 }
 
@@ -399,13 +439,17 @@ func TestLoadConfigValidation(t *testing.T) {
 
 func TestLoadConfigPoolClearsBlobPools(t *testing.T) {
 	json := `{
-		"blob_pools": {
-			"config": "meta-pool",
-			"keys": "meta-pool",
-			"locks": "meta-pool",
-			"snapshots": "meta-pool",
-			"data": "data-pool",
-			"index": "data-pool"
+		"repos": {
+			"default": {
+				"blob_pools": {
+					"config": "meta-pool",
+					"keys": "meta-pool",
+					"locks": "meta-pool",
+					"snapshots": "meta-pool",
+					"data": "data-pool",
+					"index": "data-pool"
+				}
+			}
 		},
 		"read_buffer_size": 1024,
 		"write_buffer_size": 2048
@@ -417,16 +461,20 @@ func TestLoadConfigPoolClearsBlobPools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if config.BlobPools == nil {
+	def := config.Repos["default"]
+	if def == nil {
+		t.Fatal("expected Repos[\"default\"] to be set")
+	}
+	if def.BlobPools == nil {
 		t.Fatal("expected BlobPools to be set")
 	}
 	for _, field := range []struct{ name, val string }{
-		{"Config", config.BlobPools.Config},
-		{"Keys", config.BlobPools.Keys},
-		{"Locks", config.BlobPools.Locks},
-		{"Snapshots", config.BlobPools.Snapshots},
-		{"Data", config.BlobPools.Data},
-		{"Index", config.BlobPools.Index},
+		{"Config", def.BlobPools.Config},
+		{"Keys", def.BlobPools.Keys},
+		{"Locks", def.BlobPools.Locks},
+		{"Snapshots", def.BlobPools.Snapshots},
+		{"Data", def.BlobPools.Data},
+		{"Index", def.BlobPools.Index},
 	} {
 		if field.val != "new-pool" {
 			t.Errorf("expected BlobPools.%s = new-pool, got %s", field.name, field.val)
@@ -449,6 +497,137 @@ func TestLoadConfigPoolErrors(t *testing.T) {
 			_, _, err := loadConfig(tt.args)
 			if err == nil {
 				t.Fatal("expected pool parsing error")
+			}
+		})
+	}
+}
+
+func TestLoadConfigMultiRepo(t *testing.T) {
+	json := `{
+		"repos": {
+			"default": {
+				"pools": ["meta-pool"],
+				"append_only": true
+			},
+			"offsite": {
+				"pools": ["offsite-data:data,snapshots", "offsite-meta:*"],
+				"disable_striper": true,
+				"max_object_size": 8192
+			}
+		}
+	}`
+	path := writeTemp(t, json)
+
+	config, _, err := loadConfig([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(config.Repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(config.Repos))
+	}
+
+	def := config.Repos["default"]
+	if def == nil {
+		t.Fatal("expected Repos[\"default\"] to be set")
+	}
+	if !def.AppendOnly {
+		t.Error("expected default repo AppendOnly true")
+	}
+	if def.BlobPools == nil {
+		t.Fatal("expected default BlobPools to be set")
+	}
+	if def.BlobPools.Config != "meta-pool" {
+		t.Errorf("expected default Config pool = meta-pool, got %s", def.BlobPools.Config)
+	}
+
+	offsite := config.Repos["offsite"]
+	if offsite == nil {
+		t.Fatal("expected Repos[\"offsite\"] to be set")
+	}
+	if offsite.AppendOnly {
+		t.Error("expected offsite repo AppendOnly false")
+	}
+	if !offsite.DisableStriper {
+		t.Error("expected offsite repo DisableStriper true")
+	}
+	if offsite.MaxObjectSize != 8192 {
+		t.Errorf("expected offsite MaxObjectSize 8192, got %d", offsite.MaxObjectSize)
+	}
+	if offsite.BlobPools == nil {
+		t.Fatal("expected offsite BlobPools to be set")
+	}
+	if offsite.BlobPools.Data != "offsite-data" {
+		t.Errorf("expected offsite Data pool = offsite-data, got %s", offsite.BlobPools.Data)
+	}
+	if offsite.BlobPools.Config != "offsite-meta" {
+		t.Errorf("expected offsite Config pool = offsite-meta, got %s", offsite.BlobPools.Config)
+	}
+}
+
+func TestLoadConfigReservedRepoName(t *testing.T) {
+	reserved := []string{"keys", "locks", "snapshots", "data", "index", "config"}
+	for _, name := range reserved {
+		t.Run(name, func(t *testing.T) {
+			json := `{"repos": {"` + name + `": {"pools": ["my-pool"]}}}`
+			path := writeTemp(t, json)
+			_, _, err := loadConfig([]string{"--config", path})
+			if err == nil {
+				t.Fatalf("expected error for reserved repo name %q", name)
+			}
+		})
+	}
+}
+
+func TestLoadConfigMultiRepoPoolParsing(t *testing.T) {
+	json := `{
+		"repos": {
+			"default": {
+				"pools": ["data-pool:data,snapshots", "meta-pool:*"]
+			}
+		}
+	}`
+	path := writeTemp(t, json)
+
+	config, _, err := loadConfig([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	def := config.Repos["default"]
+	if def == nil || def.BlobPools == nil {
+		t.Fatal("expected default repo BlobPools")
+	}
+	if def.BlobPools.Data != "data-pool" {
+		t.Errorf("expected Data = data-pool, got %s", def.BlobPools.Data)
+	}
+	if def.BlobPools.Snapshots != "data-pool" {
+		t.Errorf("expected Snapshots = data-pool, got %s", def.BlobPools.Snapshots)
+	}
+	if def.BlobPools.Config != "meta-pool" {
+		t.Errorf("expected Config = meta-pool, got %s", def.BlobPools.Config)
+	}
+	if def.BlobPools.Keys != "meta-pool" {
+		t.Errorf("expected Keys = meta-pool, got %s", def.BlobPools.Keys)
+	}
+}
+
+func TestLoadConfigMultiRepoValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+	}{
+		{
+			"negative max-object-size per repo",
+			`{"repos": {"default": {"pools": ["my-pool"], "max_object_size": -1}}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTemp(t, tt.json)
+			_, _, err := loadConfig([]string{"--config", path})
+			if err == nil {
+				t.Fatal("expected validation error")
 			}
 		})
 	}
