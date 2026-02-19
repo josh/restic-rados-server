@@ -337,18 +337,11 @@ type ServerConfigPools struct {
 	Index     string `json:"index"`
 }
 
-type ServerConfig struct {
-	Version        int               `json:"version"`
-	Pools          ServerConfigPools `json:"pools"`
-	StriperEnabled bool              `json:"striper_enabled"`
-}
-
 type CephConfig struct {
-	ConfigPoolName string
-	KeyringPath    string
-	ClientID       string
-	CephConf       string
-	MaxObjectSize  int64
+	KeyringPath   string
+	ClientID      string
+	CephConf      string
+	MaxObjectSize int64
 }
 
 type PoolConfig struct {
