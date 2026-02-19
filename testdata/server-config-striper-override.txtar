@@ -8,10 +8,6 @@ exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localh
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
 
-exec rados --pool $CEPH_POOL get server-config $WORK/server-config.json
-exec cat $WORK/server-config.json
-stdout '"striper_enabled":true'
-
 bin-file zeros large-blob 40000000
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'

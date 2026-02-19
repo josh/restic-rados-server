@@ -35,11 +35,10 @@ var (
 )
 
 type Handler struct {
-	connMgr              *ConnectionManager
-	serverConfigTemplate *ServerConfig
-	appendOnly           bool
-	readBufferPool       *BufferPool
-	writeBufferPool      *BufferPool
+	connMgr         *ConnectionManager
+	appendOnly      bool
+	readBufferPool  *BufferPool
+	writeBufferPool *BufferPool
 }
 
 type HandlerContext struct {
@@ -174,8 +173,8 @@ func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request, blob
 		switch {
 		case errors.Is(err, errConnectionUnavailable):
 			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
-		case errors.Is(err, errPoolNotConfigured), errors.Is(err, errRepoNotInitialized):
-			http.Error(w, "repository not initialized", http.StatusServiceUnavailable)
+		case errors.Is(err, errPoolNotConfigured):
+			http.Error(w, "pool not configured", http.StatusServiceUnavailable)
 		case errors.Is(err, rados.ErrNotFound):
 			http.NotFound(w, r)
 		default:
@@ -288,16 +287,6 @@ func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
 		hctx.Destroy()
 	}()
 
-	_, err := hctx.radosIO.Stat(serverConfigObjectName)
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			http.Error(rw, "repo not initialized", http.StatusServiceUnavailable)
-		} else {
-			h.handleRadosError(rw, r, serverConfigObjectName, fmt.Errorf("stat server-config: %w", err))
-		}
-		return
-	}
-
 	if err := hctx.createRadosObject(rw, r, configObjectName, configObjectName, false); err != nil {
 		h.handleRadosError(rw, r, configObjectName, err)
 	}
@@ -354,26 +343,6 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, radosCalls)
 	}()
 
-	conn, err := h.connMgr.GetConnection()
-	if err != nil {
-		if errors.Is(err, errConnectionUnavailable) {
-			http.Error(rw, "ceph cluster unavailable", http.StatusServiceUnavailable)
-		} else {
-			slog.Error("failed to get connection", "error", err)
-			http.Error(rw, "internal server error", http.StatusInternalServerError)
-		}
-		return
-	}
-
-	for _, poolName := range h.serverConfigTemplate.Pools.UniquePools() {
-		_, err = conn.GetPoolByName(poolName)
-		if err != nil {
-			slog.Warn("pool check failed", "pool", poolName, "error", err)
-			http.NotFound(rw, r)
-			return
-		}
-	}
-
 	createParam := r.URL.Query().Get("create")
 	if createParam == "" {
 		http.Error(rw, "missing required query parameter: create", http.StatusBadRequest)
@@ -381,53 +350,6 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if createParam != "true" {
 		http.Error(rw, "invalid value for create parameter: must be 'true'", http.StatusBadRequest)
-		return
-	}
-
-	slog.Debug("rados.OpenIOContext", "pool", h.serverConfigTemplate.Pools.Config)
-	radosCalls++
-	configIoctx, err := conn.OpenIOContext(h.serverConfigTemplate.Pools.Config)
-	if err != nil {
-		slog.Error("failed to open config pool", "error", err)
-		http.Error(rw, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	defer configIoctx.Destroy()
-
-	slog.Debug("rados.Stat", "object", serverConfigObjectName)
-	radosCalls++
-	_, err = configIoctx.Stat(serverConfigObjectName)
-	if errors.Is(err, rados.ErrNotFound) {
-		sc := *h.serverConfigTemplate
-
-		data, err := json.Marshal(sc)
-		if err != nil {
-			slog.Error("failed to marshal server-config", "error", err)
-			http.Error(rw, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		op := rados.CreateWriteOp()
-		defer op.Release()
-		op.Create(rados.CreateExclusive)
-		op.WriteFull(data)
-
-		slog.Debug("rados.Operate", "object", serverConfigObjectName)
-		radosCalls++
-		if err := op.Operate(configIoctx, serverConfigObjectName, rados.OperationNoFlag); err != nil {
-			if !errors.Is(err, rados.ErrObjectExists) {
-				slog.Error("failed to create server-config", "error", err)
-				http.Error(rw, "internal server error", http.StatusInternalServerError)
-				return
-			}
-		} else {
-			slog.Info("created server-config", "version", sc.Version, "striper_enabled", sc.StriperEnabled)
-		}
-
-		h.connMgr.InvalidateServerConfig()
-	} else if err != nil {
-		slog.Error("failed to stat server-config", "error", err)
-		http.Error(rw, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -715,7 +637,7 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 }
 
 func parseExpectedHash(object string) ([32]byte, error) {
-	if object == configObjectName || object == serverConfigObjectName {
+	if object == configObjectName {
 		return [32]byte{}, nil
 	}
 

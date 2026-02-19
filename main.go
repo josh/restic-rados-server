@@ -67,15 +67,19 @@ func main() {
 	}
 
 	cephConfig := CephConfig{
-		ConfigPoolName: config.BlobPools.Config,
-		KeyringPath:    config.Keyring,
-		ClientID:       config.ClientID,
-		CephConf:       config.CephConf,
-		MaxObjectSize:  config.MaxObjectSize,
+		KeyringPath:   config.Keyring,
+		ClientID:      config.ClientID,
+		CephConf:      config.CephConf,
+		MaxObjectSize: config.MaxObjectSize,
 	}
 
 	connMgr := NewConnectionManager(cephConfig)
 	defer connMgr.Shutdown()
+
+	if err := connMgr.InitializePoolConfigs(config.BlobPools, !config.DisableStriper); err != nil {
+		slog.Error("failed to initialize pool configs", "error", err)
+		os.Exit(1)
+	}
 
 	maxWriteSize, err := connMgr.GetMaxWriteSize()
 	if err != nil {
@@ -87,12 +91,7 @@ func main() {
 	}
 
 	h := &Handler{
-		connMgr: connMgr,
-		serverConfigTemplate: &ServerConfig{
-			Version:        1,
-			Pools:          *config.BlobPools,
-			StriperEnabled: !config.DisableStriper,
-		},
+		connMgr:         connMgr,
 		appendOnly:      config.AppendOnly,
 		readBufferPool:  NewBufferPool(config.ReadBufferSize),
 		writeBufferPool: NewBufferPool(config.WriteBufferSize),

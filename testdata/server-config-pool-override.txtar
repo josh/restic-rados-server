@@ -9,13 +9,6 @@ exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localh
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
 
-exec rados --pool $CEPH_POOL_META get server-config $WORK/server-config.json
-exec jq -r '.pools.data' $WORK/server-config.json
-stdout $CEPH_POOL_DATA
-
-exec jq -r '.pools.config' $WORK/server-config.json
-stdout $CEPH_POOL_META
-
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @test-data 'http://localhost/data/93a3db23375375c9addf55503ab78bf1e8183b42af211e85adc80405da969f2a'
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @keys-data 'http://localhost/keys/d977c57ed0489165b24538ce57feaf0951478565d009d0809eb6e8bb530a7f54'
@@ -28,7 +21,7 @@ stdout 'keys/d977c57ed0489165b24538ce57feaf0951478565d009d0809eb6e8bb530a7f54'
 
 kill server
 
-exec restic-rados-server --pool=$CEPH_POOL_META --listen $WORK/restic2.sock &server2&
+exec restic-rados-server --pool=$CEPH_POOL_DATA:data,snapshots --pool=$CEPH_POOL_META:* --listen $WORK/restic2.sock &server2&
 wait4socket $WORK/restic2.sock
 
 exec curl --silent --unix-socket $WORK/restic2.sock --head --include 'http://localhost/data/93a3db23375375c9addf55503ab78bf1e8183b42af211e85adc80405da969f2a'

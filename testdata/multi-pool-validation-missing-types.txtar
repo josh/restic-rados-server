@@ -11,6 +11,6 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'h
 stdout '503'
 
 exec cat $WORK/keys-response.txt
-stdout 'repository not initialized'
+stdout 'pool not configured'
 
 kill server

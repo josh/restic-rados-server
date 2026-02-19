@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,8 +14,6 @@ import (
 )
 
 const (
-	serverConfigObjectName = "server-config"
-
 	defaultMaxObjectSize int64 = 128 * 1024 * 1024
 	defaultMaxWriteSize  int64 = 90 * 1024 * 1024
 )
@@ -24,7 +21,6 @@ const (
 var (
 	errConnectionUnavailable = errors.New("ceph connection unavailable")
 	errPoolNotConfigured     = errors.New("pool not configured for blob type")
-	errRepoNotInitialized    = errors.New("repository not initialized")
 )
 
 type ConnectionManager struct {
@@ -38,9 +34,6 @@ type ConnectionManager struct {
 	maxObjectSize     int64
 	maxWriteSize      int64
 	poolConfigs       map[BlobType]*PoolConfig
-
-	serverConfig       *ServerConfig
-	serverConfigLoaded bool
 }
 
 func NewConnectionManager(config CephConfig) *ConnectionManager {
@@ -224,27 +217,12 @@ func (cm *ConnectionManager) getIOContextForPool(poolName string, radosCalls *ui
 
 func (cm *ConnectionManager) GetPoolConfigForType(bt BlobType) (*PoolConfig, error) {
 	cm.mu.RLock()
-	if cm.poolConfigs != nil {
-		pc := cm.poolConfigs[bt]
-		cm.mu.RUnlock()
-		if pc == nil {
-			return nil, fmt.Errorf("%w: %s", errPoolNotConfigured, bt)
-		}
-		return pc, nil
-	}
-	cm.mu.RUnlock()
+	defer cm.mu.RUnlock()
 
-	sc, err := cm.GetServerConfig()
-	if err != nil {
-		return nil, err
+	if cm.poolConfigs == nil {
+		return nil, fmt.Errorf("%w: pool configs not initialized", errPoolNotConfigured)
 	}
-	if sc == nil {
-		return nil, errRepoNotInitialized
-	}
-
-	cm.mu.RLock()
 	pc := cm.poolConfigs[bt]
-	cm.mu.RUnlock()
 	if pc == nil {
 		return nil, fmt.Errorf("%w: %s", errPoolNotConfigured, bt)
 	}
@@ -266,88 +244,27 @@ func (cm *ConnectionManager) GetIOContextForType(blobType BlobType) (*rados.IOCo
 	return ioctx, pc, err
 }
 
-func (cm *ConnectionManager) GetServerConfig() (*ServerConfig, error) {
-	cm.mu.RLock()
-	if cm.serverConfigLoaded {
-		sc := cm.serverConfig
-		cm.mu.RUnlock()
-		return sc, nil
-	}
-	cm.mu.RUnlock()
-
+func (cm *ConnectionManager) InitializePoolConfigs(pools *ServerConfigPools, striperEnabled bool) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	if cm.serverConfigLoaded {
-		return cm.serverConfig, nil
-	}
-
-	var radosCalls uint64
-	defer func() {
-		slog.Debug("GetServerConfig", "rados_calls", atomic.LoadUint64(&radosCalls))
-	}()
-
 	conn := cm.conn
 	if conn == nil {
-		return nil, errConnectionUnavailable
+		return errConnectionUnavailable
 	}
 
-	atomic.AddUint64(&radosCalls, 1)
-	slog.Debug("rados.OpenIOContext", "pool", cm.config.ConfigPoolName)
-	cfgIoctx, err := conn.OpenIOContext(cm.config.ConfigPoolName)
-	if err != nil {
-		return nil, fmt.Errorf("open config pool %q: %w", cm.config.ConfigPoolName, err)
-	}
-	defer cfgIoctx.Destroy()
-
-	atomic.AddUint64(&radosCalls, 1)
-	slog.Debug("rados.Stat", "object", serverConfigObjectName)
-	stat, err := cfgIoctx.Stat(serverConfigObjectName)
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			cm.serverConfig = nil
-			cm.serverConfigLoaded = true
-			return nil, nil
-		}
-		return nil, fmt.Errorf("stat server-config: %w", err)
-	}
-
-	data := make([]byte, stat.Size)
-	atomic.AddUint64(&radosCalls, 1)
-	slog.Debug("rados.Read", "object", serverConfigObjectName, "size", stat.Size)
-	n, err := cfgIoctx.Read(serverConfigObjectName, data, 0)
-	if err != nil {
-		return nil, fmt.Errorf("read server-config: %w", err)
-	}
-
-	var sc ServerConfig
-	if err := json.Unmarshal(data[:n], &sc); err != nil {
-		return nil, fmt.Errorf("parse server-config: %w", err)
-	}
-
-	slog.Info("loaded server-config", "version", sc.Version,
-		"striper_enabled", sc.StriperEnabled)
-
-	poolNames := sc.Pools.UniquePools()
+	poolNames := pools.UniquePools()
 	poolAlignments := make(map[string]uint64)
 	for _, poolName := range poolNames {
-		atomic.AddUint64(&radosCalls, 1)
 		slog.Debug("rados.OpenIOContext", "pool", poolName)
 		ioctx, err := conn.OpenIOContext(poolName)
 		if err != nil {
-			if errors.Is(err, rados.ErrNotFound) {
-				slog.Debug("pool does not exist, skipping property probe", "pool", poolName)
-			} else {
-				slog.Warn("failed to probe pool properties", "pool", poolName, "error", err)
-			}
-			continue
+			return fmt.Errorf("open pool %q: %w", poolName, err)
 		}
 
 		var alignment uint64 = 1
-		atomic.AddUint64(&radosCalls, 1)
 		slog.Debug("rados.RequiresAlignment", "pool", poolName)
 		if ra, err := ioctx.RequiresAlignment(); err == nil && ra {
-			atomic.AddUint64(&radosCalls, 1)
 			slog.Debug("rados.Alignment", "pool", poolName)
 			if align, err := ioctx.Alignment(); err == nil && align > 1 {
 				alignment = align
@@ -363,61 +280,24 @@ func (cm *ConnectionManager) GetServerConfig() (*ServerConfig, error) {
 		poolConfigsByName[poolName] = &PoolConfig{
 			Name:      poolName,
 			Alignment: alignment,
-			Striped:   sc.StriperEnabled,
+			Striped:   striperEnabled,
 		}
 	}
 
 	configs := make(map[BlobType]*PoolConfig)
 	for _, bt := range AllBlobTypes {
-		poolName := sc.Pools.getPoolForType(bt)
+		poolName := pools.getPoolForType(bt)
 		if poolName == "" {
 			continue
 		}
 		if pc, ok := poolConfigsByName[poolName]; ok {
 			configs[bt] = pc
-		} else {
-			configs[bt] = &PoolConfig{
-				Name:      poolName,
-				Alignment: 1,
-				Striped:   sc.StriperEnabled,
-			}
 		}
 	}
 	cm.poolConfigs = configs
 
-	cm.serverConfig = &sc
-	cm.serverConfigLoaded = true
-	return &sc, nil
-}
-
-func (cm *ConnectionManager) InvalidateServerConfig() {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	cm.serverConfigLoaded = false
-	cm.serverConfig = nil
-	cm.poolConfigs = nil
-}
-
-func (cm *ConnectionManager) GetConnection() (*rados.Conn, error) {
-	cm.mu.RLock()
-	conn := cm.conn
-	cm.mu.RUnlock()
-
-	if conn == nil {
-		if err := cm.tryReconnect(); err != nil {
-			return nil, errConnectionUnavailable
-		}
-
-		cm.mu.RLock()
-		conn = cm.conn
-		cm.mu.RUnlock()
-
-		if conn == nil {
-			return nil, errConnectionUnavailable
-		}
-	}
-
-	return conn, nil
+	slog.Info("initialized pool configs", "pools", poolNames, "striper_enabled", striperEnabled)
+	return nil
 }
 
 func (cm *ConnectionManager) GetMaxObjectSize() (int64, error) {
