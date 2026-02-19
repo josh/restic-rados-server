@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -69,6 +70,19 @@ func (l *listenerFlags) String() string {
 		parts[i] = cfg.raw
 	}
 	return strings.Join(parts, ",")
+}
+
+func (l *listenerFlags) UnmarshalJSON(data []byte) error {
+	var ss []string
+	if err := json.Unmarshal(data, &ss); err != nil {
+		return err
+	}
+	for _, s := range ss {
+		if err := l.Set(s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (l *listenerFlags) Set(value string) error {
