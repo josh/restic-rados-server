@@ -1,0 +1,8 @@
+! exec restic-rados-server --config config.json --listen $WORK/restic.sock
+stderr 'failed to load config file'
+
+-- config.json --
+{
+    "append_only": true,
+    "typo_field": "bad"
+}
