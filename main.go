@@ -16,7 +16,7 @@ import (
 
 var logger *slog.Logger
 
-var version = "0.4.1"
+var version = "0.4.2"
 
 func initLogger(verbose bool, logFilePath string) error {
 	logOutput := io.Writer(os.Stderr)
