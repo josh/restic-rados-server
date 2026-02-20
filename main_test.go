@@ -95,10 +95,10 @@ func TestScript(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					env.Setenv("RESTIC_RADOS_VERBOSE", "true")
-					env.Setenv("RESTIC_RADOS_LOG_FILE", logFile)
-					env.Setenv("CEPH_RESTIC_VERBOSE", "true")
-					env.Setenv("CEPH_RESTIC_LOG_FILE", logFile)
+					env.Setenv("RESTIC_RADOS_SERVER_VERBOSE", "true")
+					env.Setenv("RESTIC_RADOS_SERVER_LOG_FILE", logFile)
+					env.Setenv("CEPH_RESTIC_SERVER_VERBOSE", "true")
+					env.Setenv("CEPH_RESTIC_SERVER_LOG_FILE", logFile)
 
 					env.Setenv("CEPH_CONF", confPath)
 					env.Setenv("RESTIC_CACHE_DIR", filepath.Join(t.TempDir(), "restic-cache"))
@@ -154,9 +154,9 @@ func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("context not found in testscript Env.Values")
 	}
 
-	logFile := ts.Getenv("RESTIC_RADOS_LOG_FILE")
+	logFile := ts.Getenv("RESTIC_RADOS_SERVER_LOG_FILE")
 	if logFile == "" {
-		ts.Fatalf("RESTIC_RADOS_LOG_FILE not set")
+		ts.Fatalf("RESTIC_RADOS_SERVER_LOG_FILE not set")
 	}
 
 	f, err := os.Open(logFile)
@@ -640,9 +640,9 @@ func cmdRadosObjectCount(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	prefix := args[0]
-	pool := ts.Getenv("RESTIC_RADOS_POOL")
+	pool := ts.Getenv("RESTIC_RADOS_SERVER_POOL")
 	if pool == "" {
-		ts.Fatalf("RESTIC_RADOS_POOL environment variable not set")
+		ts.Fatalf("RESTIC_RADOS_SERVER_POOL environment variable not set")
 	}
 
 	confPath := ts.Getenv("CEPH_CONF")
@@ -996,8 +996,8 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	if poolEnvName == "" {
-		ts.Setenv("RESTIC_RADOS_POOL", poolName)
-		ts.Setenv("CEPH_RESTIC_POOL", poolName)
+		ts.Setenv("RESTIC_RADOS_SERVER_POOL", poolName)
+		ts.Setenv("CEPH_RESTIC_SERVER_POOL", poolName)
 	} else {
 		envVarName := "CEPH_POOL_" + strings.ToUpper(poolEnvName)
 		ts.Setenv(envVarName, poolName)

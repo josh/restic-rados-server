@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --pool=$RESTIC_RADOS_POOL --listen $WORK/restic.sock &server&
+exec restic-rados-server --pool=$RESTIC_RADOS_SERVER_POOL --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
@@ -12,7 +12,7 @@ exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Cont
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @index-data 'http://localhost/index/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
 
-exec rados --pool $RESTIC_RADOS_POOL ls
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
 stdout '^config$'
 stdout 'data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
 stdout 'index/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
