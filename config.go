@@ -123,6 +123,11 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	fs := flag.NewFlagSet("restic-rados-server", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
+	fs.Usage = func() {
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: restic-rados-server [options]\n\nOptions:\n")
+		fs.PrintDefaults()
+	}
+
 	var verbose bool
 	var listeners listenerFlags
 	var useStdio bool
@@ -159,6 +164,10 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	fs.Int64Var(&maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(os.Stderr)
+			fs.Usage()
+		}
 		return "", false, err
 	}
 

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -44,6 +46,9 @@ func initLogger(verbose bool, logFilePath string) error {
 func main() {
 	config, showVersion, err := loadConfig(os.Args[1:])
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
