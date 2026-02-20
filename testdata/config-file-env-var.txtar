@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-env CEPH_SERVER_CONFIG=config.json
+env RESTIC_RADOS_CONFIG=config.json
 
 exec restic-rados-server --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock

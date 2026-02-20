@@ -2,7 +2,7 @@ tail-logs
 create-pool meta
 create-pool data
 
-env CEPH_POOL=$CEPH_POOL_DATA:data,snapshots;$CEPH_POOL_META:*
+env RESTIC_RADOS_POOL=$CEPH_POOL_DATA:data,snapshots;$CEPH_POOL_META:*
 
 exec restic-rados-server --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock

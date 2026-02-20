@@ -10,7 +10,7 @@ bin-file ones small-blob 10000000
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @small-blob 'http://localhost/data/7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9'
 
-exec rados --pool $CEPH_POOL ls
+exec rados --pool $RESTIC_RADOS_POOL ls
 stdout 'data/7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9'
 ! stdout '\.0000000000000000'
 
@@ -32,7 +32,7 @@ stdout '7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9'
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9' --output /dev/null
 stdout '200'
 
-exec rados --pool $CEPH_POOL ls
+exec rados --pool $RESTIC_RADOS_POOL ls
 ! stdout 'data/'
 
 kill server2

@@ -227,16 +227,27 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	return configFile, showVersion, nil
 }
 
-func parseBoolEnv(key string) (bool, bool) {
-	val := os.Getenv(key)
+var envPrefixes = []string{"RESTIC_RADOS_", "RESTIC_CEPH_", "CEPH_RESTIC_", "RADOS_RESTIC_"}
+
+func getEnv(suffix string) string {
+	for _, prefix := range envPrefixes {
+		if v := os.Getenv(prefix + suffix); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func parseBoolEnv(suffix string) (bool, bool) {
+	val := getEnv(suffix)
 	if val == "" {
 		return false, false
 	}
 	return val == "true" || val == "1" || val == "yes", true
 }
 
-func parseInt64Env(key string) (int64, bool) {
-	val := os.Getenv(key)
+func parseInt64Env(suffix string) (int64, bool) {
+	val := getEnv(suffix)
 	if val == "" {
 		return 0, false
 	}
@@ -248,10 +259,10 @@ func parseInt64Env(key string) (int64, bool) {
 }
 
 func (c *Config) loadFromEnv() {
-	if v, ok := parseBoolEnv("CEPH_SERVER_VERBOSE"); ok {
+	if v, ok := parseBoolEnv("VERBOSE"); ok {
 		c.Verbose = v
 	}
-	if v := os.Getenv("CEPH_SERVER_LOG_FILE"); v != "" {
+	if v := getEnv("LOG_FILE"); v != "" {
 		c.LogFile = v
 	}
 	if v := os.Getenv("CEPH_KEYRING"); v != "" {
@@ -263,17 +274,17 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("CEPH_CONF"); v != "" {
 		c.CephConf = v
 	}
-	if v, ok := parseInt64Env("CEPH_SERVER_READ_BUFFER_SIZE"); ok {
+	if v, ok := parseInt64Env("READ_BUFFER_SIZE"); ok {
 		c.ReadBufferSize = v
 	}
-	if v, ok := parseInt64Env("CEPH_SERVER_WRITE_BUFFER_SIZE"); ok {
+	if v, ok := parseInt64Env("WRITE_BUFFER_SIZE"); ok {
 		c.WriteBufferSize = v
 	}
 
-	appendOnly, hasAppendOnly := parseBoolEnv("CEPH_SERVER_APPEND_ONLY")
-	disableStriper, hasDisableStriper := parseBoolEnv("CEPH_SERVER_DISABLE_STRIPER")
-	maxObjectSize, hasMaxObjectSize := parseInt64Env("CEPH_SERVER_MAX_OBJECT_SIZE")
-	envPool := os.Getenv("CEPH_POOL")
+	appendOnly, hasAppendOnly := parseBoolEnv("APPEND_ONLY")
+	disableStriper, hasDisableStriper := parseBoolEnv("DISABLE_STRIPER")
+	maxObjectSize, hasMaxObjectSize := parseInt64Env("MAX_OBJECT_SIZE")
+	envPool := getEnv("POOL")
 
 	if hasAppendOnly || hasDisableStriper || hasMaxObjectSize || envPool != "" {
 		if c.Repos == nil {
@@ -322,7 +333,7 @@ func loadConfig(args []string) (Config, bool, error) {
 	}
 
 	if configFile == "" {
-		configFile = os.Getenv("CEPH_SERVER_CONFIG")
+		configFile = getEnv("CONFIG")
 	}
 
 	if configFile != "" {

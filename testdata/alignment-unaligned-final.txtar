@@ -17,7 +17,7 @@ stdout 'Content-Length: 33557536'
 exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/ae3bb07677575eb2b088794b46d3388cfcac68cea9f0c86af4906533b9634198' --output downloaded
 bin-cmp downloaded unaligned-final
 
-exec rados --pool $CEPH_POOL ls
+exec rados --pool $RESTIC_RADOS_POOL ls
 stdout 'data/ae3bb07677575eb2b088794b46d3388cfcac68cea9f0c86af4906533b9634198'
 
 kill server

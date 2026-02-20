@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-env CEPH_POOL=bad
+env CEPH_RESTIC_POOL=bad
 ! exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
 cmp stdout out.txt
 

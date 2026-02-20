@@ -245,17 +245,17 @@ func TestLoadConfigFlatFieldsRejected(t *testing.T) {
 
 func TestLoadConfigEnv(t *testing.T) {
 	envs := map[string]string{
-		"CEPH_SERVER_VERBOSE":           "true",
-		"CEPH_SERVER_APPEND_ONLY":       "1",
-		"CEPH_SERVER_DISABLE_STRIPER":   "yes",
-		"CEPH_SERVER_LOG_FILE":          "/var/log/test.log",
-		"CEPH_KEYRING":                  "/etc/ceph/keyring",
-		"CEPH_ID":                       "restic",
-		"CEPH_POOL":                     "my-pool;other-pool:data",
-		"CEPH_CONF":                     "/etc/ceph/ceph.conf",
-		"CEPH_SERVER_READ_BUFFER_SIZE":  "1024",
-		"CEPH_SERVER_WRITE_BUFFER_SIZE": "2048",
-		"CEPH_SERVER_MAX_OBJECT_SIZE":   "4096",
+		"RESTIC_RADOS_VERBOSE":           "true",
+		"RESTIC_RADOS_APPEND_ONLY":       "1",
+		"RESTIC_RADOS_DISABLE_STRIPER":   "yes",
+		"RESTIC_RADOS_LOG_FILE":          "/var/log/test.log",
+		"CEPH_KEYRING":                   "/etc/ceph/keyring",
+		"CEPH_ID":                        "restic",
+		"RESTIC_RADOS_POOL":              "my-pool;other-pool:data",
+		"CEPH_CONF":                      "/etc/ceph/ceph.conf",
+		"RESTIC_RADOS_READ_BUFFER_SIZE":  "1024",
+		"RESTIC_RADOS_WRITE_BUFFER_SIZE": "2048",
+		"RESTIC_RADOS_MAX_OBJECT_SIZE":   "4096",
 	}
 	for k, v := range envs {
 		t.Setenv(k, v)
@@ -355,7 +355,7 @@ func TestLoadConfigCLIOverridesFile(t *testing.T) {
 
 func TestLoadConfigCLIOverridesEnv(t *testing.T) {
 	t.Setenv("CEPH_ID", "from-env")
-	t.Setenv("CEPH_SERVER_READ_BUFFER_SIZE", "1024")
+	t.Setenv("RESTIC_RADOS_READ_BUFFER_SIZE", "1024")
 
 	config, _, err := loadConfig([]string{
 		"--id", "from-cli",
@@ -380,7 +380,7 @@ func TestLoadConfigFileFromEnv(t *testing.T) {
 		"write_buffer_size": 2048
 	}`
 	path := writeTemp(t, json)
-	t.Setenv("CEPH_SERVER_CONFIG", path)
+	t.Setenv("RESTIC_RADOS_CONFIG", path)
 
 	config, _, err := loadConfig([]string{})
 	if err != nil {
@@ -396,6 +396,62 @@ func TestLoadConfigFileFromEnv(t *testing.T) {
 	if config.WriteBufferSize != 2048 {
 		t.Errorf("expected WriteBufferSize 2048, got %d", config.WriteBufferSize)
 	}
+}
+
+func TestLoadConfigEnvPrefixFallback(t *testing.T) {
+	t.Run("CEPH_RESTIC_ fallback", func(t *testing.T) {
+		t.Setenv("CEPH_RESTIC_VERBOSE", "true")
+		t.Setenv("CEPH_RESTIC_POOL", "fallback-pool")
+
+		config, _, err := loadConfig([]string{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !config.Verbose {
+			t.Error("expected Verbose true via CEPH_RESTIC_ fallback")
+		}
+		def := config.Repos["default"]
+		if def == nil || def.BlobPools == nil {
+			t.Fatal("expected pool to be set via CEPH_RESTIC_ fallback")
+		}
+		if def.BlobPools.Config != "fallback-pool" {
+			t.Errorf("expected pool fallback-pool, got %s", def.BlobPools.Config)
+		}
+	})
+
+	t.Run("RADOS_RESTIC_ fallback", func(t *testing.T) {
+		t.Setenv("RADOS_RESTIC_POOL", "rados-pool")
+
+		config, _, err := loadConfig([]string{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		def := config.Repos["default"]
+		if def == nil || def.BlobPools == nil {
+			t.Fatal("expected pool to be set via RADOS_RESTIC_ fallback")
+		}
+		if def.BlobPools.Config != "rados-pool" {
+			t.Errorf("expected pool rados-pool, got %s", def.BlobPools.Config)
+		}
+	})
+
+	t.Run("higher priority prefix wins", func(t *testing.T) {
+		t.Setenv("RESTIC_RADOS_POOL", "primary-pool")
+		t.Setenv("CEPH_RESTIC_POOL", "fallback-pool")
+		t.Setenv("RADOS_RESTIC_POOL", "last-pool")
+
+		config, _, err := loadConfig([]string{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		def := config.Repos["default"]
+		if def == nil || def.BlobPools == nil {
+			t.Fatal("expected pool to be set")
+		}
+		if def.BlobPools.Config != "primary-pool" {
+			t.Errorf("expected primary-pool (highest priority), got %s", def.BlobPools.Config)
+		}
+	})
 }
 
 func TestLoadConfigVersion(t *testing.T) {
