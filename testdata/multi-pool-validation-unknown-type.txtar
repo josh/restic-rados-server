@@ -1,4 +1,4 @@
 create-pool
 
-! exec restic-rados-server --pool=$CEPH_POOL:blobs,data,* --listen $WORK/restic.sock
+! exec restic-rados-server --pool=$RESTIC_RADOS_POOL:blobs,data,* --listen $WORK/restic.sock
 stderr 'unknown blob type "blobs"'
