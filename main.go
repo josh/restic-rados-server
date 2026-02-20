@@ -63,7 +63,7 @@ func main() {
 	}
 
 	if len(config.Repos) == 0 {
-		fmt.Fprintln(os.Stderr, "pool not set (use --pool, RESTIC_RADOS_POOL, or config file)")
+		fmt.Fprintln(os.Stderr, "pool not set (use --pool, RESTIC_RADOS_SERVER_POOL, or config file)")
 		os.Exit(1)
 	}
 	for name, repo := range config.Repos {

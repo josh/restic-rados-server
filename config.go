@@ -236,7 +236,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	return configFile, showVersion, nil
 }
 
-var envPrefixes = []string{"RESTIC_RADOS_", "RESTIC_CEPH_", "CEPH_RESTIC_", "RADOS_RESTIC_"}
+var envPrefixes = []string{"RESTIC_RADOS_SERVER_", "RESTIC_CEPH_SERVER_", "CEPH_RESTIC_SERVER_", "RADOS_RESTIC_SERVER_"}
 
 func getEnv(suffix string) string {
 	for _, prefix := range envPrefixes {

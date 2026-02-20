@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec systemd-socket-activate --setenv=RESTIC_RADOS_POOL --setenv=CEPH_CONF --setenv=RESTIC_RADOS_VERBOSE --setenv=RESTIC_RADOS_LOG_FILE --listen=127.0.0.1:$PORT --listen=$WORK/restic.sock restic-rados-server &server&
+exec systemd-socket-activate --setenv=RESTIC_RADOS_SERVER_POOL --setenv=CEPH_CONF --setenv=RESTIC_RADOS_SERVER_VERBOSE --setenv=RESTIC_RADOS_SERVER_LOG_FILE --listen=127.0.0.1:$PORT --listen=$WORK/restic.sock restic-rados-server &server&
 wait4socket 127.0.0.1:$PORT $WORK/restic.sock
 
 exec curl --silent --request POST http://127.0.0.1:$PORT/?create=true

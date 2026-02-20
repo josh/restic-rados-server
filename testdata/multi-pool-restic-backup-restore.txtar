@@ -2,7 +2,7 @@ tail-logs
 create-pool meta
 create-pool data
 
-env CEPH_RESTIC_POOL=$CEPH_POOL_DATA:data;$CEPH_POOL_META:*
+env CEPH_RESTIC_SERVER_POOL=$CEPH_POOL_DATA:data;$CEPH_POOL_META:*
 
 exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file $WORK/password.txt
 
