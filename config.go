@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -156,7 +155,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	fs.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
 	fs.StringVar(&keyringPath, "keyring", "", "path to Ceph keyring file")
 	fs.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
-	fs.Var(&poolSpecs, "pool", "Pool specification: 'poolname' or 'poolname:types' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
+	fs.Var(&poolSpecs, "pool", "Pool specification: 'pool[/namespace][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
 	fs.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
 	fs.BoolVar(&disableStriper, "disable-striper", false, "disable librados striper for large objects")
 	fs.Int64Var(&readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
@@ -399,13 +398,20 @@ func (c *Config) normalizeRepos() error {
 	return nil
 }
 
+type BlobPoolConfig struct {
+	Pool          string `json:"pool"`
+	Namespace     string `json:"namespace,omitempty"`
+	Striped       *bool  `json:"striped,omitempty"`
+	MaxObjectSize *int64 `json:"max_object_size,omitempty"`
+}
+
 type ServerConfigPools struct {
-	Config    string `json:"config"`
-	Keys      string `json:"keys"`
-	Locks     string `json:"locks"`
-	Snapshots string `json:"snapshots"`
-	Data      string `json:"data"`
-	Index     string `json:"index"`
+	Config    BlobPoolConfig `json:"config"`
+	Keys      BlobPoolConfig `json:"keys"`
+	Locks     BlobPoolConfig `json:"locks"`
+	Snapshots BlobPoolConfig `json:"snapshots"`
+	Data      BlobPoolConfig `json:"data"`
+	Index     BlobPoolConfig `json:"index"`
 }
 
 type CephConfig struct {
@@ -414,13 +420,15 @@ type CephConfig struct {
 	CephConf    string
 }
 
-type PoolConfig struct {
-	Name      string
-	Alignment uint64
-	Striped   bool
+type BlobPool struct {
+	Pool          string
+	Namespace     string
+	Striped       bool
+	Alignment     uint64
+	MaxObjectSize int64
 }
 
-func (p *ServerConfigPools) getPoolForType(bt BlobType) string {
+func (p *ServerConfigPools) getPoolForType(bt BlobType) BlobPoolConfig {
 	switch bt {
 	case BlobTypeConfig:
 		return p.Config
@@ -439,54 +447,27 @@ func (p *ServerConfigPools) getPoolForType(bt BlobType) string {
 	}
 }
 
-func (p *ServerConfigPools) UniquePools() []string {
-	poolSet := make(map[string]struct{})
-	if p.Config != "" {
-		poolSet[p.Config] = struct{}{}
-	}
-	if p.Keys != "" {
-		poolSet[p.Keys] = struct{}{}
-	}
-	if p.Locks != "" {
-		poolSet[p.Locks] = struct{}{}
-	}
-	if p.Snapshots != "" {
-		poolSet[p.Snapshots] = struct{}{}
-	}
-	if p.Data != "" {
-		poolSet[p.Data] = struct{}{}
-	}
-	if p.Index != "" {
-		poolSet[p.Index] = struct{}{}
-	}
-
-	pools := make([]string, 0, len(poolSet))
-	for pool := range poolSet {
-		pools = append(pools, pool)
-	}
-	slices.Sort(pools)
-	return pools
-}
-
 func parsePoolSpecs(specs []string) (ServerConfigPools, error) {
 	if len(specs) == 0 {
 		return ServerConfigPools{}, errors.New("no pool specifications provided")
 	}
 
-	typeToPool := make(map[BlobType]string)
-	var catchAllPool string
+	typeToConfig := make(map[BlobType]BlobPoolConfig)
+	var catchAll *BlobPoolConfig
 
 	for _, spec := range specs {
-		poolName, types, err := parsePoolSpec(spec)
+		poolName, namespace, types, err := parsePoolSpec(spec)
 		if err != nil {
 			return ServerConfigPools{}, err
 		}
 
+		bpc := BlobPoolConfig{Pool: poolName, Namespace: namespace}
+
 		if len(types) == 0 || (len(types) == 1 && types[0] == "*") {
-			if catchAllPool != "" {
-				return ServerConfigPools{}, fmt.Errorf("multiple catch-all pools specified: %q and %q", catchAllPool, poolName)
+			if catchAll != nil {
+				return ServerConfigPools{}, fmt.Errorf("multiple catch-all pools specified: %q and %q", catchAll.Pool, poolName)
 			}
-			catchAllPool = poolName
+			catchAll = &bpc
 			continue
 		}
 
@@ -498,52 +479,71 @@ func parsePoolSpecs(specs []string) (ServerConfigPools, error) {
 			if !isValidBlobTypeForMapping(blobType) {
 				return ServerConfigPools{}, fmt.Errorf("pool %q: unknown blob type %q", poolName, t)
 			}
-			if existing, ok := typeToPool[blobType]; ok {
-				return ServerConfigPools{}, fmt.Errorf("blob type %q assigned to multiple pools: %q and %q", t, existing, poolName)
+			if existing, ok := typeToConfig[blobType]; ok {
+				return ServerConfigPools{}, fmt.Errorf("blob type %q assigned to multiple pools: %q and %q", t, existing.Pool, poolName)
 			}
-			typeToPool[blobType] = poolName
+			typeToConfig[blobType] = bpc
 		}
 	}
 
 	for _, bt := range AllBlobTypes {
-		if _, ok := typeToPool[bt]; !ok && catchAllPool != "" {
-			typeToPool[bt] = catchAllPool
+		if _, ok := typeToConfig[bt]; !ok && catchAll != nil {
+			typeToConfig[bt] = *catchAll
 		}
 	}
 
 	return ServerConfigPools{
-		Config:    typeToPool[BlobTypeConfig],
-		Keys:      typeToPool[BlobTypeKeys],
-		Locks:     typeToPool[BlobTypeLocks],
-		Snapshots: typeToPool[BlobTypeSnapshots],
-		Data:      typeToPool[BlobTypeData],
-		Index:     typeToPool[BlobTypeIndex],
+		Config:    typeToConfig[BlobTypeConfig],
+		Keys:      typeToConfig[BlobTypeKeys],
+		Locks:     typeToConfig[BlobTypeLocks],
+		Snapshots: typeToConfig[BlobTypeSnapshots],
+		Data:      typeToConfig[BlobTypeData],
+		Index:     typeToConfig[BlobTypeIndex],
 	}, nil
 }
 
-func parsePoolSpec(spec string) (poolName string, types []string, err error) {
+func parsePoolSpec(spec string) (poolName, namespace string, types []string, err error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
-		return "", nil, errors.New("empty pool specification")
+		return "", "", nil, errors.New("empty pool specification")
 	}
 
 	colonIdx := strings.Index(spec, ":")
-	if colonIdx == -1 {
-		return spec, []string{"*"}, nil
+	poolPart := spec
+	var typesPart string
+	if colonIdx != -1 {
+		poolPart = spec[:colonIdx]
+		typesPart = strings.TrimSpace(spec[colonIdx+1:])
 	}
 
-	poolName = strings.TrimSpace(spec[:colonIdx])
+	poolPart = strings.TrimSpace(poolPart)
+	if slashIdx := strings.Index(poolPart, "/"); slashIdx != -1 {
+		poolName = poolPart[:slashIdx]
+		namespace = poolPart[slashIdx+1:]
+		if poolName == "" {
+			return "", "", nil, fmt.Errorf("empty pool name in specification: %q", spec)
+		}
+		if namespace == "" {
+			return "", "", nil, fmt.Errorf("empty namespace in specification: %q", spec)
+		}
+	} else {
+		poolName = poolPart
+	}
+
 	if poolName == "" {
-		return "", nil, fmt.Errorf("empty pool name in specification: %q", spec)
+		return "", "", nil, fmt.Errorf("empty pool name in specification: %q", spec)
 	}
 
-	typesPart := strings.TrimSpace(spec[colonIdx+1:])
+	if colonIdx == -1 {
+		return poolName, namespace, []string{"*"}, nil
+	}
+
 	if typesPart == "" {
-		return "", nil, fmt.Errorf("empty types list in specification: %q", spec)
+		return "", "", nil, fmt.Errorf("empty types list in specification: %q", spec)
 	}
 
 	if typesPart == "*" {
-		return poolName, []string{"*"}, nil
+		return poolName, namespace, []string{"*"}, nil
 	}
 
 	for _, t := range strings.Split(typesPart, ",") {
@@ -555,10 +555,10 @@ func parsePoolSpec(spec string) (poolName string, types []string, err error) {
 	}
 
 	if len(types) == 0 {
-		return "", nil, fmt.Errorf("no valid types in specification: %q", spec)
+		return "", "", nil, fmt.Errorf("no valid types in specification: %q", spec)
 	}
 
-	return poolName, types, nil
+	return poolName, namespace, types, nil
 }
 
 func isValidBlobTypeForMapping(bt BlobType) bool {

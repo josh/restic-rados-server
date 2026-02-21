@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -33,8 +34,7 @@ type ConnectionManager struct {
 	maxReconnectDelay time.Duration
 	maxObjectSize     int64
 	maxWriteSize      int64
-	repoPoolConfigs   map[string]map[BlobType]*PoolConfig
-	repoMaxObjectSize map[string]int64
+	repoBlobPools     map[string]map[BlobType]*BlobPool
 }
 
 func NewConnectionManager(config CephConfig) *ConnectionManager {
@@ -209,51 +209,45 @@ func (cm *ConnectionManager) getIOContextForPool(poolName string, radosCalls *ui
 	return nil, errConnectionUnavailable
 }
 
-func (cm *ConnectionManager) GetPoolConfigForRepo(repo string, bt BlobType) (*PoolConfig, error) {
+func (cm *ConnectionManager) GetBlobPoolForRepo(repo string, bt BlobType) (*BlobPool, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
-	if cm.repoPoolConfigs == nil {
+	if cm.repoBlobPools == nil {
 		return nil, fmt.Errorf("%w: pool configs not initialized", errPoolNotConfigured)
 	}
-	repoConfigs := cm.repoPoolConfigs[repo]
-	if repoConfigs == nil {
+	repoPools := cm.repoBlobPools[repo]
+	if repoPools == nil {
 		return nil, fmt.Errorf("%w: repo %q not configured", errPoolNotConfigured, repo)
 	}
-	pc := repoConfigs[bt]
-	if pc == nil {
+	bp := repoPools[bt]
+	if bp == nil {
 		return nil, fmt.Errorf("%w: %s", errPoolNotConfigured, bt)
 	}
-	return pc, nil
+	return bp, nil
 }
 
-func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType) (*rados.IOContext, *PoolConfig, error) {
+func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType) (*rados.IOContext, *BlobPool, error) {
 	var radosCalls uint64
 	defer func() {
 		slog.Debug("GetIOContextForRepo", "repo", repo, "blob_type", blobType, "rados_calls", atomic.LoadUint64(&radosCalls))
 	}()
 
-	pc, err := cm.GetPoolConfigForRepo(repo, blobType)
+	bp, err := cm.GetBlobPoolForRepo(repo, blobType)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	ioctx, err := cm.getIOContextForPool(pc.Name, &radosCalls)
-	return ioctx, pc, err
-}
-
-func (cm *ConnectionManager) GetMaxObjectSizeForRepo(repo string) (int64, error) {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-
-	if cm.conn == nil {
-		return 0, errConnectionUnavailable
+	ioctx, err := cm.getIOContextForPool(bp.Pool, &radosCalls)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if size, ok := cm.repoMaxObjectSize[repo]; ok && size > 0 {
-		return size, nil
+	if bp.Namespace != "" {
+		ioctx.SetNamespace(bp.Namespace)
 	}
-	return cm.maxObjectSize, nil
+
+	return ioctx, bp, nil
 }
 
 func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConfig) error {
@@ -270,8 +264,10 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 		if repo.BlobPools == nil {
 			continue
 		}
-		for _, p := range repo.BlobPools.UniquePools() {
-			allPools[p] = struct{}{}
+		for _, bt := range AllBlobTypes {
+			if p := repo.BlobPools.getPoolForType(bt).Pool; p != "" {
+				allPools[p] = struct{}{}
+			}
 		}
 	}
 
@@ -296,52 +292,82 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 		ioctx.Destroy()
 	}
 
-	repoPoolConfigs := make(map[string]map[BlobType]*PoolConfig)
-	repoMaxObjectSize := make(map[string]int64)
+	type blobPoolKey struct {
+		pool          string
+		namespace     string
+		striped       bool
+		maxObjectSize int64
+	}
+
+	repoBlobPools := make(map[string]map[BlobType]*BlobPool)
 
 	for repoName, repo := range repos {
 		if repo.BlobPools == nil {
 			continue
 		}
 
-		striperEnabled := !repo.DisableStriper
+		dedup := make(map[blobPoolKey]*BlobPool)
+		configs := make(map[BlobType]*BlobPool)
 
-		poolConfigsByName := make(map[string]*PoolConfig)
-		for _, poolName := range repo.BlobPools.UniquePools() {
-			poolConfigsByName[poolName] = &PoolConfig{
-				Name:      poolName,
-				Alignment: poolAlignments[poolName],
-				Striped:   striperEnabled,
-			}
-		}
-
-		configs := make(map[BlobType]*PoolConfig)
 		for _, bt := range AllBlobTypes {
-			poolName := repo.BlobPools.getPoolForType(bt)
-			if poolName == "" {
+			bpc := repo.BlobPools.getPoolForType(bt)
+			if bpc.Pool == "" {
 				continue
 			}
-			if pc, ok := poolConfigsByName[poolName]; ok {
-				configs[bt] = pc
-			}
-		}
-		repoPoolConfigs[repoName] = configs
 
-		if repo.MaxObjectSize > 0 {
-			if cm.maxObjectSize > 0 && repo.MaxObjectSize > cm.maxObjectSize {
-				slog.Warn("repo max-object-size exceeds cluster limit, writes may fail",
-					"repo", repoName,
-					"configured", repo.MaxObjectSize,
-					"cluster_limit", cm.maxObjectSize)
+			striped := !repo.DisableStriper
+			if bpc.Striped != nil {
+				striped = *bpc.Striped
 			}
-			repoMaxObjectSize[repoName] = repo.MaxObjectSize
-		}
 
-		slog.Info("initialized pool configs", "repo", repoName, "pools", repo.BlobPools.UniquePools(), "striper_enabled", striperEnabled)
+			maxObjSize := cm.maxObjectSize
+			if repo.MaxObjectSize > 0 {
+				if repo.MaxObjectSize > maxObjSize {
+					slog.Warn("repo max_object_size exceeds cluster limit, clamping",
+						"repo", repoName,
+						"configured", repo.MaxObjectSize,
+						"cluster_limit", maxObjSize)
+				} else {
+					maxObjSize = repo.MaxObjectSize
+				}
+			}
+			if bpc.MaxObjectSize != nil {
+				if *bpc.MaxObjectSize > maxObjSize {
+					slog.Warn("blob pool max_object_size exceeds limit, clamping",
+						"repo", repoName,
+						"blob_type", bt,
+						"configured", *bpc.MaxObjectSize,
+						"limit", maxObjSize)
+				} else {
+					maxObjSize = *bpc.MaxObjectSize
+				}
+			}
+
+			key := blobPoolKey{pool: bpc.Pool, namespace: bpc.Namespace, striped: striped, maxObjectSize: maxObjSize}
+			bp, ok := dedup[key]
+			if !ok {
+				bp = &BlobPool{
+					Pool:          bpc.Pool,
+					Namespace:     bpc.Namespace,
+					Striped:       striped,
+					Alignment:     poolAlignments[bpc.Pool],
+					MaxObjectSize: maxObjSize,
+				}
+				dedup[key] = bp
+			}
+			configs[bt] = bp
+		}
+		repoBlobPools[repoName] = configs
+
+		poolNames := make([]string, 0, len(allPools))
+		for p := range allPools {
+			poolNames = append(poolNames, p)
+		}
+		slices.Sort(poolNames)
+		slog.Info("initialized pool configs", "repo", repoName, "pools", poolNames)
 	}
 
-	cm.repoPoolConfigs = repoPoolConfigs
-	cm.repoMaxObjectSize = repoMaxObjectSize
+	cm.repoBlobPools = repoBlobPools
 
 	return nil
 }
