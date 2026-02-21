@@ -85,12 +85,12 @@ func TestLoadConfigArgs(t *testing.T) {
 		t.Fatal("expected BlobPools to be set")
 	}
 	for _, field := range []struct{ name, val string }{
-		{"Config", def.BlobPools.Config},
-		{"Keys", def.BlobPools.Keys},
-		{"Locks", def.BlobPools.Locks},
-		{"Snapshots", def.BlobPools.Snapshots},
-		{"Data", def.BlobPools.Data},
-		{"Index", def.BlobPools.Index},
+		{"Config", def.BlobPools.Config.Pool},
+		{"Keys", def.BlobPools.Keys.Pool},
+		{"Locks", def.BlobPools.Locks.Pool},
+		{"Snapshots", def.BlobPools.Snapshots.Pool},
+		{"Data", def.BlobPools.Data.Pool},
+		{"Index", def.BlobPools.Index.Pool},
 	} {
 		if field.val != "my-pool" {
 			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
@@ -199,12 +199,12 @@ func TestLoadConfigFile(t *testing.T) {
 		t.Fatal("expected BlobPools to be set")
 	}
 	for _, field := range []struct{ name, val string }{
-		{"Config", def.BlobPools.Config},
-		{"Keys", def.BlobPools.Keys},
-		{"Locks", def.BlobPools.Locks},
-		{"Snapshots", def.BlobPools.Snapshots},
-		{"Data", def.BlobPools.Data},
-		{"Index", def.BlobPools.Index},
+		{"Config", def.BlobPools.Config.Pool},
+		{"Keys", def.BlobPools.Keys.Pool},
+		{"Locks", def.BlobPools.Locks.Pool},
+		{"Snapshots", def.BlobPools.Snapshots.Pool},
+		{"Data", def.BlobPools.Data.Pool},
+		{"Index", def.BlobPools.Index.Pool},
 	} {
 		if field.val != "my-pool" {
 			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
@@ -304,15 +304,15 @@ func TestLoadConfigEnv(t *testing.T) {
 	if def.BlobPools == nil {
 		t.Fatal("expected BlobPools to be set")
 	}
-	if def.BlobPools.Data != "other-pool" {
-		t.Errorf("expected BlobPools.Data = other-pool, got %s", def.BlobPools.Data)
+	if def.BlobPools.Data.Pool != "other-pool" {
+		t.Errorf("expected BlobPools.Data = other-pool, got %s", def.BlobPools.Data.Pool)
 	}
 	for _, field := range []struct{ name, val string }{
-		{"Config", def.BlobPools.Config},
-		{"Keys", def.BlobPools.Keys},
-		{"Locks", def.BlobPools.Locks},
-		{"Snapshots", def.BlobPools.Snapshots},
-		{"Index", def.BlobPools.Index},
+		{"Config", def.BlobPools.Config.Pool},
+		{"Keys", def.BlobPools.Keys.Pool},
+		{"Locks", def.BlobPools.Locks.Pool},
+		{"Snapshots", def.BlobPools.Snapshots.Pool},
+		{"Index", def.BlobPools.Index.Pool},
 	} {
 		if field.val != "my-pool" {
 			t.Errorf("expected BlobPools.%s = my-pool, got %s", field.name, field.val)
@@ -414,8 +414,8 @@ func TestLoadConfigEnvPrefixFallback(t *testing.T) {
 		if def == nil || def.BlobPools == nil {
 			t.Fatal("expected pool to be set via CEPH_RESTIC_SERVER_ fallback")
 		}
-		if def.BlobPools.Config != "fallback-pool" {
-			t.Errorf("expected pool fallback-pool, got %s", def.BlobPools.Config)
+		if def.BlobPools.Config.Pool != "fallback-pool" {
+			t.Errorf("expected pool fallback-pool, got %s", def.BlobPools.Config.Pool)
 		}
 	})
 
@@ -430,8 +430,8 @@ func TestLoadConfigEnvPrefixFallback(t *testing.T) {
 		if def == nil || def.BlobPools == nil {
 			t.Fatal("expected pool to be set via RADOS_RESTIC_SERVER_ fallback")
 		}
-		if def.BlobPools.Config != "rados-pool" {
-			t.Errorf("expected pool rados-pool, got %s", def.BlobPools.Config)
+		if def.BlobPools.Config.Pool != "rados-pool" {
+			t.Errorf("expected pool rados-pool, got %s", def.BlobPools.Config.Pool)
 		}
 	})
 
@@ -448,8 +448,8 @@ func TestLoadConfigEnvPrefixFallback(t *testing.T) {
 		if def == nil || def.BlobPools == nil {
 			t.Fatal("expected pool to be set")
 		}
-		if def.BlobPools.Config != "primary-pool" {
-			t.Errorf("expected primary-pool (highest priority), got %s", def.BlobPools.Config)
+		if def.BlobPools.Config.Pool != "primary-pool" {
+			t.Errorf("expected primary-pool (highest priority), got %s", def.BlobPools.Config.Pool)
 		}
 	})
 }
@@ -498,12 +498,12 @@ func TestLoadConfigPoolClearsBlobPools(t *testing.T) {
 		"repos": {
 			"default": {
 				"blob_pools": {
-					"config": "meta-pool",
-					"keys": "meta-pool",
-					"locks": "meta-pool",
-					"snapshots": "meta-pool",
-					"data": "data-pool",
-					"index": "data-pool"
+					"config": {"pool": "meta-pool"},
+					"keys": {"pool": "meta-pool"},
+					"locks": {"pool": "meta-pool"},
+					"snapshots": {"pool": "meta-pool"},
+					"data": {"pool": "data-pool"},
+					"index": {"pool": "data-pool"}
 				}
 			}
 		},
@@ -525,12 +525,12 @@ func TestLoadConfigPoolClearsBlobPools(t *testing.T) {
 		t.Fatal("expected BlobPools to be set")
 	}
 	for _, field := range []struct{ name, val string }{
-		{"Config", def.BlobPools.Config},
-		{"Keys", def.BlobPools.Keys},
-		{"Locks", def.BlobPools.Locks},
-		{"Snapshots", def.BlobPools.Snapshots},
-		{"Data", def.BlobPools.Data},
-		{"Index", def.BlobPools.Index},
+		{"Config", def.BlobPools.Config.Pool},
+		{"Keys", def.BlobPools.Keys.Pool},
+		{"Locks", def.BlobPools.Locks.Pool},
+		{"Snapshots", def.BlobPools.Snapshots.Pool},
+		{"Data", def.BlobPools.Data.Pool},
+		{"Index", def.BlobPools.Index.Pool},
 	} {
 		if field.val != "new-pool" {
 			t.Errorf("expected BlobPools.%s = new-pool, got %s", field.name, field.val)
@@ -593,8 +593,8 @@ func TestLoadConfigMultiRepo(t *testing.T) {
 	if def.BlobPools == nil {
 		t.Fatal("expected default BlobPools to be set")
 	}
-	if def.BlobPools.Config != "meta-pool" {
-		t.Errorf("expected default Config pool = meta-pool, got %s", def.BlobPools.Config)
+	if def.BlobPools.Config.Pool != "meta-pool" {
+		t.Errorf("expected default Config pool = meta-pool, got %s", def.BlobPools.Config.Pool)
 	}
 
 	offsite := config.Repos["offsite"]
@@ -613,11 +613,11 @@ func TestLoadConfigMultiRepo(t *testing.T) {
 	if offsite.BlobPools == nil {
 		t.Fatal("expected offsite BlobPools to be set")
 	}
-	if offsite.BlobPools.Data != "offsite-data" {
-		t.Errorf("expected offsite Data pool = offsite-data, got %s", offsite.BlobPools.Data)
+	if offsite.BlobPools.Data.Pool != "offsite-data" {
+		t.Errorf("expected offsite Data pool = offsite-data, got %s", offsite.BlobPools.Data.Pool)
 	}
-	if offsite.BlobPools.Config != "offsite-meta" {
-		t.Errorf("expected offsite Config pool = offsite-meta, got %s", offsite.BlobPools.Config)
+	if offsite.BlobPools.Config.Pool != "offsite-meta" {
+		t.Errorf("expected offsite Config pool = offsite-meta, got %s", offsite.BlobPools.Config.Pool)
 	}
 }
 
@@ -654,17 +654,17 @@ func TestLoadConfigMultiRepoPoolParsing(t *testing.T) {
 	if def == nil || def.BlobPools == nil {
 		t.Fatal("expected default repo BlobPools")
 	}
-	if def.BlobPools.Data != "data-pool" {
-		t.Errorf("expected Data = data-pool, got %s", def.BlobPools.Data)
+	if def.BlobPools.Data.Pool != "data-pool" {
+		t.Errorf("expected Data = data-pool, got %s", def.BlobPools.Data.Pool)
 	}
-	if def.BlobPools.Snapshots != "data-pool" {
-		t.Errorf("expected Snapshots = data-pool, got %s", def.BlobPools.Snapshots)
+	if def.BlobPools.Snapshots.Pool != "data-pool" {
+		t.Errorf("expected Snapshots = data-pool, got %s", def.BlobPools.Snapshots.Pool)
 	}
-	if def.BlobPools.Config != "meta-pool" {
-		t.Errorf("expected Config = meta-pool, got %s", def.BlobPools.Config)
+	if def.BlobPools.Config.Pool != "meta-pool" {
+		t.Errorf("expected Config = meta-pool, got %s", def.BlobPools.Config.Pool)
 	}
-	if def.BlobPools.Keys != "meta-pool" {
-		t.Errorf("expected Keys = meta-pool, got %s", def.BlobPools.Keys)
+	if def.BlobPools.Keys.Pool != "meta-pool" {
+		t.Errorf("expected Keys = meta-pool, got %s", def.BlobPools.Keys.Pool)
 	}
 }
 
@@ -686,6 +686,98 @@ func TestLoadConfigMultiRepoValidation(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func TestLoadConfigPoolSpecNamespace(t *testing.T) {
+	config, _, err := loadConfig([]string{
+		"--pool", "my-pool/metadata:keys,locks,config",
+		"--pool", "my-pool/data:*",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	def := config.Repos["default"]
+	if def == nil || def.BlobPools == nil {
+		t.Fatal("expected default repo BlobPools")
+	}
+	if def.BlobPools.Config.Pool != "my-pool" {
+		t.Errorf("expected Config pool = my-pool, got %s", def.BlobPools.Config.Pool)
+	}
+	if def.BlobPools.Config.Namespace != "metadata" {
+		t.Errorf("expected Config namespace = metadata, got %s", def.BlobPools.Config.Namespace)
+	}
+	if def.BlobPools.Keys.Namespace != "metadata" {
+		t.Errorf("expected Keys namespace = metadata, got %s", def.BlobPools.Keys.Namespace)
+	}
+	if def.BlobPools.Data.Pool != "my-pool" {
+		t.Errorf("expected Data pool = my-pool, got %s", def.BlobPools.Data.Pool)
+	}
+	if def.BlobPools.Data.Namespace != "data" {
+		t.Errorf("expected Data namespace = data, got %s", def.BlobPools.Data.Namespace)
+	}
+}
+
+func TestLoadConfigPoolSpecNamespaceErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"empty namespace", []string{"--pool", "my-pool/:keys"}},
+		{"empty pool with namespace", []string{"--pool", "/ns:keys"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := loadConfig(tt.args)
+			if err == nil {
+				t.Fatal("expected pool spec parsing error")
+			}
+		})
+	}
+}
+
+func TestLoadConfigBlobPoolsJSON(t *testing.T) {
+	json := `{
+		"repos": {
+			"default": {
+				"blob_pools": {
+					"config": {"pool": "meta-pool", "namespace": "cfg"},
+					"keys": {"pool": "meta-pool", "namespace": "cfg"},
+					"locks": {"pool": "meta-pool"},
+					"snapshots": {"pool": "data-pool"},
+					"data": {"pool": "data-pool", "striped": false},
+					"index": {"pool": "data-pool"}
+				}
+			}
+		}
+	}`
+	path := writeTemp(t, json)
+
+	config, _, err := loadConfig([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	def := config.Repos["default"]
+	if def == nil || def.BlobPools == nil {
+		t.Fatal("expected default repo BlobPools")
+	}
+	if def.BlobPools.Config.Pool != "meta-pool" {
+		t.Errorf("expected Config pool = meta-pool, got %s", def.BlobPools.Config.Pool)
+	}
+	if def.BlobPools.Config.Namespace != "cfg" {
+		t.Errorf("expected Config namespace = cfg, got %s", def.BlobPools.Config.Namespace)
+	}
+	if def.BlobPools.Data.Pool != "data-pool" {
+		t.Errorf("expected Data pool = data-pool, got %s", def.BlobPools.Data.Pool)
+	}
+	if def.BlobPools.Data.Striped == nil || *def.BlobPools.Data.Striped != false {
+		t.Error("expected Data striped = false")
+	}
+	if def.BlobPools.Locks.Namespace != "" {
+		t.Errorf("expected Locks namespace empty, got %s", def.BlobPools.Locks.Namespace)
 	}
 }
 

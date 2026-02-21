@@ -71,7 +71,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "repo %q: no pools configured\n", name)
 			os.Exit(1)
 		}
-		if repo.BlobPools.Config == "" {
+		if repo.BlobPools.Config.Pool == "" {
 			fmt.Fprintf(os.Stderr, "repo %q: config pool must be specified (use 'poolname' or 'poolname:config,...')\n", name)
 			os.Exit(1)
 		}

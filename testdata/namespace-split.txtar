@@ -1,0 +1,52 @@
+tail-logs
+create-pool shared
+
+exec restic-rados-server --pool=$CEPH_POOL_SHARED/metadata:keys,locks,config,snapshots --pool=$CEPH_POOL_SHARED/data:data,index --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec rados --pool $CEPH_POOL_SHARED --namespace metadata ls
+stdout '^config$'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace data ls
+! stdout 'config'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @test-data 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace data ls
+stdout 'data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace metadata ls
+! stdout 'data/'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @index-data 'http://localhost/index/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace data ls
+stdout 'index/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace metadata ls
+! stdout 'index/'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+cmp stdout test-data
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/index/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+cmp stdout index-data
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/config'
+cmp stdout config-data
+
+exec rados --pool $CEPH_POOL_SHARED ls
+! stdout '.'
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- test-data --
+test content
+-- index-data --
+test

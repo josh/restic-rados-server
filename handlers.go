@@ -139,34 +139,27 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, poolConfig, err := h.connMgr.GetIOContextForRepo(h.repo, blobType)
+	ioctx, bp, err := h.connMgr.GetIOContextForRepo(h.repo, blobType)
 	if err != nil {
 		return nil, err
 	}
-
-	maxSize, err := h.connMgr.GetMaxObjectSizeForRepo(h.repo)
-	if err != nil {
-		return nil, fmt.Errorf("get max object size: %w", err)
-	}
-
-	alignment := poolConfig.Alignment
 
 	readBufPtr := h.readBufferPool.Get()
 	writeBufPtr := h.writeBufferPool.Get()
 
 	hctx := &HandlerContext{
 		ioctx:           ioctx,
-		maxObjectSize:   maxSize,
+		maxObjectSize:   bp.MaxObjectSize,
 		readBufferPool:  h.readBufferPool,
 		readBufPtr:      readBufPtr,
 		writeBufferPool: h.writeBufferPool,
 		writeBufPtr:     writeBufPtr,
 	}
 
-	hctx.radosIO = NewRadosIO(ioctx, alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
+	hctx.radosIO = NewRadosIO(ioctx, bp.Alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
 
-	if poolConfig.Striped {
-		hctx.striperIO = NewStripedIO(ioctx, uint64(maxSize), alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
+	if bp.Striped {
+		hctx.striperIO = NewStripedIO(ioctx, uint64(bp.MaxObjectSize), bp.Alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
 	}
 
 	return hctx, nil
