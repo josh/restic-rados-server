@@ -14,7 +14,7 @@ func TestLoadConfigArgs(t *testing.T) {
 		"--listen", "unix:///var/run/restic.sock",
 		"--stdio",
 		"--shutdown-timeout", "30s",
-		"--append-only",
+		"--access", "ra",
 		"--max-idle-time", "5m",
 		"--log-file", "/var/log/restic.log",
 		"--keyring", "/etc/ceph/keyring",
@@ -72,8 +72,8 @@ func TestLoadConfigArgs(t *testing.T) {
 	if def == nil {
 		t.Fatal("expected Repos[\"default\"] to be set")
 	}
-	if !def.AppendOnly {
-		t.Error("expected AppendOnly true")
+	if def.Access != "ra" {
+		t.Errorf("expected Access ra, got %s", def.Access)
 	}
 	if !def.DisableStriper {
 		t.Error("expected DisableStriper true")
@@ -138,7 +138,7 @@ func TestLoadConfigFile(t *testing.T) {
 		"repos": {
 			"default": {
 				"pools": ["my-pool"],
-				"append_only": true,
+				"access": "ra",
 				"disable_striper": true,
 				"max_object_size": 4096
 			}
@@ -186,8 +186,8 @@ func TestLoadConfigFile(t *testing.T) {
 	if def == nil {
 		t.Fatal("expected Repos[\"default\"] to be set")
 	}
-	if !def.AppendOnly {
-		t.Error("expected AppendOnly true")
+	if def.Access != "ra" {
+		t.Errorf("expected Access ra, got %s", def.Access)
 	}
 	if !def.DisableStriper {
 		t.Error("expected DisableStriper true")
@@ -228,7 +228,7 @@ func TestLoadConfigFlatFieldsRejected(t *testing.T) {
 		json string
 	}{
 		{"pools at top level", `{"pools": ["my-pool"]}`},
-		{"append_only at top level", `{"append_only": true}`},
+		{"access at top level", `{"access": "ra"}`},
 		{"disable_striper at top level", `{"disable_striper": true}`},
 		{"max_object_size at top level", `{"max_object_size": 4096}`},
 	}
@@ -246,7 +246,7 @@ func TestLoadConfigFlatFieldsRejected(t *testing.T) {
 func TestLoadConfigEnv(t *testing.T) {
 	envs := map[string]string{
 		"RESTIC_RADOS_SERVER_VERBOSE":           "true",
-		"RESTIC_RADOS_SERVER_APPEND_ONLY":       "1",
+		"RESTIC_RADOS_SERVER_ACCESS":            "ra",
 		"RESTIC_RADOS_SERVER_DISABLE_STRIPER":   "yes",
 		"RESTIC_RADOS_SERVER_LOG_FILE":          "/var/log/test.log",
 		"CEPH_KEYRING":                          "/etc/ceph/keyring",
@@ -292,8 +292,8 @@ func TestLoadConfigEnv(t *testing.T) {
 	if def == nil {
 		t.Fatal("expected Repos[\"default\"] to be set")
 	}
-	if !def.AppendOnly {
-		t.Error("expected AppendOnly true")
+	if def.Access != "ra" {
+		t.Errorf("expected Access ra, got %s", def.Access)
 	}
 	if !def.DisableStriper {
 		t.Error("expected DisableStriper true")
@@ -563,7 +563,7 @@ func TestLoadConfigMultiRepo(t *testing.T) {
 		"repos": {
 			"default": {
 				"pools": ["meta-pool"],
-				"append_only": true
+				"access": "ra"
 			},
 			"offsite": {
 				"pools": ["offsite-data:data,snapshots", "offsite-meta:*"],
@@ -587,8 +587,8 @@ func TestLoadConfigMultiRepo(t *testing.T) {
 	if def == nil {
 		t.Fatal("expected Repos[\"default\"] to be set")
 	}
-	if !def.AppendOnly {
-		t.Error("expected default repo AppendOnly true")
+	if def.Access != "ra" {
+		t.Errorf("expected default repo Access ra, got %s", def.Access)
 	}
 	if def.BlobPools == nil {
 		t.Fatal("expected default BlobPools to be set")
@@ -601,8 +601,8 @@ func TestLoadConfigMultiRepo(t *testing.T) {
 	if offsite == nil {
 		t.Fatal("expected Repos[\"offsite\"] to be set")
 	}
-	if offsite.AppendOnly {
-		t.Error("expected offsite repo AppendOnly false")
+	if offsite.Access != "rw" {
+		t.Errorf("expected offsite repo Access rw, got %s", offsite.Access)
 	}
 	if !offsite.DisableStriper {
 		t.Error("expected offsite repo DisableStriper true")
@@ -778,6 +778,97 @@ func TestLoadConfigBlobPoolsJSON(t *testing.T) {
 	}
 	if def.BlobPools.Locks.Namespace != "" {
 		t.Errorf("expected Locks namespace empty, got %s", def.BlobPools.Locks.Namespace)
+	}
+}
+
+func TestValidateTailscaleCapabilityListeners(t *testing.T) {
+	t.Run("no capability allows anything", func(t *testing.T) {
+		c := &Config{Stdio: true}
+		c.validateTailscaleCapabilityListeners()
+	})
+
+	t.Run("stdio warns but no error", func(t *testing.T) {
+		c := &Config{
+			TailscaleCapability: "cap.example.com",
+			Stdio:               true,
+		}
+		c.validateTailscaleCapabilityListeners()
+	})
+
+	t.Run("loopback TCP allowed", func(t *testing.T) {
+		c := &Config{
+			TailscaleCapability: "cap.example.com",
+			Listeners: listenerFlags{
+				{kind: listenerTypeTCP, address: "127.0.0.1:8080"},
+			},
+		}
+		c.validateTailscaleCapabilityListeners()
+	})
+
+	t.Run("non-loopback TCP warns but no error", func(t *testing.T) {
+		c := &Config{
+			TailscaleCapability: "cap.example.com",
+			Listeners: listenerFlags{
+				{kind: listenerTypeTCP, address: "0.0.0.0:8080"},
+			},
+		}
+		c.validateTailscaleCapabilityListeners()
+	})
+
+	t.Run("unix socket allowed", func(t *testing.T) {
+		c := &Config{
+			TailscaleCapability: "cap.example.com",
+			Listeners: listenerFlags{
+				{kind: listenerTypeUnix, address: "/tmp/test.sock"},
+			},
+		}
+		c.validateTailscaleCapabilityListeners()
+	})
+
+	t.Run("systemd allowed", func(t *testing.T) {
+		c := &Config{
+			TailscaleCapability: "cap.example.com",
+			Listeners: listenerFlags{
+				{kind: listenerTypeSystemd, address: "test"},
+			},
+		}
+		c.validateTailscaleCapabilityListeners()
+	})
+}
+
+func TestLoadConfigAccessValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		wantErr bool
+	}{
+		{"valid r", `{"repos":{"default":{"pools":["p"],"access":"r"}}}`, false},
+		{"valid ra", `{"repos":{"default":{"pools":["p"],"access":"ra"}}}`, false},
+		{"valid rw", `{"repos":{"default":{"pools":["p"],"access":"rw"}}}`, false},
+		{"valid read-only", `{"repos":{"default":{"pools":["p"],"access":"read-only"}}}`, false},
+		{"valid read-append", `{"repos":{"default":{"pools":["p"],"access":"read-append"}}}`, false},
+		{"valid read-write", `{"repos":{"default":{"pools":["p"],"access":"read-write"}}}`, false},
+		{"empty defaults to rw", `{"repos":{"default":{"pools":["p"]}}}`, false},
+		{"invalid access", `{"repos":{"default":{"pools":["p"],"access":"bad"}}}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTemp(t, tt.json)
+			config, _, err := loadConfig([]string{"--config", path})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			def := config.Repos["default"]
+			if def == nil {
+				t.Fatal("expected default repo")
+			}
+		})
 	}
 }
 

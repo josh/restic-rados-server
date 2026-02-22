@@ -17,7 +17,7 @@ kill server
 {
     "repos": {
         "default": {
-            "append_only": true
+            "access": "ra"
         }
     }
 }

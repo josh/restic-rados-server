@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --append-only --listen $WORK/restic.sock &server&
+exec restic-rados-server --access ra --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
