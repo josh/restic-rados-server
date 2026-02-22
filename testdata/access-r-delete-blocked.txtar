@@ -1,0 +1,18 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --access r --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/config' --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/locks/5ad8ba0b31f9699fed5f80f6ef585e09429c1c1534a83a655fb2b3934f56ca45' --output /dev/null
+stdout '403'
+
+kill server

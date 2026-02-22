@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --config config.json --append-only=false --listen $WORK/restic.sock &server&
+exec restic-rados-server --config config.json --access rw --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
@@ -17,7 +17,7 @@ kill server
 {
     "repos": {
         "default": {
-            "append_only": true
+            "access": "ra"
         }
     }
 }

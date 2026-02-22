@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -88,24 +90,25 @@ func (p *poolFlags) Set(value string) error {
 type RepoConfig struct {
 	Pools          poolFlags          `json:"pools,omitempty"`
 	BlobPools      *ServerConfigPools `json:"blob_pools,omitempty"`
-	AppendOnly     bool               `json:"append_only,omitempty"`
+	Access         string             `json:"access,omitempty"`
 	DisableStriper bool               `json:"disable_striper,omitempty"`
 	MaxObjectSize  int64              `json:"max_object_size,omitempty"`
 }
 
 type Config struct {
-	Verbose         bool                   `json:"verbose,omitempty"`
-	Listeners       listenerFlags          `json:"listen,omitempty"`
-	Stdio           bool                   `json:"-"`
-	ShutdownTimeout Duration               `json:"shutdown_timeout,omitempty"`
-	MaxIdleTime     Duration               `json:"max_idle_time,omitempty"`
-	LogFile         string                 `json:"log_file,omitempty"`
-	Keyring         string                 `json:"keyring,omitempty"`
-	ClientID        string                 `json:"client_id,omitempty"`
-	CephConf        string                 `json:"ceph_conf,omitempty"`
-	ReadBufferSize  int64                  `json:"read_buffer_size,omitempty"`
-	WriteBufferSize int64                  `json:"write_buffer_size,omitempty"`
-	Repos           map[string]*RepoConfig `json:"repos,omitempty"`
+	Verbose             bool                   `json:"verbose,omitempty"`
+	Listeners           listenerFlags          `json:"listen,omitempty"`
+	Stdio               bool                   `json:"-"`
+	ShutdownTimeout     Duration               `json:"shutdown_timeout,omitempty"`
+	MaxIdleTime         Duration               `json:"max_idle_time,omitempty"`
+	LogFile             string                 `json:"log_file,omitempty"`
+	Keyring             string                 `json:"keyring,omitempty"`
+	ClientID            string                 `json:"client_id,omitempty"`
+	CephConf            string                 `json:"ceph_conf,omitempty"`
+	ReadBufferSize      int64                  `json:"read_buffer_size,omitempty"`
+	WriteBufferSize     int64                  `json:"write_buffer_size,omitempty"`
+	TailscaleCapability string                 `json:"tailscale_capability,omitempty"`
+	Repos               map[string]*RepoConfig `json:"repos,omitempty"`
 }
 
 func (c *Config) loadFromFile(path string) error {
@@ -131,7 +134,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	var listeners listenerFlags
 	var useStdio bool
 	var shutdownTimeout time.Duration
-	var appendOnly bool
+	var access string
 	var maxIdleTime time.Duration
 	var logFile string
 	var keyringPath string
@@ -150,7 +153,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	fs.Var(&listeners, "listen", "Address or Unix socket path to listen on, repeatable")
 	fs.BoolVar(&useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
 	fs.DurationVar(&shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
-	fs.BoolVar(&appendOnly, "append-only", false, "enable append-only mode (delete allowed for locks only)")
+	fs.StringVar(&access, "access", "", "access level: r/read-only, ra/read-append, rw/read-write")
 	fs.DurationVar(&maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
 	fs.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
 	fs.StringVar(&keyringPath, "keyring", "", "path to Ceph keyring file")
@@ -209,7 +212,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 		c.WriteBufferSize = writeBufferSize
 	}
 
-	if set["pool"] || set["append-only"] || set["disable-striper"] || set["max-object-size"] {
+	if set["pool"] || set["access"] || set["disable-striper"] || set["max-object-size"] {
 		if c.Repos == nil {
 			c.Repos = make(map[string]*RepoConfig)
 		}
@@ -221,8 +224,8 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 			def.Pools = poolSpecs
 			def.BlobPools = nil
 		}
-		if set["append-only"] {
-			def.AppendOnly = appendOnly
+		if set["access"] {
+			def.Access = access
 		}
 		if set["disable-striper"] {
 			def.DisableStriper = disableStriper
@@ -289,12 +292,12 @@ func (c *Config) loadFromEnv() {
 		c.WriteBufferSize = v
 	}
 
-	appendOnly, hasAppendOnly := parseBoolEnv("APPEND_ONLY")
+	envAccess := getEnv("ACCESS")
 	disableStriper, hasDisableStriper := parseBoolEnv("DISABLE_STRIPER")
 	maxObjectSize, hasMaxObjectSize := parseInt64Env("MAX_OBJECT_SIZE")
 	envPool := getEnv("POOL")
 
-	if hasAppendOnly || hasDisableStriper || hasMaxObjectSize || envPool != "" {
+	if envAccess != "" || hasDisableStriper || hasMaxObjectSize || envPool != "" {
 		if c.Repos == nil {
 			c.Repos = make(map[string]*RepoConfig)
 		}
@@ -302,8 +305,8 @@ func (c *Config) loadFromEnv() {
 			c.Repos["default"] = &RepoConfig{}
 		}
 		def := c.Repos["default"]
-		if hasAppendOnly {
-			def.AppendOnly = appendOnly
+		if envAccess != "" {
+			def.Access = envAccess
 		}
 		if hasDisableStriper {
 			def.DisableStriper = disableStriper
@@ -383,6 +386,20 @@ func (c *Config) normalizeRepos() error {
 			return fmt.Errorf("reserved repo name %q (conflicts with blob type)", name)
 		}
 
+		if repo.Access == "" {
+			repo.Access = "rw"
+		}
+		switch repo.Access {
+		case "r", "read-only":
+			repo.Access = "r"
+		case "ra", "read-append":
+			repo.Access = "ra"
+		case "rw", "read-write":
+			repo.Access = "rw"
+		default:
+			return fmt.Errorf("repo %q: invalid access %q (must be r, ra, or rw)", name, repo.Access)
+		}
+
 		if repo.BlobPools == nil && len(repo.Pools) > 0 {
 			pools, err := parsePoolSpecs(repo.Pools)
 			if err != nil {
@@ -396,6 +413,29 @@ func (c *Config) normalizeRepos() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateTailscaleCapabilityListeners() {
+	if c.TailscaleCapability == "" {
+		return
+	}
+
+	if c.Stdio {
+		slog.Warn("tailscale_capability is not supported in stdio mode; capability headers will be ignored")
+	}
+
+	for _, l := range c.Listeners {
+		if l.kind != listenerTypeTCP {
+			continue
+		}
+		host, _, err := net.SplitHostPort(l.address)
+		if err != nil {
+			continue
+		}
+		if host == "" || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
+			slog.Warn("tailscale_capability with non-loopback TCP listener; ensure Tailscale is the only route to this address", "address", l.address)
+		}
+	}
 }
 
 type BlobPoolConfig struct {
