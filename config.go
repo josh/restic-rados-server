@@ -87,8 +87,10 @@ func (p *poolFlags) Set(value string) error {
 	return nil
 }
 
+type poolsConfig map[string][]string
+
 type RepoConfig struct {
-	Pools         poolFlags          `json:"pools,omitempty"`
+	Pools         poolsConfig        `json:"pools,omitempty"`
 	BlobPools     *ServerConfigPools `json:"blob_pools,omitempty"`
 	Access        string             `json:"access,omitempty"`
 	Striper       *bool              `json:"striper,omitempty"`
@@ -221,7 +223,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 		}
 		def := c.Repos["default"]
 		if set["pool"] {
-			def.Pools = poolSpecs
+			def.Pools = poolSpecsToPoolsConfig(poolSpecs)
 			def.BlobPools = nil
 		}
 		if set["access"] {
@@ -312,14 +314,15 @@ func (c *Config) loadFromEnv() {
 			def.Striper = &striper
 		}
 		if envPool != "" {
-			def.Pools = nil
-			def.BlobPools = nil
+			var specs []string
 			for _, spec := range strings.Split(envPool, ";") {
 				spec = strings.TrimSpace(spec)
 				if spec != "" {
-					def.Pools = append(def.Pools, spec)
+					specs = append(specs, spec)
 				}
 			}
+			def.Pools = poolSpecsToPoolsConfig(specs)
+			def.BlobPools = nil
 		}
 		if hasMaxObjectSize {
 			def.MaxObjectSize = maxObjectSize
@@ -401,7 +404,7 @@ func (c *Config) normalizeRepos() error {
 		}
 
 		if repo.BlobPools == nil && len(repo.Pools) > 0 {
-			pools, err := parsePoolSpecs(repo.Pools)
+			pools, err := parsePoolsConfig(repo.Pools)
 			if err != nil {
 				return fmt.Errorf("repo %q: invalid pool configuration: %v", name, err)
 			}
@@ -487,23 +490,51 @@ func (p *ServerConfigPools) getPoolForType(bt BlobType) BlobPoolConfig {
 	}
 }
 
-func parsePoolSpecs(specs []string) (ServerConfigPools, error) {
-	if len(specs) == 0 {
+func poolSpecsToPoolsConfig(specs []string) poolsConfig {
+	result := make(poolsConfig)
+	for _, spec := range specs {
+		poolName, namespace, types, err := parsePoolSpec(spec)
+		if err != nil {
+			result[spec] = nil
+			continue
+		}
+		key := poolName
+		if namespace != "" {
+			key = poolName + "/" + namespace
+		}
+		result[key] = types
+	}
+	return result
+}
+
+func splitPoolKey(key string) (pool, namespace string) {
+	if idx := strings.Index(key, "/"); idx != -1 {
+		return key[:idx], key[idx+1:]
+	}
+	return key, ""
+}
+
+func parsePoolsConfig(pc poolsConfig) (ServerConfigPools, error) {
+	if len(pc) == 0 {
 		return ServerConfigPools{}, errors.New("no pool specifications provided")
 	}
 
 	typeToConfig := make(map[BlobType]BlobPoolConfig)
 	var catchAll *BlobPoolConfig
 
-	for _, spec := range specs {
-		poolName, namespace, types, err := parsePoolSpec(spec)
-		if err != nil {
-			return ServerConfigPools{}, err
+	for key, types := range pc {
+		poolName, namespace := splitPoolKey(key)
+		if poolName == "" {
+			return ServerConfigPools{}, fmt.Errorf("empty pool name in specification: %q", key)
 		}
 
 		bpc := BlobPoolConfig{Pool: poolName, Namespace: namespace}
 
-		if len(types) == 0 || (len(types) == 1 && types[0] == "*") {
+		if len(types) == 0 || types == nil {
+			return ServerConfigPools{}, fmt.Errorf("invalid pool specification: %q", key)
+		}
+
+		if len(types) == 1 && types[0] == "*" {
 			if catchAll != nil {
 				return ServerConfigPools{}, fmt.Errorf("multiple catch-all pools specified: %q and %q", catchAll.Pool, poolName)
 			}

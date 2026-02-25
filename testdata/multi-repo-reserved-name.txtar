@@ -4,6 +4,6 @@ stderr 'reserved repo name'
 -- config.json --
 {
     "repos": {
-        "data": {"pools": ["my-pool"]}
+        "data": {"pools": {"my-pool": ["*"]}}
     }
 }
