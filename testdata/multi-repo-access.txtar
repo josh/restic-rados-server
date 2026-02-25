@@ -24,8 +24,8 @@ kill server
 -- config.json.tmpl --
 {
     "repos": {
-        "default": {"pools": ["$CEPH_POOL_ALPHA"], "access": "ra"},
-        "rw": {"pools": ["$CEPH_POOL_BETA"]}
+        "default": {"pools": {"$CEPH_POOL_ALPHA": ["*"]}, "access": "ra"},
+        "rw": {"pools": {"$CEPH_POOL_BETA": ["*"]}}
     }
 }
 -- blob-data --

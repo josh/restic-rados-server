@@ -41,8 +41,8 @@ kill server
 -- config.json.tmpl --
 {
     "repos": {
-        "default": {"pools": ["$CEPH_POOL_ALPHA"]},
-        "backup": {"pools": ["$CEPH_POOL_BETA"]}
+        "default": {"pools": {"$CEPH_POOL_ALPHA": ["*"]}},
+        "backup": {"pools": {"$CEPH_POOL_BETA": ["*"]}}
     }
 }
 -- config-data --

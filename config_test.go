@@ -137,7 +137,7 @@ func TestLoadConfigFile(t *testing.T) {
 		"write_buffer_size": 2048,
 		"repos": {
 			"default": {
-				"pools": ["my-pool"],
+				"pools": {"my-pool": ["*"]},
 				"access": "ra",
 				"striper": false,
 				"max_object_size": 4096
@@ -227,7 +227,7 @@ func TestLoadConfigFlatFieldsRejected(t *testing.T) {
 		name string
 		json string
 	}{
-		{"pools at top level", `{"pools": ["my-pool"]}`},
+		{"pools at top level", `{"pools": {"my-pool": ["*"]}}`},
 		{"access at top level", `{"access": "ra"}`},
 		{"striper at top level", `{"striper": false}`},
 		{"max_object_size at top level", `{"max_object_size": 4096}`},
@@ -562,11 +562,11 @@ func TestLoadConfigMultiRepo(t *testing.T) {
 	json := `{
 		"repos": {
 			"default": {
-				"pools": ["meta-pool"],
+				"pools": {"meta-pool": ["*"]},
 				"access": "ra"
 			},
 			"offsite": {
-				"pools": ["offsite-data:data,snapshots", "offsite-meta:*"],
+				"pools": {"offsite-data": ["data","snapshots"], "offsite-meta": ["*"]},
 				"striper": false,
 				"max_object_size": 8192
 			}
@@ -625,7 +625,7 @@ func TestLoadConfigReservedRepoName(t *testing.T) {
 	reserved := []string{"keys", "locks", "snapshots", "data", "index", "config"}
 	for _, name := range reserved {
 		t.Run(name, func(t *testing.T) {
-			json := `{"repos": {"` + name + `": {"pools": ["my-pool"]}}}`
+			json := `{"repos": {"` + name + `": {"pools": {"my-pool": ["*"]}}}}`
 			path := writeTemp(t, json)
 			_, _, err := loadConfig([]string{"--config", path})
 			if err == nil {
@@ -639,7 +639,7 @@ func TestLoadConfigMultiRepoPoolParsing(t *testing.T) {
 	json := `{
 		"repos": {
 			"default": {
-				"pools": ["data-pool:data,snapshots", "meta-pool:*"]
+				"pools": {"data-pool": ["data","snapshots"], "meta-pool": ["*"]}
 			}
 		}
 	}`
@@ -675,7 +675,7 @@ func TestLoadConfigMultiRepoValidation(t *testing.T) {
 	}{
 		{
 			"negative max-object-size per repo",
-			`{"repos": {"default": {"pools": ["my-pool"], "max_object_size": -1}}}`,
+			`{"repos": {"default": {"pools": {"my-pool": ["*"]}, "max_object_size": -1}}}`,
 		},
 	}
 	for _, tt := range tests {
@@ -842,14 +842,14 @@ func TestLoadConfigAccessValidation(t *testing.T) {
 		json    string
 		wantErr bool
 	}{
-		{"valid r", `{"repos":{"default":{"pools":["p"],"access":"r"}}}`, false},
-		{"valid ra", `{"repos":{"default":{"pools":["p"],"access":"ra"}}}`, false},
-		{"valid rw", `{"repos":{"default":{"pools":["p"],"access":"rw"}}}`, false},
-		{"valid read-only", `{"repos":{"default":{"pools":["p"],"access":"read-only"}}}`, false},
-		{"valid read-append", `{"repos":{"default":{"pools":["p"],"access":"read-append"}}}`, false},
-		{"valid read-write", `{"repos":{"default":{"pools":["p"],"access":"read-write"}}}`, false},
-		{"empty defaults to rw", `{"repos":{"default":{"pools":["p"]}}}`, false},
-		{"invalid access", `{"repos":{"default":{"pools":["p"],"access":"bad"}}}`, true},
+		{"valid r", `{"repos":{"default":{"pools":{"p":["*"]},"access":"r"}}}`, false},
+		{"valid ra", `{"repos":{"default":{"pools":{"p":["*"]},"access":"ra"}}}`, false},
+		{"valid rw", `{"repos":{"default":{"pools":{"p":["*"]},"access":"rw"}}}`, false},
+		{"valid read-only", `{"repos":{"default":{"pools":{"p":["*"]},"access":"read-only"}}}`, false},
+		{"valid read-append", `{"repos":{"default":{"pools":{"p":["*"]},"access":"read-append"}}}`, false},
+		{"valid read-write", `{"repos":{"default":{"pools":{"p":["*"]},"access":"read-write"}}}`, false},
+		{"empty defaults to rw", `{"repos":{"default":{"pools":{"p":["*"]}}}}`, false},
+		{"invalid access", `{"repos":{"default":{"pools":{"p":["*"]},"access":"bad"}}}`, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -870,6 +870,161 @@ func TestLoadConfigAccessValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPoolSpecsToPoolsConfig(t *testing.T) {
+	tests := []struct {
+		name  string
+		specs []string
+		want  poolsConfig
+	}{
+		{
+			"catch-all",
+			[]string{"my-pool"},
+			poolsConfig{"my-pool": {"*"}},
+		},
+		{
+			"explicit types",
+			[]string{"my-pool:data,index"},
+			poolsConfig{"my-pool": {"data", "index"}},
+		},
+		{
+			"namespace",
+			[]string{"my-pool/ns:data,index"},
+			poolsConfig{"my-pool/ns": {"data", "index"}},
+		},
+		{
+			"multiple specs",
+			[]string{"data-pool:data,index", "meta-pool:*"},
+			poolsConfig{"data-pool": {"data", "index"}, "meta-pool": {"*"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := poolSpecsToPoolsConfig(tt.specs)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d entries, want %d", len(got), len(tt.want))
+			}
+			for k, wantTypes := range tt.want {
+				gotTypes, ok := got[k]
+				if !ok {
+					t.Errorf("missing key %q", k)
+					continue
+				}
+				if len(gotTypes) != len(wantTypes) {
+					t.Errorf("key %q: got %d types, want %d", k, len(gotTypes), len(wantTypes))
+					continue
+				}
+				for i := range wantTypes {
+					if gotTypes[i] != wantTypes[i] {
+						t.Errorf("key %q type %d: got %q, want %q", k, i, gotTypes[i], wantTypes[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestParsePoolsConfig(t *testing.T) {
+	t.Run("catch-all", func(t *testing.T) {
+		pc := poolsConfig{"my-pool": {"*"}}
+		pools, err := parsePoolsConfig(pc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, bt := range AllBlobTypes {
+			if pools.getPoolForType(bt).Pool != "my-pool" {
+				t.Errorf("expected %s pool = my-pool, got %s", bt, pools.getPoolForType(bt).Pool)
+			}
+		}
+	})
+
+	t.Run("typed entries", func(t *testing.T) {
+		pc := poolsConfig{
+			"data-pool": {"data", "index"},
+			"meta-pool": {"*"},
+		}
+		pools, err := parsePoolsConfig(pc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pools.Data.Pool != "data-pool" {
+			t.Errorf("expected Data pool = data-pool, got %s", pools.Data.Pool)
+		}
+		if pools.Index.Pool != "data-pool" {
+			t.Errorf("expected Index pool = data-pool, got %s", pools.Index.Pool)
+		}
+		if pools.Config.Pool != "meta-pool" {
+			t.Errorf("expected Config pool = meta-pool, got %s", pools.Config.Pool)
+		}
+	})
+
+	t.Run("namespace keys", func(t *testing.T) {
+		pc := poolsConfig{
+			"my-pool/metadata": {"keys", "locks", "config"},
+			"my-pool/data":     {"*"},
+		}
+		pools, err := parsePoolsConfig(pc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pools.Keys.Pool != "my-pool" || pools.Keys.Namespace != "metadata" {
+			t.Errorf("expected Keys = my-pool/metadata, got %s/%s", pools.Keys.Pool, pools.Keys.Namespace)
+		}
+		if pools.Data.Pool != "my-pool" || pools.Data.Namespace != "data" {
+			t.Errorf("expected Data = my-pool/data, got %s/%s", pools.Data.Pool, pools.Data.Namespace)
+		}
+	})
+
+	t.Run("empty map", func(t *testing.T) {
+		_, err := parsePoolsConfig(poolsConfig{})
+		if err == nil {
+			t.Fatal("expected error for empty map")
+		}
+	})
+
+	t.Run("multiple catch-alls", func(t *testing.T) {
+		pc := poolsConfig{
+			"pool1": {"*"},
+			"pool2": {"*"},
+		}
+		_, err := parsePoolsConfig(pc)
+		if err == nil {
+			t.Fatal("expected error for multiple catch-alls")
+		}
+	})
+
+	t.Run("duplicate types", func(t *testing.T) {
+		pc := poolsConfig{
+			"pool1": {"data"},
+			"pool2": {"data"},
+		}
+		_, err := parsePoolsConfig(pc)
+		if err == nil {
+			t.Fatal("expected error for duplicate types")
+		}
+	})
+
+	t.Run("unknown type", func(t *testing.T) {
+		pc := poolsConfig{
+			"pool1": {"badtype"},
+		}
+		_, err := parsePoolsConfig(pc)
+		if err == nil {
+			t.Fatal("expected error for unknown type")
+		}
+	})
+
+	t.Run("empty pool name", func(t *testing.T) {
+		pc := poolsConfig{
+			"": {"*"},
+		}
+		_, err := parsePoolsConfig(pc)
+		if err == nil {
+			t.Fatal("expected error for empty pool name")
+		}
+	})
 }
 
 func writeTemp(t *testing.T, content string) string {
