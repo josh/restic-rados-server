@@ -88,11 +88,11 @@ func (p *poolFlags) Set(value string) error {
 }
 
 type RepoConfig struct {
-	Pools          poolFlags          `json:"pools,omitempty"`
-	BlobPools      *ServerConfigPools `json:"blob_pools,omitempty"`
-	Access         string             `json:"access,omitempty"`
-	DisableStriper bool               `json:"disable_striper,omitempty"`
-	MaxObjectSize  int64              `json:"max_object_size,omitempty"`
+	Pools         poolFlags          `json:"pools,omitempty"`
+	BlobPools     *ServerConfigPools `json:"blob_pools,omitempty"`
+	Access        string             `json:"access,omitempty"`
+	Striper       *bool              `json:"striper,omitempty"`
+	MaxObjectSize int64              `json:"max_object_size,omitempty"`
 }
 
 type Config struct {
@@ -141,7 +141,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	var clientID string
 	var poolSpecs poolFlags
 	var cephConf string
-	var disableStriper bool
+	var striper bool
 	var readBufferSize int64
 	var writeBufferSize int64
 	var maxObjectSize int64
@@ -160,7 +160,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	fs.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
 	fs.Var(&poolSpecs, "pool", "Pool specification: 'pool[/namespace][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
 	fs.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
-	fs.BoolVar(&disableStriper, "disable-striper", false, "disable librados striper for large objects")
+	fs.BoolVar(&striper, "striper", true, "enable librados striper for large objects")
 	fs.Int64Var(&readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
 	fs.Int64Var(&writeBufferSize, "write-buffer-size", defaultWriteBufferSize, "buffer size for writing objects in bytes")
 	fs.Int64Var(&maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
@@ -212,7 +212,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 		c.WriteBufferSize = writeBufferSize
 	}
 
-	if set["pool"] || set["access"] || set["disable-striper"] || set["max-object-size"] {
+	if set["pool"] || set["access"] || set["striper"] || set["max-object-size"] {
 		if c.Repos == nil {
 			c.Repos = make(map[string]*RepoConfig)
 		}
@@ -227,8 +227,8 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 		if set["access"] {
 			def.Access = access
 		}
-		if set["disable-striper"] {
-			def.DisableStriper = disableStriper
+		if set["striper"] {
+			def.Striper = &striper
 		}
 		if set["max-object-size"] {
 			def.MaxObjectSize = maxObjectSize
@@ -293,11 +293,11 @@ func (c *Config) loadFromEnv() {
 	}
 
 	envAccess := getEnv("ACCESS")
-	disableStriper, hasDisableStriper := parseBoolEnv("DISABLE_STRIPER")
+	striper, hasStriper := parseBoolEnv("STRIPER")
 	maxObjectSize, hasMaxObjectSize := parseInt64Env("MAX_OBJECT_SIZE")
 	envPool := getEnv("POOL")
 
-	if envAccess != "" || hasDisableStriper || hasMaxObjectSize || envPool != "" {
+	if envAccess != "" || hasStriper || hasMaxObjectSize || envPool != "" {
 		if c.Repos == nil {
 			c.Repos = make(map[string]*RepoConfig)
 		}
@@ -308,8 +308,8 @@ func (c *Config) loadFromEnv() {
 		if envAccess != "" {
 			def.Access = envAccess
 		}
-		if hasDisableStriper {
-			def.DisableStriper = disableStriper
+		if hasStriper {
+			def.Striper = &striper
 		}
 		if envPool != "" {
 			def.Pools = nil

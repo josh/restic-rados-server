@@ -315,7 +315,7 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 				continue
 			}
 
-			striped := !repo.DisableStriper
+			striped := repo.Striper == nil || *repo.Striper
 			if bpc.Striped != nil {
 				striped = *bpc.Striped
 			}

@@ -21,7 +21,7 @@ func TestLoadConfigArgs(t *testing.T) {
 		"--id", "restic",
 		"--pool", "my-pool",
 		"--ceph-conf", "/etc/ceph/ceph.conf",
-		"--disable-striper",
+		"--striper=false",
 		"--read-buffer-size", "1024",
 		"--write-buffer-size", "2048",
 		"--max-object-size", "4096",
@@ -75,8 +75,8 @@ func TestLoadConfigArgs(t *testing.T) {
 	if def.Access != "ra" {
 		t.Errorf("expected Access ra, got %s", def.Access)
 	}
-	if !def.DisableStriper {
-		t.Error("expected DisableStriper true")
+	if def.Striper == nil || *def.Striper != false {
+		t.Error("expected Striper false")
 	}
 	if def.MaxObjectSize != 4096 {
 		t.Errorf("expected max_object_size 4096, got %d", def.MaxObjectSize)
@@ -139,7 +139,7 @@ func TestLoadConfigFile(t *testing.T) {
 			"default": {
 				"pools": ["my-pool"],
 				"access": "ra",
-				"disable_striper": true,
+				"striper": false,
 				"max_object_size": 4096
 			}
 		}
@@ -189,8 +189,8 @@ func TestLoadConfigFile(t *testing.T) {
 	if def.Access != "ra" {
 		t.Errorf("expected Access ra, got %s", def.Access)
 	}
-	if !def.DisableStriper {
-		t.Error("expected DisableStriper true")
+	if def.Striper == nil || *def.Striper != false {
+		t.Error("expected Striper false")
 	}
 	if def.MaxObjectSize != 4096 {
 		t.Errorf("expected max_object_size 4096, got %d", def.MaxObjectSize)
@@ -229,7 +229,7 @@ func TestLoadConfigFlatFieldsRejected(t *testing.T) {
 	}{
 		{"pools at top level", `{"pools": ["my-pool"]}`},
 		{"access at top level", `{"access": "ra"}`},
-		{"disable_striper at top level", `{"disable_striper": true}`},
+		{"striper at top level", `{"striper": false}`},
 		{"max_object_size at top level", `{"max_object_size": 4096}`},
 	}
 	for _, tt := range tests {
@@ -247,7 +247,7 @@ func TestLoadConfigEnv(t *testing.T) {
 	envs := map[string]string{
 		"RESTIC_RADOS_SERVER_VERBOSE":           "true",
 		"RESTIC_RADOS_SERVER_ACCESS":            "ra",
-		"RESTIC_RADOS_SERVER_DISABLE_STRIPER":   "yes",
+		"RESTIC_RADOS_SERVER_STRIPER":           "no",
 		"RESTIC_RADOS_SERVER_LOG_FILE":          "/var/log/test.log",
 		"CEPH_KEYRING":                          "/etc/ceph/keyring",
 		"CEPH_ID":                               "restic",
@@ -295,8 +295,8 @@ func TestLoadConfigEnv(t *testing.T) {
 	if def.Access != "ra" {
 		t.Errorf("expected Access ra, got %s", def.Access)
 	}
-	if !def.DisableStriper {
-		t.Error("expected DisableStriper true")
+	if def.Striper == nil || *def.Striper != false {
+		t.Error("expected Striper false")
 	}
 	if def.MaxObjectSize != 4096 {
 		t.Errorf("expected MaxObjectSize 4096, got %d", def.MaxObjectSize)
@@ -567,7 +567,7 @@ func TestLoadConfigMultiRepo(t *testing.T) {
 			},
 			"offsite": {
 				"pools": ["offsite-data:data,snapshots", "offsite-meta:*"],
-				"disable_striper": true,
+				"striper": false,
 				"max_object_size": 8192
 			}
 		}
@@ -604,8 +604,8 @@ func TestLoadConfigMultiRepo(t *testing.T) {
 	if offsite.Access != "rw" {
 		t.Errorf("expected offsite repo Access rw, got %s", offsite.Access)
 	}
-	if !offsite.DisableStriper {
-		t.Error("expected offsite repo DisableStriper true")
+	if offsite.Striper == nil || *offsite.Striper != false {
+		t.Error("expected offsite repo Striper false")
 	}
 	if offsite.MaxObjectSize != 8192 {
 		t.Errorf("expected offsite MaxObjectSize 8192, got %d", offsite.MaxObjectSize)
