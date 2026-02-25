@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --listen $WORK/restic.sock --disable-striper &server1&
+exec restic-rados-server --listen $WORK/restic.sock --striper=false &server1&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
