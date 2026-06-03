@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/ceph/go-ceph v0.39.0
-	github.com/rogpeppe/go-internal v1.14.1
+	github.com/rogpeppe/go-internal v1.15.0
 	golang.org/x/net v0.54.0
 )
 
