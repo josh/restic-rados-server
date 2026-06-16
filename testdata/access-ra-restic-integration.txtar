@@ -14,7 +14,7 @@ exec restic backup --time '2025-01-01 12:00:00' data --option rclone.program=res
 rados-object-count snapshots/
 cmp stdout snapshots-before.txt
 
-exec restic forget --keep-last 1 --option rclone.program=restic-rados-server --option rclone.args='--access ra' --repo rclone: --password-file password.txt
+! exec restic forget --keep-last 1 --option rclone.program=restic-rados-server --option rclone.args='--access ra' --repo rclone: --password-file password.txt
 stderr '403'
 
 rados-object-count snapshots/

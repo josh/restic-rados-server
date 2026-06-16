@@ -20,7 +20,7 @@ RUN curl --fail --silent --show-error --location https://go.dev/dl/go${GO_VERSIO
     ln --symbolic /usr/local/go/bin/go /usr/local/bin/go && \
     ln --symbolic /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
-ARG RESTIC_VERSION=0.18.1
+ARG RESTIC_VERSION=0.19.0
 RUN curl --fail --location --show-error --silent \
         "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" \
         --output /tmp/restic.bz2 && \
