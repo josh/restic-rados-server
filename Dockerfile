@@ -16,7 +16,7 @@ RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o restic-rados-server .
 FROM alpine:3.24@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4
 
 RUN apk add --no-cache \
-    librados19=19.2.3-r3
+    librados19=19.2.3-r7
 
 COPY --from=builder /app/restic-rados-server /usr/local/bin/restic-rados-server
 
