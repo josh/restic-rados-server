@@ -30,6 +30,7 @@ type ConnectionManager struct {
 	config            CephConfig
 	reconnecting      bool
 	lastReconnectTime time.Time
+	reconnectBackoff  time.Duration
 	minReconnectDelay time.Duration
 	maxReconnectDelay time.Duration
 	maxObjectSize     int64
@@ -469,10 +470,7 @@ func (cm *ConnectionManager) tryReconnect() error {
 	}
 
 	now := time.Now()
-	timeSinceLastReconnect := now.Sub(cm.lastReconnectTime)
-	delay := cm.calculateBackoff(timeSinceLastReconnect)
-
-	if timeSinceLastReconnect < delay {
+	if !cm.lastReconnectTime.IsZero() && now.Sub(cm.lastReconnectTime) < cm.reconnectBackoff {
 		cm.mu.Unlock()
 		return errConnectionUnavailable
 	}
@@ -490,28 +488,22 @@ func (cm *ConnectionManager) tryReconnect() error {
 	slog.Info("attempting to reconnect to ceph")
 	if err := cm.connect(); err != nil {
 		slog.Warn("reconnection failed", "error", err)
+		cm.mu.Lock()
+		if cm.reconnectBackoff == 0 {
+			cm.reconnectBackoff = cm.minReconnectDelay
+		} else {
+			cm.reconnectBackoff = min(cm.reconnectBackoff*2, cm.maxReconnectDelay)
+		}
+		cm.mu.Unlock()
 		return err
 	}
 
+	cm.mu.Lock()
+	cm.reconnectBackoff = 0
+	cm.mu.Unlock()
+
 	slog.Info("successfully reconnected to ceph")
 	return nil
-}
-
-func (cm *ConnectionManager) calculateBackoff(timeSinceLastReconnect time.Duration) time.Duration {
-	if timeSinceLastReconnect >= cm.maxReconnectDelay {
-		return cm.minReconnectDelay
-	}
-
-	backoff := cm.minReconnectDelay
-	for backoff < cm.maxReconnectDelay && backoff < timeSinceLastReconnect {
-		backoff *= 2
-	}
-
-	if backoff > cm.maxReconnectDelay {
-		backoff = cm.maxReconnectDelay
-	}
-
-	return backoff
 }
 
 func (cm *ConnectionManager) Shutdown() {
