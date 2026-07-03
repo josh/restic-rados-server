@@ -22,10 +22,11 @@ import (
 const configObjectName = "config"
 
 var (
-	errObjectNotFound = errors.New("object not found")
-	errObjectExists   = errors.New("object exists")
-	errHashMismatch   = errors.New("hash mismatch")
-	errClientAborted  = errors.New("client aborted request")
+	errObjectNotFound      = errors.New("object not found")
+	errObjectExists        = errors.New("object exists")
+	errHashMismatch        = errors.New("hash mismatch")
+	errClientAborted       = errors.New("client aborted request")
+	errRangeNotSatisfiable = errors.New("requested range not satisfiable")
 )
 
 var (
@@ -285,6 +286,8 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 		http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
 	case errors.Is(err, errObjectNotFound):
 		http.NotFound(w, r)
+	case errors.Is(err, errRangeNotSatisfiable):
+		http.Error(w, "requested range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
 	case errors.Is(err, errObjectExists):
 		http.Error(w, "object already exists", http.StatusForbidden)
 	case errors.Is(err, errHashMismatch):
@@ -750,7 +753,7 @@ func parseExpectedHash(object string) ([32]byte, error) {
 
 func parseRange(r *http.Request, size int64) (*httpRange, error) {
 	if size == 0 {
-		return &httpRange{start: 0, end: 0, status: http.StatusOK}, nil
+		return &httpRange{start: 0, end: -1, status: http.StatusOK}, nil
 	}
 
 	if r == nil {
@@ -787,6 +790,9 @@ func parseRange(r *http.Request, size int64) (*httpRange, error) {
 		suffixLength, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil || suffixLength < 0 {
 			return nil, fmt.Errorf("invalid suffix length in range: %s", rangeHeader)
+		}
+		if suffixLength == 0 {
+			return nil, fmt.Errorf("zero-length suffix range: %s", rangeHeader)
 		}
 		if suffixLength >= size {
 			start = 0
@@ -846,8 +852,7 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 	rng, err := parseRange(r, int64(stat.Size))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusRequestedRangeNotSatisfiable)
-		return err
+		return fmt.Errorf("%w: %v", errRangeNotSatisfiable, err)
 	}
 
 	if rng.status == http.StatusPartialContent {

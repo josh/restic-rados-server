@@ -1,0 +1,38 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @empty http://localhost/config
+
+exec curl --silent --include --unix-socket $WORK/restic.sock http://localhost/config
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 0'
+
+exec curl --silent --write-out 'STATUS=%{http_code} LEN=%{size_download}' --unix-socket $WORK/restic.sock http://localhost/config --output /dev/null
+stdout 'STATUS=200 LEN=0'
+
+exec curl --silent --head --write-out 'STATUS=%{http_code}' --unix-socket $WORK/restic.sock http://localhost/config --output /dev/null
+stdout 'STATUS=200'
+
+bin-file rand blob 1000
+sha256 blob HASH
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob http://localhost/data/$HASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=-0' http://localhost/data/$HASH --output /dev/null
+stdout '416'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=99999-' http://localhost/data/$HASH --output oob-body
+stdout '416'
+! grep 'internal server error' oob-body
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=0-99' http://localhost/data/$HASH --output range-body
+stdout '206'
+byte-count range-body
+stdout '100'
+
+kill server
+
+-- empty --
