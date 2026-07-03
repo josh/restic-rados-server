@@ -245,14 +245,34 @@ func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string,
 	return confPath, nil
 }
 
+func randomUUID() (string, error) {
+	uuid := make([]byte, 16)
+	if _, err := rand.Read(uuid); err != nil {
+		return "", err
+	}
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
+}
+
 func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, error) {
-	fsid := "6bb5784d-86b1-4b48-aff7-04d5dd22ef07"
+	fsid, err := randomUUID()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate cluster fsid: %w", err)
+	}
+
+	monPort, err := getFreePort()
+	if err != nil {
+		return "", fmt.Errorf("failed to allocate monitor port: %w", err)
+	}
+	monAddr := fmt.Sprintf("127.0.0.1:%d", monPort)
+
 	confPath := filepath.Join(tmpDir, "ceph.conf")
 
 	cephConfig := map[string]map[string]string{
 		"global": {
 			"fsid":                                  fsid,
-			"mon_host":                              "v1:127.0.0.1:6789/0",
+			"mon_host":                              fmt.Sprintf("v1:%s/0", monAddr),
 			"public_network":                        "127.0.0.1/32",
 			"auth_cluster_required":                 "none",
 			"auth_service_required":                 "none",
@@ -287,7 +307,7 @@ func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, er
 		},
 	}
 
-	err := os.MkdirAll(filepath.Join(tmpDir, "mon"), 0o755)
+	err = os.MkdirAll(filepath.Join(tmpDir, "mon"), 0o755)
 	if err != nil {
 		return confPath, err
 	}
@@ -323,7 +343,7 @@ func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, er
 		return confPath, fmt.Errorf("failed to create monitor map: %w", err)
 	}
 
-	cmd = exec.CommandContext(ctx, "monmaptool", "--conf", confPath, monmapPath, "--add", "mon1", "127.0.0.1:6789")
+	cmd = exec.CommandContext(ctx, "monmaptool", "--conf", confPath, monmapPath, "--add", "mon1", "v1:"+monAddr)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
