@@ -432,11 +432,16 @@ func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context,
 	for i := 0; i < 3; i++ {
 		osdID := strconv.Itoa(i)
 
-		cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", osdID, "--mkfs")
+		osdUUID, err := randomUUID()
+		if err != nil {
+			return fmt.Errorf("failed to generate OSD %d uuid: %w", i, err)
+		}
+
+		cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", osdID, "--mkfs", "--osd-uuid", osdUUID)
 		cmd.Stdout = out
 		cmd.Stderr = out
 
-		err := cmd.Run()
+		err = cmd.Run()
 		if err != nil {
 			return fmt.Errorf("failed to initialize OSD %d filesystem: %w", i, err)
 		}
