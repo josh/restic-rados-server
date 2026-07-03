@@ -1,5 +1,5 @@
 create-pool meta
 create-pool data
 
-! exec restic-rados-server --pool=$CEPH_POOL_DATA:data,snapshots --pool=$CEPH_POOL_META:data,index,* --listen $WORK/restic.sock
+! exec restic-rados-server --pool=$CEPH_POOL_DATA:data,snapshots --pool=$CEPH_POOL_META:data,index --listen $WORK/restic.sock
 stderr 'blob type "data" assigned to multiple pools'
