@@ -546,6 +546,9 @@ func TestLoadConfigPoolErrors(t *testing.T) {
 		{"unknown blob type", []string{"--pool", "my-pool:badtype"}},
 		{"duplicate type across pools", []string{"--pool", "pool1:data;pool2:data"}},
 		{"multiple catch-all pools", []string{"--pool", "pool1;pool2"}},
+		{"empty lower pool", []string{"--pool", "new-pool//:data"}},
+		{"lower same as upper", []string{"--pool", "pool1//pool1"}},
+		{"namespace starting with slash", []string{"--pool", "pool1//pool2//pool3"}},
 	}
 
 	for _, tt := range tests {
@@ -738,6 +741,151 @@ func TestLoadConfigPoolSpecNamespaceErrors(t *testing.T) {
 	}
 }
 
+func TestLoadConfigPoolSpecLower(t *testing.T) {
+	config, _, err := loadConfig([]string{
+		"--pool", "new-data/a//old-data/b:data",
+		"--pool", "new-meta//old-meta:*",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	def := config.Repos["default"]
+	if def == nil || def.BlobPools == nil {
+		t.Fatal("expected default repo BlobPools")
+	}
+	if def.BlobPools.Data.Pool != "new-data" || def.BlobPools.Data.Namespace != "a" {
+		t.Errorf("expected Data = new-data/a, got %s/%s", def.BlobPools.Data.Pool, def.BlobPools.Data.Namespace)
+	}
+	if def.BlobPools.Data.Lower == nil || def.BlobPools.Data.Lower.Pool != "old-data" || def.BlobPools.Data.Lower.Namespace != "b" {
+		t.Fatalf("expected Data lower = old-data/b, got %+v", def.BlobPools.Data.Lower)
+	}
+	if def.BlobPools.Config.Pool != "new-meta" {
+		t.Errorf("expected Config pool = new-meta, got %s", def.BlobPools.Config.Pool)
+	}
+	if def.BlobPools.Config.Lower == nil || def.BlobPools.Config.Lower.Pool != "old-meta" {
+		t.Fatalf("expected Config lower = old-meta (catch-all propagation), got %+v", def.BlobPools.Config.Lower)
+	}
+	if def.BlobPools.Keys.Lower == nil || def.BlobPools.Keys.Lower.Pool != "old-meta" {
+		t.Fatalf("expected Keys lower = old-meta (catch-all propagation), got %+v", def.BlobPools.Keys.Lower)
+	}
+}
+
+func TestLoadConfigEnvPoolLower(t *testing.T) {
+	t.Setenv("RESTIC_RADOS_SERVER_POOL", "new-pool//old-pool:data;meta-pool:*")
+
+	config, _, err := loadConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	def := config.Repos["default"]
+	if def == nil || def.BlobPools == nil {
+		t.Fatal("expected default repo BlobPools")
+	}
+	if def.BlobPools.Data.Pool != "new-pool" {
+		t.Errorf("expected Data pool = new-pool, got %s", def.BlobPools.Data.Pool)
+	}
+	if def.BlobPools.Data.Lower == nil || def.BlobPools.Data.Lower.Pool != "old-pool" {
+		t.Fatalf("expected Data lower = old-pool, got %+v", def.BlobPools.Data.Lower)
+	}
+	if def.BlobPools.Config.Lower != nil {
+		t.Errorf("expected Config lower unset, got %+v", def.BlobPools.Config.Lower)
+	}
+}
+
+func TestLoadConfigBlobPoolsLayered(t *testing.T) {
+	json := `{
+		"repos": {
+			"default": {
+				"blob_pools": {
+					"config": {"pool": "meta-pool"},
+					"keys": {"pool": "meta-pool"},
+					"locks": {"pool": "meta-pool"},
+					"snapshots": {"pool": "meta-pool"},
+					"index": {"pool": "meta-pool"},
+					"data": {
+						"upper": {"pool": "new-data", "namespace": "ns", "striped": true},
+						"lower": {"pool": "old-data", "namespace": "old", "striped": false, "max_object_size": 4194304}
+					}
+				}
+			}
+		}
+	}`
+	path := writeTemp(t, json)
+
+	config, _, err := loadConfig([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	def := config.Repos["default"]
+	if def == nil || def.BlobPools == nil {
+		t.Fatal("expected default repo BlobPools")
+	}
+	data := def.BlobPools.Data
+	if data.Pool != "new-data" || data.Namespace != "ns" {
+		t.Errorf("expected upper folded into Data = new-data/ns, got %s/%s", data.Pool, data.Namespace)
+	}
+	if data.Striped == nil || *data.Striped != true {
+		t.Error("expected upper striped folded into Data")
+	}
+	if data.Upper != nil {
+		t.Error("expected Upper cleared after normalization")
+	}
+	if data.Lower == nil || data.Lower.Pool != "old-data" || data.Lower.Namespace != "old" {
+		t.Fatalf("expected Data lower = old-data/old, got %+v", data.Lower)
+	}
+	if data.Lower.Striped == nil || *data.Lower.Striped != false {
+		t.Error("expected lower striped override preserved")
+	}
+	if data.Lower.MaxObjectSize == nil || *data.Lower.MaxObjectSize != 4194304 {
+		t.Error("expected lower max_object_size override preserved")
+	}
+	if def.BlobPools.Config.Lower != nil {
+		t.Errorf("expected Config lower unset, got %+v", def.BlobPools.Config.Lower)
+	}
+}
+
+func TestLoadConfigBlobPoolsLayerValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"pool combined with layers", `{"pool": "x", "upper": {"pool": "a"}, "lower": {"pool": "b"}}`},
+		{"lower without upper", `{"pool": "x", "lower": {"pool": "b"}}`},
+		{"upper without lower", `{"upper": {"pool": "a"}}`},
+		{"empty upper pool", `{"upper": {"pool": ""}, "lower": {"pool": "b"}}`},
+		{"empty lower pool", `{"upper": {"pool": "a"}, "lower": {"pool": ""}}`},
+		{"identical layers", `{"upper": {"pool": "a", "namespace": "n"}, "lower": {"pool": "a", "namespace": "n"}}`},
+		{"unknown field in layer", `{"upper": {"pool": "a", "lower": {"pool": "c"}}, "lower": {"pool": "b"}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			json := `{
+				"repos": {
+					"default": {
+						"blob_pools": {
+							"config": {"pool": "meta-pool"},
+							"keys": {"pool": "meta-pool"},
+							"locks": {"pool": "meta-pool"},
+							"snapshots": {"pool": "meta-pool"},
+							"index": {"pool": "meta-pool"},
+							"data": ` + tt.data + `
+						}
+					}
+				}
+			}`
+			path := writeTemp(t, json)
+			_, _, err := loadConfig([]string{"--config", path})
+			if err == nil {
+				t.Fatal("expected layer validation error")
+			}
+		})
+	}
+}
+
 func TestLoadConfigBlobPoolsJSON(t *testing.T) {
 	json := `{
 		"repos": {
@@ -898,6 +1046,16 @@ func TestPoolSpecsToPoolsConfig(t *testing.T) {
 			[]string{"data-pool:data,index", "meta-pool:*"},
 			poolsConfig{"data-pool": {"data", "index"}, "meta-pool": {"*"}},
 		},
+		{
+			"lower layer",
+			[]string{"new-pool//old-pool"},
+			poolsConfig{"new-pool//old-pool": {"*"}},
+		},
+		{
+			"lower layer with namespaces",
+			[]string{"new-pool/n1//old-pool/n2:data"},
+			poolsConfig{"new-pool/n1//old-pool/n2": {"data"}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1023,6 +1181,64 @@ func TestParsePoolsConfig(t *testing.T) {
 		_, err := parsePoolsConfig(pc)
 		if err == nil {
 			t.Fatal("expected error for empty pool name")
+		}
+	})
+
+	t.Run("lower layer", func(t *testing.T) {
+		pc := poolsConfig{"new-pool//old-pool": {"*"}}
+		pools, err := parsePoolsConfig(pc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pools.Data.Pool != "new-pool" {
+			t.Errorf("expected Data pool = new-pool, got %s", pools.Data.Pool)
+		}
+		if pools.Data.Lower == nil || pools.Data.Lower.Pool != "old-pool" {
+			t.Fatalf("expected Data lower pool = old-pool, got %+v", pools.Data.Lower)
+		}
+		if pools.Data.Lower.Namespace != "" {
+			t.Errorf("expected empty lower namespace, got %s", pools.Data.Lower.Namespace)
+		}
+	})
+
+	t.Run("lower layer with namespaces", func(t *testing.T) {
+		pc := poolsConfig{"new-pool/n1//old-pool/n2": {"data"}}
+		pools, err := parsePoolsConfig(pc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pools.Data.Pool != "new-pool" || pools.Data.Namespace != "n1" {
+			t.Errorf("expected Data = new-pool/n1, got %s/%s", pools.Data.Pool, pools.Data.Namespace)
+		}
+		if pools.Data.Lower == nil || pools.Data.Lower.Pool != "old-pool" || pools.Data.Lower.Namespace != "n2" {
+			t.Fatalf("expected Data lower = old-pool/n2, got %+v", pools.Data.Lower)
+		}
+	})
+
+	t.Run("same pool different namespaces", func(t *testing.T) {
+		pc := poolsConfig{"my-pool/new//my-pool/old": {"*"}}
+		pools, err := parsePoolsConfig(pc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pools.Data.Namespace != "new" || pools.Data.Lower.Namespace != "old" {
+			t.Errorf("expected namespaces new/old, got %s/%s", pools.Data.Namespace, pools.Data.Lower.Namespace)
+		}
+	})
+
+	t.Run("empty lower pool name", func(t *testing.T) {
+		pc := poolsConfig{"new-pool//": {"*"}}
+		_, err := parsePoolsConfig(pc)
+		if err == nil {
+			t.Fatal("expected error for empty lower pool name")
+		}
+	})
+
+	t.Run("identical layers", func(t *testing.T) {
+		pc := poolsConfig{"my-pool/ns//my-pool/ns": {"*"}}
+		_, err := parsePoolsConfig(pc)
+		if err == nil {
+			t.Fatal("expected error for identical layers")
 		}
 	})
 }

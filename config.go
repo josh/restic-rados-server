@@ -160,7 +160,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	fs.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
 	fs.StringVar(&keyringPath, "keyring", "", "path to Ceph keyring file")
 	fs.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
-	fs.Var(&poolSpecs, "pool", "Pool specification: 'pool[/namespace][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
+	fs.Var(&poolSpecs, "pool", "Pool specification: 'pool[/namespace][//lowerpool[/namespace]][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
 	fs.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
 	fs.BoolVar(&striper, "striper", true, "enable librados striper for large objects")
 	fs.Int64Var(&readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
@@ -409,6 +409,10 @@ func (c *Config) normalizeRepos() error {
 				return fmt.Errorf("repo %q: invalid pool configuration: %v", name, err)
 			}
 			repo.BlobPools = &pools
+		} else if repo.BlobPools != nil {
+			if err := repo.BlobPools.normalizeLayers(); err != nil {
+				return fmt.Errorf("repo %q: %v", name, err)
+			}
 		}
 
 		if repo.MaxObjectSize < 0 {
@@ -441,11 +445,20 @@ func (c *Config) validateTailscaleCapabilityListeners() {
 	}
 }
 
-type BlobPoolConfig struct {
+type LayerPoolConfig struct {
 	Pool          string `json:"pool"`
 	Namespace     string `json:"namespace,omitempty"`
 	Striped       *bool  `json:"striped,omitempty"`
 	MaxObjectSize *int64 `json:"max_object_size,omitempty"`
+}
+
+type BlobPoolConfig struct {
+	Pool          string           `json:"pool"`
+	Namespace     string           `json:"namespace,omitempty"`
+	Striped       *bool            `json:"striped,omitempty"`
+	MaxObjectSize *int64           `json:"max_object_size,omitempty"`
+	Upper         *LayerPoolConfig `json:"upper,omitempty"`
+	Lower         *LayerPoolConfig `json:"lower,omitempty"`
 }
 
 type ServerConfigPools struct {
@@ -469,6 +482,7 @@ type BlobPool struct {
 	Striped       bool
 	Alignment     uint64
 	MaxObjectSize int64
+	Lower         *BlobPool
 }
 
 func (p *ServerConfigPools) getPoolForType(bt BlobType) BlobPoolConfig {
@@ -490,17 +504,48 @@ func (p *ServerConfigPools) getPoolForType(bt BlobType) BlobPoolConfig {
 	}
 }
 
+func (p *ServerConfigPools) normalizeLayers() error {
+	fields := []*BlobPoolConfig{&p.Config, &p.Keys, &p.Locks, &p.Snapshots, &p.Data, &p.Index}
+	for i, bt := range AllBlobTypes {
+		bpc := fields[i]
+		if bpc.Upper == nil && bpc.Lower == nil {
+			continue
+		}
+		if bpc.Upper == nil {
+			return fmt.Errorf("blob type %q: lower layer requires an explicit upper layer", bt)
+		}
+		if bpc.Lower == nil {
+			return fmt.Errorf("blob type %q: upper layer requires a lower layer (use the flat pool form for a single layer)", bt)
+		}
+		if bpc.Pool != "" || bpc.Namespace != "" || bpc.Striped != nil || bpc.MaxObjectSize != nil {
+			return fmt.Errorf("blob type %q: cannot combine pool with upper/lower layers", bt)
+		}
+		if bpc.Upper.Pool == "" {
+			return fmt.Errorf("blob type %q: upper pool name cannot be empty", bt)
+		}
+		if bpc.Lower.Pool == "" {
+			return fmt.Errorf("blob type %q: lower pool name cannot be empty", bt)
+		}
+		if bpc.Upper.Pool == bpc.Lower.Pool && bpc.Upper.Namespace == bpc.Lower.Namespace {
+			return fmt.Errorf("blob type %q: lower layer must differ from upper layer", bt)
+		}
+
+		bpc.Pool = bpc.Upper.Pool
+		bpc.Namespace = bpc.Upper.Namespace
+		bpc.Striped = bpc.Upper.Striped
+		bpc.MaxObjectSize = bpc.Upper.MaxObjectSize
+		bpc.Upper = nil
+	}
+	return nil
+}
+
 func poolSpecsToPoolsConfig(specs []string) poolsConfig {
 	result := make(poolsConfig)
 	for _, spec := range specs {
-		poolName, namespace, types, err := parsePoolSpec(spec)
+		key, types, err := parsePoolSpec(spec)
 		if err != nil {
 			result[spec] = nil
 			continue
-		}
-		key := poolName
-		if namespace != "" {
-			key = poolName + "/" + namespace
 		}
 		result[key] = types
 	}
@@ -514,6 +559,35 @@ func splitPoolKey(key string) (pool, namespace string) {
 	return key, ""
 }
 
+func parsePoolKey(key string) (BlobPoolConfig, error) {
+	upperPart, lowerPart, hasLower := strings.Cut(key, "//")
+
+	poolName, namespace := splitPoolKey(upperPart)
+	if poolName == "" {
+		return BlobPoolConfig{}, fmt.Errorf("empty pool name in specification: %q", key)
+	}
+	if strings.HasPrefix(namespace, "/") {
+		return BlobPoolConfig{}, fmt.Errorf("namespace cannot start with '/' in specification: %q", key)
+	}
+	bpc := BlobPoolConfig{Pool: poolName, Namespace: namespace}
+
+	if hasLower {
+		lowerPool, lowerNamespace := splitPoolKey(lowerPart)
+		if lowerPool == "" {
+			return BlobPoolConfig{}, fmt.Errorf("empty lower pool name in specification: %q", key)
+		}
+		if strings.HasPrefix(lowerNamespace, "/") {
+			return BlobPoolConfig{}, fmt.Errorf("namespace cannot start with '/' in specification: %q", key)
+		}
+		if lowerPool == poolName && lowerNamespace == namespace {
+			return BlobPoolConfig{}, fmt.Errorf("lower layer must differ from upper layer in specification: %q", key)
+		}
+		bpc.Lower = &LayerPoolConfig{Pool: lowerPool, Namespace: lowerNamespace}
+	}
+
+	return bpc, nil
+}
+
 func parsePoolsConfig(pc poolsConfig) (ServerConfigPools, error) {
 	if len(pc) == 0 {
 		return ServerConfigPools{}, errors.New("no pool specifications provided")
@@ -523,12 +597,11 @@ func parsePoolsConfig(pc poolsConfig) (ServerConfigPools, error) {
 	var catchAll *BlobPoolConfig
 
 	for key, types := range pc {
-		poolName, namespace := splitPoolKey(key)
-		if poolName == "" {
-			return ServerConfigPools{}, fmt.Errorf("empty pool name in specification: %q", key)
+		bpc, err := parsePoolKey(key)
+		if err != nil {
+			return ServerConfigPools{}, err
 		}
-
-		bpc := BlobPoolConfig{Pool: poolName, Namespace: namespace}
+		poolName := bpc.Pool
 
 		if len(types) == 0 || types == nil {
 			return ServerConfigPools{}, fmt.Errorf("invalid pool specification: %q", key)
@@ -573,10 +646,10 @@ func parsePoolsConfig(pc poolsConfig) (ServerConfigPools, error) {
 	}, nil
 }
 
-func parsePoolSpec(spec string) (poolName, namespace string, types []string, err error) {
+func parsePoolSpec(spec string) (key string, types []string, err error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
-		return "", "", nil, errors.New("empty pool specification")
+		return "", nil, errors.New("empty pool specification")
 	}
 
 	colonIdx := strings.Index(spec, ":")
@@ -588,33 +661,33 @@ func parsePoolSpec(spec string) (poolName, namespace string, types []string, err
 	}
 
 	poolPart = strings.TrimSpace(poolPart)
-	if slashIdx := strings.Index(poolPart, "/"); slashIdx != -1 {
-		poolName = poolPart[:slashIdx]
-		namespace = poolPart[slashIdx+1:]
-		if poolName == "" {
-			return "", "", nil, fmt.Errorf("empty pool name in specification: %q", spec)
-		}
-		if namespace == "" {
-			return "", "", nil, fmt.Errorf("empty namespace in specification: %q", spec)
-		}
-	} else {
-		poolName = poolPart
-	}
 
-	if poolName == "" {
-		return "", "", nil, fmt.Errorf("empty pool name in specification: %q", spec)
+	upperPart, lowerPart, hasLower := strings.Cut(poolPart, "//")
+	if err := validatePoolLayer(upperPart, spec); err != nil {
+		return "", nil, err
+	}
+	if hasLower {
+		if lowerPart == "" {
+			return "", nil, fmt.Errorf("empty lower pool name in specification: %q", spec)
+		}
+		if err := validatePoolLayer(lowerPart, spec); err != nil {
+			return "", nil, err
+		}
+		if lowerPart == upperPart {
+			return "", nil, fmt.Errorf("lower layer must differ from upper layer in specification: %q", spec)
+		}
 	}
 
 	if colonIdx == -1 {
-		return poolName, namespace, []string{"*"}, nil
+		return poolPart, []string{"*"}, nil
 	}
 
 	if typesPart == "" {
-		return "", "", nil, fmt.Errorf("empty types list in specification: %q", spec)
+		return "", nil, fmt.Errorf("empty types list in specification: %q", spec)
 	}
 
 	if typesPart == "*" {
-		return poolName, namespace, []string{"*"}, nil
+		return poolPart, []string{"*"}, nil
 	}
 
 	for _, t := range strings.Split(typesPart, ",") {
@@ -626,10 +699,24 @@ func parsePoolSpec(spec string) (poolName, namespace string, types []string, err
 	}
 
 	if len(types) == 0 {
-		return "", "", nil, fmt.Errorf("no valid types in specification: %q", spec)
+		return "", nil, fmt.Errorf("no valid types in specification: %q", spec)
 	}
 
-	return poolName, namespace, types, nil
+	return poolPart, types, nil
+}
+
+func validatePoolLayer(layer, spec string) error {
+	poolName, namespace := splitPoolKey(layer)
+	if poolName == "" {
+		return fmt.Errorf("empty pool name in specification: %q", spec)
+	}
+	if strings.Contains(layer, "/") && namespace == "" {
+		return fmt.Errorf("empty namespace in specification: %q", spec)
+	}
+	if strings.HasPrefix(namespace, "/") {
+		return fmt.Errorf("namespace cannot start with '/' in specification: %q", spec)
+	}
+	return nil
 }
 
 func isValidBlobTypeForMapping(bt BlobType) bool {

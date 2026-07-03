@@ -47,6 +47,9 @@ type HandlerContext struct {
 	ioctx           *rados.IOContext
 	radosIO         RadosIOContext
 	striperIO       RadosIOContext
+	lowerIoctx      *rados.IOContext
+	lowerRadosIO    RadosIOContext
+	lowerStriperIO  RadosIOContext
 	maxObjectSize   int64
 	radosCalls      uint64
 	readBufferPool  *BufferPool
@@ -79,6 +82,9 @@ type httpRange struct {
 
 func (hctx *HandlerContext) Destroy() {
 	hctx.ioctx.Destroy()
+	if hctx.lowerIoctx != nil {
+		hctx.lowerIoctx.Destroy()
+	}
 	if hctx.readBufPtr != nil {
 		hctx.readBufferPool.Put(hctx.readBufPtr)
 	}
@@ -87,21 +93,59 @@ func (hctx *HandlerContext) Destroy() {
 	}
 }
 
-func (hctx *HandlerContext) statRadosObject(object string) (RadosIOContext, StatInfo, error) {
-	if hctx.striperIO != nil {
-		stat, err := hctx.radosIO.Stat(object)
+func statInLayer(plainIO, striperIO RadosIOContext, object string) (RadosIOContext, StatInfo, error) {
+	if striperIO != nil {
+		stat, err := plainIO.Stat(object)
 		if !errors.Is(err, rados.ErrNotFound) {
-			return hctx.radosIO, stat, err
+			return plainIO, stat, err
 		}
-		_, stripeErr := hctx.radosIO.Stat(object + firstStripeSuffix)
+		_, stripeErr := plainIO.Stat(object + firstStripeSuffix)
 		if !errors.Is(stripeErr, rados.ErrNotFound) {
-			stat, err = hctx.striperIO.Stat(object)
-			return hctx.striperIO, stat, err
+			stat, err = striperIO.Stat(object)
+			return striperIO, stat, err
 		}
-		return hctx.radosIO, StatInfo{}, err
+		return plainIO, StatInfo{}, err
 	}
-	stat, err := hctx.radosIO.Stat(object)
-	return hctx.radosIO, stat, err
+	stat, err := plainIO.Stat(object)
+	return plainIO, stat, err
+}
+
+func (hctx *HandlerContext) statRadosObject(object string) (RadosIOContext, StatInfo, error) {
+	rioctx, stat, err := statInLayer(hctx.radosIO, hctx.striperIO, object)
+	if errors.Is(err, rados.ErrNotFound) && hctx.lowerRadosIO != nil {
+		return statInLayer(hctx.lowerRadosIO, hctx.lowerStriperIO, object)
+	}
+	return rioctx, stat, err
+}
+
+func (hctx *HandlerContext) removeRadosObject(object string, canStripe bool) error {
+	type layer struct {
+		plainIO   RadosIOContext
+		striperIO RadosIOContext
+	}
+	var layers []layer
+	if hctx.lowerRadosIO != nil {
+		layers = append(layers, layer{hctx.lowerRadosIO, hctx.lowerStriperIO})
+	}
+	layers = append(layers, layer{hctx.radosIO, hctx.striperIO})
+
+	for _, l := range layers {
+		striperIO := l.striperIO
+		if !canStripe {
+			striperIO = nil
+		}
+		rioctx, _, err := statInLayer(l.plainIO, striperIO, object)
+		if errors.Is(err, rados.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("stat object %s: %w", object, err)
+		}
+		if err := rioctx.Remove(object); err != nil {
+			return fmt.Errorf("delete object %s: %w", object, err)
+		}
+	}
+	return nil
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
@@ -140,7 +184,7 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, bp, err := h.connMgr.GetIOContextForRepo(h.repo, blobType)
+	ioctx, lowerIoctx, bp, err := h.connMgr.GetIOContextForRepo(h.repo, blobType)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +194,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 
 	hctx := &HandlerContext{
 		ioctx:           ioctx,
+		lowerIoctx:      lowerIoctx,
 		maxObjectSize:   bp.MaxObjectSize,
 		readBufferPool:  h.readBufferPool,
 		readBufPtr:      readBufPtr,
@@ -161,6 +206,13 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 
 	if bp.Striped {
 		hctx.striperIO = NewStripedIO(ioctx, uint64(bp.MaxObjectSize), bp.Alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
+	}
+
+	if lowerIoctx != nil {
+		hctx.lowerRadosIO = NewRadosIO(lowerIoctx, bp.Lower.Alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
+		if bp.Lower.Striped {
+			hctx.lowerStriperIO = NewStripedIO(lowerIoctx, uint64(bp.Lower.MaxObjectSize), bp.Lower.Alignment, *readBufPtr, *writeBufPtr, &hctx.radosCalls)
+		}
 	}
 
 	return hctx, nil
@@ -309,18 +361,8 @@ func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
 		hctx.Destroy()
 	}()
 
-	_, err := hctx.radosIO.Stat(configObjectName)
-	if errors.Is(err, rados.ErrNotFound) {
-		rw.WriteHeader(http.StatusOK)
-		return
-	}
-	if err != nil {
-		h.handleRadosError(rw, r, configObjectName, fmt.Errorf("stat object %s: %w", configObjectName, err))
-		return
-	}
-
-	if err := hctx.radosIO.Remove(configObjectName); err != nil {
-		h.handleRadosError(rw, r, configObjectName, fmt.Errorf("delete object %s: %w", configObjectName, err))
+	if err := hctx.removeRadosObject(configObjectName, false); err != nil {
+		h.handleRadosError(rw, r, configObjectName, err)
 		return
 	}
 
@@ -373,68 +415,30 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 		hctx.Destroy()
 	}()
 
-	slog.Debug("rados.Iter")
-	hctx.radosCalls++
-	iter, err := hctx.ioctx.Iter()
-	if err != nil {
-		slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("create iterator: %w", err))
-		http.Error(rw, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	defer iter.Close()
-
 	useV2 := acceptsBlobListV2(r)
 	prefix := blobType + "/"
 
 	blobNames := []string{}
 	blobInfos := []blobInfo{}
 
-	for iter.Next() {
-		objectName := iter.Value()
-		if objectName == "" || !strings.HasPrefix(objectName, prefix) {
-			continue
-		}
-
-		blobID := strings.TrimPrefix(objectName, prefix)
-
-		if stripedBlobIDRegex.MatchString(blobID) && !firstStripedBlobIDRegex.MatchString(blobID) {
-			continue
-		}
-
-		if firstStripedBlobIDRegex.MatchString(blobID) {
-			blobID = blobID[:len(blobID)-stripeSuffixLen]
-		}
-
-		if !hexBlobIDRegex.MatchString(blobID) {
-			slog.Warn("skipping unknown object", "object", objectName)
-			continue
-		}
-
-		baseObjectName := prefix + blobID
-
-		if useV2 {
-			_, stat, err := hctx.statRadosObject(baseObjectName)
-			if err != nil {
-				slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("stat %s: %w", baseObjectName, err))
-				http.Error(rw, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			blobInfos = append(blobInfos, blobInfo{
-				Name: blobID,
-				Size: stat.Size,
-			})
-		} else {
-			blobNames = append(blobNames, blobID)
-		}
+	sources := []*rados.IOContext{hctx.ioctx}
+	var seen map[string]struct{}
+	if hctx.lowerIoctx != nil {
+		sources = append(sources, hctx.lowerIoctx)
+		seen = make(map[string]struct{})
 	}
 
-	if err := iter.Err(); err != nil {
-		slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("iterate objects: %w", err))
-		http.Error(rw, "internal server error", http.StatusInternalServerError)
-		return
+	for _, src := range sources {
+		err := hctx.collectBlobs(src, prefix, useV2, seen, &blobNames, &blobInfos)
+		if err != nil {
+			slog.Error("failed to list blobs", "type", blobType, "error", err)
+			http.Error(rw, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	var data []byte
+	var err error
 	if useV2 {
 		data, err = json.Marshal(blobInfos)
 		if err != nil {
@@ -457,6 +461,66 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	if _, err = rw.Write(data); err != nil {
 		slog.Warn("failed to list blobs", "type", blobType, "error", err)
 	}
+}
+
+func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, prefix string, useV2 bool, seen map[string]struct{}, blobNames *[]string, blobInfos *[]blobInfo) error {
+	slog.Debug("rados.Iter")
+	hctx.radosCalls++
+	iter, err := src.Iter()
+	if err != nil {
+		return fmt.Errorf("create iterator: %w", err)
+	}
+	defer iter.Close()
+
+	for iter.Next() {
+		objectName := iter.Value()
+		if objectName == "" || !strings.HasPrefix(objectName, prefix) {
+			continue
+		}
+
+		blobID := strings.TrimPrefix(objectName, prefix)
+
+		if stripedBlobIDRegex.MatchString(blobID) && !firstStripedBlobIDRegex.MatchString(blobID) {
+			continue
+		}
+
+		if firstStripedBlobIDRegex.MatchString(blobID) {
+			blobID = blobID[:len(blobID)-stripeSuffixLen]
+		}
+
+		if !hexBlobIDRegex.MatchString(blobID) {
+			slog.Warn("skipping unknown object", "object", objectName)
+			continue
+		}
+
+		if seen != nil {
+			if _, ok := seen[blobID]; ok {
+				continue
+			}
+			seen[blobID] = struct{}{}
+		}
+
+		baseObjectName := prefix + blobID
+
+		if useV2 {
+			_, stat, err := hctx.statRadosObject(baseObjectName)
+			if err != nil {
+				return fmt.Errorf("stat %s: %w", baseObjectName, err)
+			}
+			*blobInfos = append(*blobInfos, blobInfo{
+				Name: blobID,
+				Size: stat.Size,
+			})
+		} else {
+			*blobNames = append(*blobNames, blobID)
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("iterate objects: %w", err)
+	}
+
+	return nil
 }
 
 func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
@@ -574,18 +638,8 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 
 	objectName := blobType + "/" + blobID
 
-	rioctx, _, err := hctx.statRadosObject(objectName)
-	if errors.Is(err, rados.ErrNotFound) {
-		rw.WriteHeader(http.StatusOK)
-		return
-	}
-	if err != nil {
-		h.handleRadosError(rw, r, blobID, fmt.Errorf("stat object %s: %w", objectName, err))
-		return
-	}
-
-	if err := rioctx.Remove(objectName); err != nil {
-		h.handleRadosError(rw, r, blobID, fmt.Errorf("delete object %s: %w", objectName, err))
+	if err := hctx.removeRadosObject(objectName, true); err != nil {
+		h.handleRadosError(rw, r, blobID, err)
 		return
 	}
 	rw.WriteHeader(http.StatusOK)
@@ -782,7 +836,8 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 		return fmt.Errorf("stat %s: %w", object, err)
 	}
 
-	striped := hctx.striperIO != nil && rioctx == hctx.striperIO
+	striped := (hctx.striperIO != nil && rioctx == hctx.striperIO) ||
+		(hctx.lowerStriperIO != nil && rioctx == hctx.lowerStriperIO)
 	slog.Debug("reading blob", "object", object, "size", stat.Size, "striped", striped)
 
 	if stat.Size > uint64(math.MaxInt64) {
