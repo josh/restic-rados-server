@@ -215,6 +215,15 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 			stdin:  os.Stdin,
 			stdout: os.Stdout,
 		}
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = stdioConn.Close()
+			case <-done:
+			}
+		}()
 		server.ServeConn(stdioConn, &http2.ServeConnOpts{
 			Context: ctx,
 			Handler: handler,
