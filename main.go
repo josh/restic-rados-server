@@ -103,9 +103,6 @@ func main() {
 	readPool := NewBufferPool(config.ReadBufferSize)
 	writePool := NewBufferPool(config.WriteBufferSize)
 
-	mux := http.NewServeMux()
-	setupAllRoutes(mux, connMgr, config.Repos, config.TailscaleCapability, readPool, writePool)
-
 	ctx := context.Background()
 
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
@@ -129,6 +126,14 @@ func main() {
 	}
 
 	config.validateTailscaleCapabilityListeners()
+
+	tailscaleCapability := config.TailscaleCapability
+	if config.Stdio {
+		tailscaleCapability = ""
+	}
+
+	mux := http.NewServeMux()
+	setupAllRoutes(mux, connMgr, config.Repos, tailscaleCapability, readPool, writePool)
 
 	if config.Stdio && time.Duration(config.MaxIdleTime) > 0 {
 		slog.Error("--max-idle-time is not supported in stdio mode")
