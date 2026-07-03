@@ -1,0 +1,26 @@
+tail-logs
+create-pool new
+create-pool old
+
+exec restic-rados-server --pool=$CEPH_POOL_NEW//$CEPH_POOL_OLD --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @test-data 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+
+exec rados --pool $CEPH_POOL_NEW ls
+stdout '^config$'
+stdout 'data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+
+exec rados --pool $CEPH_POOL_OLD ls
+! stdout '.'
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- test-data --
+test content

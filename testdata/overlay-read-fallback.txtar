@@ -1,0 +1,47 @@
+tail-logs
+create-pool new
+create-pool old
+
+exec restic-rados-server --pool=$CEPH_POOL_OLD --listen $WORK/restic-old.sock &oldserver&
+wait4socket $WORK/restic-old.sock
+
+exec curl --silent --unix-socket $WORK/restic-old.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --unix-socket $WORK/restic-old.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+exec curl --silent --unix-socket $WORK/restic-old.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @test-data 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+
+kill oldserver
+
+exec restic-rados-server --pool=$CEPH_POOL_NEW//$CEPH_POOL_OLD --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock http://localhost/config
+cmp stdout config-data
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+cmp stdout test-data
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --head 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae' --output /dev/null
+stdout '200'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @new-data 'http://localhost/data/7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730'
+
+exec rados --pool $CEPH_POOL_NEW ls
+stdout 'data/7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730'
+
+exec rados --pool $CEPH_POOL_OLD ls
+! stdout 'data/7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @test-data 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae' --output /dev/null
+stdout '403'
+
+exec rados --pool $CEPH_POOL_NEW ls
+! stdout 'data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- test-data --
+test content
+-- new-data --
+bar

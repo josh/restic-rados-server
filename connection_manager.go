@@ -163,7 +163,7 @@ func (cm *ConnectionManager) connect() error {
 	return nil
 }
 
-func (cm *ConnectionManager) getIOContextForPool(poolName string, radosCalls *uint64) (*rados.IOContext, error) {
+func (cm *ConnectionManager) getIOContextsForBlobPool(bp *BlobPool, radosCalls *uint64) (*rados.IOContext, *rados.IOContext, error) {
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		cm.mu.RLock()
@@ -172,7 +172,7 @@ func (cm *ConnectionManager) getIOContextForPool(poolName string, radosCalls *ui
 
 		if conn == nil {
 			if err := cm.tryReconnect(); err != nil {
-				return nil, errConnectionUnavailable
+				return nil, nil, errConnectionUnavailable
 			}
 
 			cm.mu.RLock()
@@ -180,33 +180,57 @@ func (cm *ConnectionManager) getIOContextForPool(poolName string, radosCalls *ui
 			cm.mu.RUnlock()
 
 			if conn == nil {
-				return nil, errConnectionUnavailable
+				return nil, nil, errConnectionUnavailable
 			}
 		}
 
 		atomic.AddUint64(radosCalls, 1)
-		slog.Debug("rados.OpenIOContext", "pool", poolName)
-		ioctx, err := conn.OpenIOContext(poolName)
+		slog.Debug("rados.OpenIOContext", "pool", bp.Pool)
+		ioctx, err := conn.OpenIOContext(bp.Pool)
 		if err != nil {
 			if errors.Is(err, rados.ErrNotFound) {
-				return nil, err
+				return nil, nil, err
 			}
 
-			slog.Error("failed to open IO context", "pool", poolName, "error", err, "attempt", attempt+1)
+			slog.Error("failed to open IO context", "pool", bp.Pool, "error", err, "attempt", attempt+1)
 			cm.markConnectionBroken()
 			if attempt < maxAttempts-1 {
 				if err := cm.tryReconnect(); err != nil {
-					return nil, errConnectionUnavailable
+					return nil, nil, errConnectionUnavailable
 				}
 				continue
 			}
-			return nil, errConnectionUnavailable
+			return nil, nil, errConnectionUnavailable
 		}
 
-		return ioctx, nil
+		if bp.Lower == nil {
+			return ioctx, nil, nil
+		}
+
+		atomic.AddUint64(radosCalls, 1)
+		slog.Debug("rados.OpenIOContext", "pool", bp.Lower.Pool)
+		lowerIoctx, err := conn.OpenIOContext(bp.Lower.Pool)
+		if err != nil {
+			ioctx.Destroy()
+			if errors.Is(err, rados.ErrNotFound) {
+				return nil, nil, fmt.Errorf("%w: lower pool %q not found", errConnectionUnavailable, bp.Lower.Pool)
+			}
+
+			slog.Error("failed to open IO context", "pool", bp.Lower.Pool, "error", err, "attempt", attempt+1)
+			cm.markConnectionBroken()
+			if attempt < maxAttempts-1 {
+				if err := cm.tryReconnect(); err != nil {
+					return nil, nil, errConnectionUnavailable
+				}
+				continue
+			}
+			return nil, nil, errConnectionUnavailable
+		}
+
+		return ioctx, lowerIoctx, nil
 	}
 
-	return nil, errConnectionUnavailable
+	return nil, nil, errConnectionUnavailable
 }
 
 func (cm *ConnectionManager) GetBlobPoolForRepo(repo string, bt BlobType) (*BlobPool, error) {
@@ -227,7 +251,7 @@ func (cm *ConnectionManager) GetBlobPoolForRepo(repo string, bt BlobType) (*Blob
 	return bp, nil
 }
 
-func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType) (*rados.IOContext, *BlobPool, error) {
+func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType) (*rados.IOContext, *rados.IOContext, *BlobPool, error) {
 	var radosCalls uint64
 	defer func() {
 		slog.Debug("GetIOContextForRepo", "repo", repo, "blob_type", blobType, "rados_calls", atomic.LoadUint64(&radosCalls))
@@ -235,19 +259,23 @@ func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType)
 
 	bp, err := cm.GetBlobPoolForRepo(repo, blobType)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	ioctx, err := cm.getIOContextForPool(bp.Pool, &radosCalls)
+	ioctx, lowerIoctx, err := cm.getIOContextsForBlobPool(bp, &radosCalls)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if bp.Namespace != "" {
 		ioctx.SetNamespace(bp.Namespace)
 	}
 
-	return ioctx, bp, nil
+	if lowerIoctx != nil && bp.Lower.Namespace != "" {
+		lowerIoctx.SetNamespace(bp.Lower.Namespace)
+	}
+
+	return ioctx, lowerIoctx, bp, nil
 }
 
 func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConfig) error {
@@ -265,8 +293,12 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 			continue
 		}
 		for _, bt := range AllBlobTypes {
-			if p := repo.BlobPools.getPoolForType(bt).Pool; p != "" {
-				allPools[p] = struct{}{}
+			bpc := repo.BlobPools.getPoolForType(bt)
+			if bpc.Pool != "" {
+				allPools[bpc.Pool] = struct{}{}
+			}
+			if bpc.Lower != nil && bpc.Lower.Pool != "" {
+				allPools[bpc.Lower.Pool] = struct{}{}
 			}
 		}
 	}
@@ -293,10 +325,14 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 	}
 
 	type blobPoolKey struct {
-		pool          string
-		namespace     string
-		striped       bool
-		maxObjectSize int64
+		pool               string
+		namespace          string
+		striped            bool
+		maxObjectSize      int64
+		lowerPool          string
+		lowerNS            string
+		lowerStriped       bool
+		lowerMaxObjectSize int64
 	}
 
 	repoBlobPools := make(map[string]map[BlobType]*BlobPool)
@@ -344,6 +380,29 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 			}
 
 			key := blobPoolKey{pool: bpc.Pool, namespace: bpc.Namespace, striped: striped, maxObjectSize: maxObjSize}
+			if bpc.Lower != nil {
+				lowerStriped := striped
+				if bpc.Lower.Striped != nil {
+					lowerStriped = *bpc.Lower.Striped
+				}
+				lowerMaxObjSize := maxObjSize
+				if bpc.Lower.MaxObjectSize != nil {
+					if *bpc.Lower.MaxObjectSize > cm.maxObjectSize {
+						slog.Warn("lower pool max_object_size exceeds cluster limit, clamping",
+							"repo", repoName,
+							"blob_type", bt,
+							"configured", *bpc.Lower.MaxObjectSize,
+							"limit", cm.maxObjectSize)
+						lowerMaxObjSize = cm.maxObjectSize
+					} else {
+						lowerMaxObjSize = *bpc.Lower.MaxObjectSize
+					}
+				}
+				key.lowerPool = bpc.Lower.Pool
+				key.lowerNS = bpc.Lower.Namespace
+				key.lowerStriped = lowerStriped
+				key.lowerMaxObjectSize = lowerMaxObjSize
+			}
 			bp, ok := dedup[key]
 			if !ok {
 				bp = &BlobPool{
@@ -352,6 +411,15 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 					Striped:       striped,
 					Alignment:     poolAlignments[bpc.Pool],
 					MaxObjectSize: maxObjSize,
+				}
+				if bpc.Lower != nil {
+					bp.Lower = &BlobPool{
+						Pool:          bpc.Lower.Pool,
+						Namespace:     bpc.Lower.Namespace,
+						Striped:       key.lowerStriped,
+						Alignment:     poolAlignments[bpc.Lower.Pool],
+						MaxObjectSize: key.lowerMaxObjectSize,
+					}
 				}
 				dedup[key] = bp
 			}

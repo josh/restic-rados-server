@@ -1,0 +1,46 @@
+tail-logs
+create-pool new
+create-pool old
+
+exec restic-rados-server --pool=$CEPH_POOL_OLD --listen $WORK/restic-old.sock &oldserver&
+wait4socket $WORK/restic-old.sock
+
+exec curl --silent --unix-socket $WORK/restic-old.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --unix-socket $WORK/restic-old.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+exec curl --silent --unix-socket $WORK/restic-old.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-a 'http://localhost/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c'
+exec curl --silent --unix-socket $WORK/restic-old.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-c 'http://localhost/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+
+kill oldserver
+
+exec rados --pool $CEPH_POOL_NEW put data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2 blob-c-upper
+
+exec restic-rados-server --pool=$CEPH_POOL_NEW//$CEPH_POOL_OLD --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-b 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/'
+stdout 'b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c'
+stdout 'a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
+stdout 'f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+! stdout 'f2ca1bb6.*f2ca1bb6'
+! stdout 'b5bb9d80.*b5bb9d80'
+! stdout 'a1fff0ff.*a1fff0ff'
+
+exec curl --silent --unix-socket $WORK/restic.sock --header 'Accept: application/vnd.x.restic.rest.v2' 'http://localhost/data/'
+stdout '"name":"f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2","size":20'
+stdout '"name":"b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c","size":4'
+stdout '"name":"a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae","size":13'
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- blob-a --
+foo
+-- blob-b --
+test content
+-- blob-c --
+test
+-- blob-c-upper --
+test content longer
