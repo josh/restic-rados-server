@@ -1,0 +1,52 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock --max-object-size 4194304 &server&
+wait4socket $WORK/restic.sock
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand large-blob 10485760
+sha256 large-blob HASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob http://localhost/data/$HASH
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout 'data/'$HASH'\.0000000000000000'
+stdout 'data/'$HASH'\.0000000000000002'
+
+kill server
+
+exec restic-rados-server --listen $WORK/restic2.sock --max-object-size 2097152 &server2&
+wait4socket $WORK/restic2.sock
+
+exec curl --silent --unix-socket $WORK/restic2.sock --head --include http://localhost/data/$HASH
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 10485760'
+
+exec curl --silent --unix-socket $WORK/restic2.sock http://localhost/data/$HASH --output full-download
+bin-cmp full-download large-blob
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic2.sock --header 'Range: bytes=2097152-4194303' http://localhost/data/$HASH --output range-download
+stdout '206'
+byte-count range-download
+stdout '2097152'
+
+exec dd if=large-blob of=correct-slice bs=1048576 skip=2 count=2
+bin-cmp range-download correct-slice
+
+kill server2
+
+exec restic-rados-server --listen $WORK/restic3.sock --max-object-size 8388608 &server3&
+wait4socket $WORK/restic3.sock
+
+exec curl --silent --unix-socket $WORK/restic3.sock http://localhost/data/$HASH --output full-download-large
+bin-cmp full-download-large large-blob
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic3.sock --request DELETE http://localhost/data/$HASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'data/'
+
+kill server3
