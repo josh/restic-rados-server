@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -340,7 +341,10 @@ func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int6
 	slog.Debug("rados.CreateWriteOp", "object", object)
 	atomic.AddUint64(r.radosCalls, 1)
 	err = op.Operate(r.ioctx, object, rados.OperationNoFlag)
-	if err != nil && err != rados.ErrObjectExists {
+	if err != nil {
+		if errors.Is(err, rados.ErrObjectExists) {
+			return 0, [32]byte{}, errObjectExists
+		}
 		return 0, [32]byte{}, fmt.Errorf("create object: %w", err)
 	}
 
@@ -407,7 +411,10 @@ func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n in
 	slog.Debug("rados.CreateWriteOp", "object", firstObjID)
 	atomic.AddUint64(s.radosCalls, 1)
 	err = op.Operate(s.ioctx, firstObjID, rados.OperationNoFlag)
-	if err != nil && err != rados.ErrObjectExists {
+	if err != nil {
+		if errors.Is(err, rados.ErrObjectExists) {
+			return 0, [32]byte{}, errObjectExists
+		}
 		return 0, [32]byte{}, fmt.Errorf("create object: %w", err)
 	}
 

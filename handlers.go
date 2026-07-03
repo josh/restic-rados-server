@@ -912,6 +912,9 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 
 	_, sum, err := rioctx.WriteObject(object, r.Body)
 	if err != nil {
+		if errors.Is(err, errObjectExists) {
+			return errObjectExists
+		}
 		if rmErr := rioctx.Remove(object); rmErr != nil && !errors.Is(rmErr, rados.ErrNotFound) {
 			slog.Error("failed to clean up object after write error; a truncated object may remain",
 				"object", object, "write_error", err, "cleanup_error", rmErr)
