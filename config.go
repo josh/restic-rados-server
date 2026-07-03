@@ -10,10 +10,13 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var validRepoNameRegex = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 type BlobType string
 
@@ -385,6 +388,9 @@ func isReservedRepoName(name string) bool {
 
 func (c *Config) normalizeRepos() error {
 	for name, repo := range c.Repos {
+		if !validRepoNameRegex.MatchString(name) {
+			return fmt.Errorf("invalid repo name %q (must contain only letters, digits, '.', '_', or '-')", name)
+		}
 		if name != "default" && isReservedRepoName(name) {
 			return fmt.Errorf("reserved repo name %q (conflicts with blob type)", name)
 		}
