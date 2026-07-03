@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -633,6 +634,20 @@ func TestLoadConfigReservedRepoName(t *testing.T) {
 			_, _, err := loadConfig([]string{"--config", path})
 			if err == nil {
 				t.Fatalf("expected error for reserved repo name %q", name)
+			}
+		})
+	}
+}
+
+func TestLoadConfigInvalidRepoName(t *testing.T) {
+	invalid := []string{"my repo", "", "a/b", "{x}", "repo\ttab"}
+	for _, name := range invalid {
+		t.Run(name, func(t *testing.T) {
+			json := `{"repos": {` + strconv.Quote(name) + `: {"pools": {"my-pool": ["*"]}}}}`
+			path := writeTemp(t, json)
+			_, _, err := loadConfig([]string{"--config", path})
+			if err == nil {
+				t.Fatalf("expected error for invalid repo name %q", name)
 			}
 		})
 	}
