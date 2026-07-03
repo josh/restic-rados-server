@@ -912,7 +912,10 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 
 	_, sum, err := rioctx.WriteObject(object, r.Body)
 	if err != nil {
-		_ = rioctx.Remove(object)
+		if rmErr := rioctx.Remove(object); rmErr != nil && !errors.Is(rmErr, rados.ErrNotFound) {
+			slog.Error("failed to clean up object after write error; a truncated object may remain",
+				"object", object, "write_error", err, "cleanup_error", rmErr)
+		}
 		if errors.Is(err, context.Canceled) {
 			return errClientAborted
 		}
@@ -923,7 +926,10 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 
 	if expected != [32]byte{} && sum != expected {
 		slog.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", sum))
-		_ = rioctx.Remove(object)
+		if rmErr := rioctx.Remove(object); rmErr != nil && !errors.Is(rmErr, rados.ErrNotFound) {
+			slog.Error("failed to clean up object after hash mismatch; a corrupt object may remain",
+				"object", object, "cleanup_error", rmErr)
+		}
 		return errHashMismatch
 	}
 
