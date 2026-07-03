@@ -35,6 +35,7 @@ type ConnectionManager struct {
 	maxReconnectDelay time.Duration
 	maxObjectSize     int64
 	maxWriteSize      int64
+	repos             map[string]*RepoConfig
 	repoBlobPools     map[string]map[BlobType]*BlobPool
 }
 
@@ -155,6 +156,11 @@ func (cm *ConnectionManager) connect() error {
 	cm.conn = conn
 	cm.maxObjectSize = maxSize
 	cm.maxWriteSize = maxWriteSize
+	if cm.repos != nil {
+		if err := cm.buildPoolConfigsLocked(); err != nil {
+			slog.Warn("failed to rebuild pool configs after reconnect, keeping previous configuration", "error", err)
+		}
+	}
 	cm.mu.Unlock()
 
 	if oldConn != nil {
@@ -258,6 +264,10 @@ func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType)
 		slog.Debug("GetIOContextForRepo", "repo", repo, "blob_type", blobType, "rados_calls", atomic.LoadUint64(&radosCalls))
 	}()
 
+	if err := cm.ensureInitialized(); err != nil {
+		return nil, nil, nil, err
+	}
+
 	bp, err := cm.GetBlobPoolForRepo(repo, blobType)
 	if err != nil {
 		return nil, nil, nil, err
@@ -283,6 +293,26 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	cm.repos = repos
+	if cm.conn == nil {
+		slog.Warn("ceph connection unavailable at startup, deferring pool initialization to first request")
+		return nil
+	}
+	return cm.buildPoolConfigsLocked()
+}
+
+func (cm *ConnectionManager) ensureInitialized() error {
+	cm.mu.RLock()
+	need := cm.repoBlobPools == nil && cm.repos != nil
+	cm.mu.RUnlock()
+	if !need {
+		return nil
+	}
+	return cm.tryReconnect()
+}
+
+func (cm *ConnectionManager) buildPoolConfigsLocked() error {
+	repos := cm.repos
 	conn := cm.conn
 	if conn == nil {
 		return errConnectionUnavailable
