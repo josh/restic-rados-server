@@ -859,6 +859,9 @@ func TestLoadConfigBlobPoolsLayerValidation(t *testing.T) {
 		{"empty lower pool", `{"upper": {"pool": "a"}, "lower": {"pool": ""}}`},
 		{"identical layers", `{"upper": {"pool": "a", "namespace": "n"}, "lower": {"pool": "a", "namespace": "n"}}`},
 		{"unknown field in layer", `{"upper": {"pool": "a", "lower": {"pool": "c"}}, "lower": {"pool": "b"}}`},
+		{"zero max_object_size", `{"pool": "a", "max_object_size": 0}`},
+		{"negative max_object_size", `{"pool": "a", "max_object_size": -1}`},
+		{"zero lower max_object_size", `{"upper": {"pool": "a"}, "lower": {"pool": "b", "max_object_size": 0}}`},
 	}
 
 	for _, tt := range tests {
