@@ -1047,6 +1047,11 @@ func TestPoolSpecsToPoolsConfig(t *testing.T) {
 			poolsConfig{"data-pool": {"data", "index"}, "meta-pool": {"*"}},
 		},
 		{
+			"repeated pool merges types",
+			[]string{"bulk:data", "bulk:index"},
+			poolsConfig{"bulk": {"data", "index"}},
+		},
+		{
 			"lower layer",
 			[]string{"new-pool//old-pool"},
 			poolsConfig{"new-pool//old-pool": {"*"}},

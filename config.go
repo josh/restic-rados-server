@@ -547,7 +547,7 @@ func poolSpecsToPoolsConfig(specs []string) poolsConfig {
 			result[spec] = nil
 			continue
 		}
-		result[key] = types
+		result[key] = append(result[key], types...)
 	}
 	return result
 }
