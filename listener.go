@@ -39,12 +39,27 @@ func (cfg listenerConfig) Close() {
 	if cfg.file != nil {
 		_ = cfg.file.Close()
 	}
+}
 
-	if cfg.kind == listenerTypeUnix {
-		if cfg.address != "" {
-			_ = os.Remove(cfg.address)
-		}
+func prepareUnixSocketPath(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("failed to stat socket path %q: %w", path, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove %q: not a socket", path)
+	}
+	if conn, err := net.DialTimeout("unix", path, time.Second); err == nil {
+		_ = conn.Close()
+		return fmt.Errorf("refusing to bind %q: another server is already listening", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove stale socket %q: %w", path, err)
+	}
+	return nil
 }
 
 func (cfg *listenerConfig) setTCPAddress(value string, rawInput string) error {
@@ -230,19 +245,14 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 		})
 		return nil
 	case listenerTypeUnix:
-		if err := os.Remove(cfg.address); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove existing socket: %w", err)
+		if err := prepareUnixSocketPath(cfg.address); err != nil {
+			return err
 		}
 		listener, err := net.Listen("unix", cfg.address)
 		if err != nil {
 			return fmt.Errorf("failed to create Unix socket listener: %w", err)
 		}
-		defer func() {
-			_ = listener.Close()
-			if cfg.address != "" {
-				_ = os.Remove(cfg.address)
-			}
-		}()
+		defer func() { _ = listener.Close() }()
 		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
 	case listenerTypeTCP:
 		listener, err := net.Listen("tcp", cfg.address)
