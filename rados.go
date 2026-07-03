@@ -82,6 +82,11 @@ func NewStripedIO(ioctx *rados.IOContext, objectSize uint64, alignment uint64, r
 	}
 	if alignment > 1 {
 		objectSize = objectSize / alignment * alignment
+		if objectSize == 0 {
+			slog.Warn("object size smaller than pool alignment, clamping to one alignment unit",
+				"alignment", alignment)
+			objectSize = alignment
+		}
 		if aligned := len(writeBuf) / int(alignment) * int(alignment); aligned > 0 {
 			slog.Debug("NewStripedIO writeBuf aligned", "from", len(writeBuf), "to", aligned, "alignment", alignment)
 			writeBuf = writeBuf[:aligned]

@@ -536,6 +536,16 @@ func (p *ServerConfigPools) normalizeLayers() error {
 		bpc.MaxObjectSize = bpc.Upper.MaxObjectSize
 		bpc.Upper = nil
 	}
+
+	for i, bt := range AllBlobTypes {
+		bpc := fields[i]
+		if bpc.MaxObjectSize != nil && *bpc.MaxObjectSize <= 0 {
+			return fmt.Errorf("blob type %q: max_object_size must be positive, got %d", bt, *bpc.MaxObjectSize)
+		}
+		if bpc.Lower != nil && bpc.Lower.MaxObjectSize != nil && *bpc.Lower.MaxObjectSize <= 0 {
+			return fmt.Errorf("blob type %q: lower layer max_object_size must be positive, got %d", bt, *bpc.Lower.MaxObjectSize)
+		}
+	}
 	return nil
 }
 
