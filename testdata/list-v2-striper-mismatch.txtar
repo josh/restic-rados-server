@@ -1,0 +1,40 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --max-object-size 4194304 --listen $WORK/striper.sock &striperserver&
+wait4socket $WORK/striper.sock
+
+exec curl --silent --unix-socket $WORK/striper.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand big-blob 8388608
+sha256 big-blob BIGHASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/striper.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @big-blob 'http://localhost/data/'$BIGHASH --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/striper.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @small-blob 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '\n%{http_code}' --header 'Accept: application/vnd.x.restic.rest.v2' --unix-socket $WORK/striper.sock 'http://localhost/data/'
+stdout '^200$'
+stdout $BIGHASH
+stdout 'abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+
+kill striperserver
+
+exec restic-rados-server --striper=false --listen $WORK/plain.sock &plainserver&
+wait4socket $WORK/plain.sock
+
+exec curl --silent --write-out '\n%{http_code}' --header 'Accept: application/vnd.x.restic.rest.v2' --unix-socket $WORK/plain.sock 'http://localhost/data/'
+stdout '^500$'
+! stdout $BIGHASH
+
+exec curl --silent --write-out '\n%{http_code}' --header 'Accept: application/vnd.x.restic.rest.v1' --unix-socket $WORK/plain.sock 'http://localhost/data/'
+stdout '^200$'
+stdout $BIGHASH
+stdout 'abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+
+kill plainserver
+
+-- small-blob --
+test blob content
