@@ -1,0 +1,16 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+! exec restic-rados-server --listen $WORK/restic.sock
+
+exec cp $WORK/regular.txt.src $WORK/regular.txt
+! exec restic-rados-server --listen $WORK/regular.txt
+exec cmp $WORK/regular.txt $WORK/regular.txt.src
+
+kill server
+
+-- regular.txt.src --
+important data
