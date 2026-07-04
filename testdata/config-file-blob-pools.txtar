@@ -1,0 +1,69 @@
+tail-logs
+create-pool new
+create-pool old
+
+exec restic-rados-server --pool=$CEPH_POOL_OLD/legacy --listen $WORK/legacy.sock &legacyserver&
+wait4socket $WORK/legacy.sock
+
+exec curl --silent --unix-socket $WORK/legacy.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/legacy.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @old-data 'http://localhost/data/8ddad7f94d83b3cfce2b5ced86114c241fd5ae1121bfcf06218982ae9e635cb3'
+
+kill legacyserver
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/8ddad7f94d83b3cfce2b5ced86114c241fd5ae1121bfcf06218982ae9e635cb3' --output downloaded-old
+cmp downloaded-old old-data
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @old-data 'http://localhost/data/8ddad7f94d83b3cfce2b5ced86114c241fd5ae1121bfcf06218982ae9e635cb3' --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @new-data 'http://localhost/data/66a575ca1f5a22ffafae6c796191c6496b49f149a63b465268023e7027364d96' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_NEW ls
+stdout 'data/66a575ca1f5a22ffafae6c796191c6496b49f149a63b465268023e7027364d96'
+! stdout 'data/8ddad7f94d83b3cfce2b5ced86114c241fd5ae1121bfcf06218982ae9e635cb3'
+
+exec rados --pool $CEPH_POOL_OLD ls
+! stdout '.'
+
+exec rados --pool $CEPH_POOL_OLD --namespace legacy ls
+stdout 'data/8ddad7f94d83b3cfce2b5ced86114c241fd5ae1121bfcf06218982ae9e635cb3'
+! stdout 'data/66a575ca1f5a22ffafae6c796191c6496b49f149a63b465268023e7027364d96'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/'
+stdout '8ddad7f94d83b3cfce2b5ced86114c241fd5ae1121bfcf06218982ae9e635cb3'
+stdout '66a575ca1f5a22ffafae6c796191c6496b49f149a63b465268023e7027364d96'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_NEW"},
+                "keys": {"pool": "$CEPH_POOL_NEW"},
+                "locks": {"pool": "$CEPH_POOL_NEW"},
+                "snapshots": {"pool": "$CEPH_POOL_NEW"},
+                "index": {"pool": "$CEPH_POOL_NEW"},
+                "data": {
+                    "upper": {"pool": "$CEPH_POOL_NEW", "striped": true, "max_object_size": 33554432},
+                    "lower": {"pool": "$CEPH_POOL_OLD", "namespace": "legacy"}
+                }
+            }
+        }
+    }
+}
+-- old-data --
+legacy blob content
+-- new-data --
+fresh blob content

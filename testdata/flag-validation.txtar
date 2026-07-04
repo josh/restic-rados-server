@@ -1,0 +1,14 @@
+! exec restic-rados-server --read-buffer-size 0
+stderr 'read-buffer-size must be positive, got 0'
+
+! exec restic-rados-server --read-buffer-size=-1
+stderr 'read-buffer-size must be positive, got -1'
+
+! exec restic-rados-server --write-buffer-size 0
+stderr 'write-buffer-size must be positive, got 0'
+
+! exec restic-rados-server --bogus-flag
+stderr 'bogus-flag'
+
+! exec restic-rados-server
+stderr 'pool not set'
