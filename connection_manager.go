@@ -428,8 +428,15 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 		}
 		repoBlobPools[repoName] = configs
 
-		poolNames := make([]string, 0, len(allPools))
-		for p := range allPools {
+		repoPools := make(map[string]struct{})
+		for _, bp := range configs {
+			repoPools[bp.Pool] = struct{}{}
+			if bp.Lower != nil {
+				repoPools[bp.Lower.Pool] = struct{}{}
+			}
+		}
+		poolNames := make([]string, 0, len(repoPools))
+		for p := range repoPools {
 			poolNames = append(poolNames, p)
 		}
 		slices.Sort(poolNames)
