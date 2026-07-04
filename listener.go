@@ -182,7 +182,7 @@ func (cfg listenerConfig) description() string {
 	}
 }
 
-func systemdListeners() ([]listenerConfig, error) {
+func systemdListeners() []listenerConfig {
 	defer func() {
 		_ = os.Unsetenv("LISTEN_PID")
 		_ = os.Unsetenv("LISTEN_FDS")
@@ -191,12 +191,12 @@ func systemdListeners() ([]listenerConfig, error) {
 
 	pid, err := strconv.Atoi(os.Getenv("LISTEN_PID"))
 	if err != nil || pid != os.Getpid() {
-		return nil, nil
+		return nil
 	}
 
 	nfds, err := strconv.Atoi(os.Getenv("LISTEN_FDS"))
 	if err != nil || nfds <= 0 {
-		return nil, nil
+		return nil
 	}
 
 	names := strings.Split(os.Getenv("LISTEN_FDNAMES"), ":")
@@ -219,7 +219,7 @@ func systemdListeners() ([]listenerConfig, error) {
 		})
 	}
 
-	return configs, nil
+	return configs
 }
 
 func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutdownTimeout time.Duration, monitor *idleMonitor) error {
