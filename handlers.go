@@ -95,48 +95,70 @@ func (hctx *HandlerContext) Destroy() {
 	}
 }
 
-func statInLayer(plainIO, striperIO RadosIOContext, object string) (RadosIOContext, StatInfo, error) {
-	if striperIO != nil {
-		stat, err := plainIO.Stat(object)
+type objectLayer struct {
+	ioctx     *rados.IOContext
+	plainIO   RadosIOContext
+	striperIO RadosIOContext
+}
+
+func (l objectLayer) stat(object string) (RadosIOContext, StatInfo, error) {
+	if l.striperIO != nil {
+		stat, err := l.plainIO.Stat(object)
 		if !errors.Is(err, rados.ErrNotFound) {
-			return plainIO, stat, err
+			return l.plainIO, stat, err
 		}
-		_, stripeErr := plainIO.Stat(object + firstStripeSuffix)
+		_, stripeErr := l.plainIO.Stat(object + firstStripeSuffix)
 		if !errors.Is(stripeErr, rados.ErrNotFound) {
-			stat, err = striperIO.Stat(object)
-			return striperIO, stat, err
+			stat, err = l.striperIO.Stat(object)
+			return l.striperIO, stat, err
 		}
-		return plainIO, StatInfo{}, err
+		return l.plainIO, StatInfo{}, err
 	}
-	stat, err := plainIO.Stat(object)
-	return plainIO, stat, err
+	stat, err := l.plainIO.Stat(object)
+	return l.plainIO, stat, err
+}
+
+func (hctx *HandlerContext) upperLayer() objectLayer {
+	return objectLayer{hctx.ioctx, hctx.radosIO, hctx.striperIO}
+}
+
+func (hctx *HandlerContext) lowerLayer() objectLayer {
+	return objectLayer{hctx.lowerIoctx, hctx.lowerRadosIO, hctx.lowerStriperIO}
+}
+
+func (hctx *HandlerContext) layersUpperFirst() []objectLayer {
+	layers := []objectLayer{hctx.upperLayer()}
+	if hctx.lowerRadosIO != nil {
+		layers = append(layers, hctx.lowerLayer())
+	}
+	return layers
+}
+
+func (hctx *HandlerContext) layersLowerFirst() []objectLayer {
+	var layers []objectLayer
+	if hctx.lowerRadosIO != nil {
+		layers = append(layers, hctx.lowerLayer())
+	}
+	return append(layers, hctx.upperLayer())
 }
 
 func (hctx *HandlerContext) statRadosObject(object string) (RadosIOContext, StatInfo, error) {
-	rioctx, stat, err := statInLayer(hctx.radosIO, hctx.striperIO, object)
-	if errors.Is(err, rados.ErrNotFound) && hctx.lowerRadosIO != nil {
-		return statInLayer(hctx.lowerRadosIO, hctx.lowerStriperIO, object)
+	layers := hctx.layersUpperFirst()
+	for _, l := range layers[:len(layers)-1] {
+		rioctx, stat, err := l.stat(object)
+		if !errors.Is(err, rados.ErrNotFound) {
+			return rioctx, stat, err
+		}
 	}
-	return rioctx, stat, err
+	return layers[len(layers)-1].stat(object)
 }
 
 func (hctx *HandlerContext) removeRadosObject(object string, canStripe bool) error {
-	type layer struct {
-		plainIO   RadosIOContext
-		striperIO RadosIOContext
-	}
-	var layers []layer
-	if hctx.lowerRadosIO != nil {
-		layers = append(layers, layer{hctx.lowerRadosIO, hctx.lowerStriperIO})
-	}
-	layers = append(layers, layer{hctx.radosIO, hctx.striperIO})
-
-	for _, l := range layers {
-		striperIO := l.striperIO
+	for _, l := range hctx.layersLowerFirst() {
 		if !canStripe {
-			striperIO = nil
+			l.striperIO = nil
 		}
-		rioctx, _, err := statInLayer(l.plainIO, striperIO, object)
+		rioctx, _, err := l.stat(object)
 		if errors.Is(err, rados.ErrNotFound) {
 			continue
 		}
@@ -398,15 +420,14 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	blobNames := []string{}
 	blobInfos := []blobInfo{}
 
-	sources := []*rados.IOContext{hctx.ioctx}
+	layers := hctx.layersUpperFirst()
 	var seen map[string]struct{}
-	if hctx.lowerIoctx != nil {
-		sources = append(sources, hctx.lowerIoctx)
+	if len(layers) > 1 {
 		seen = make(map[string]struct{})
 	}
 
-	for _, src := range sources {
-		err := hctx.collectBlobs(src, prefix, useV2, seen, &blobNames, &blobInfos)
+	for _, l := range layers {
+		err := hctx.collectBlobs(l.ioctx, prefix, useV2, seen, &blobNames, &blobInfos)
 		if err != nil {
 			slog.Error("failed to list blobs", "type", blobType, "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
