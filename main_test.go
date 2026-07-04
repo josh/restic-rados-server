@@ -221,7 +221,7 @@ func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string, error) {
 	t.Helper()
 
-	startupCtx, startupCancel := context.WithTimeout(ctx, 10*time.Second)
+	startupCtx, startupCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer startupCancel()
 
 	tmpDir := t.TempDir()
