@@ -1,0 +1,12 @@
+! exec restic-rados-server --pool=foo/:keys
+stderr 'invalid pool configuration: empty namespace in specification: "foo/:keys"'
+
+! exec restic-rados-server --pool=foo//foo:data
+stderr 'invalid pool configuration: lower layer must differ from upper layer in specification: "foo//foo:data"'
+
+! exec restic-rados-server --pool=foo:
+stderr 'invalid pool configuration: empty types list in specification: "foo:"'
+
+env RESTIC_RADOS_SERVER_POOL=foo/:keys
+! exec restic-rados-server
+stderr 'invalid pool configuration: empty namespace in specification: "foo/:keys"'

@@ -98,6 +98,8 @@ type RepoConfig struct {
 	Access        string             `json:"access,omitempty"`
 	Striper       *bool              `json:"striper,omitempty"`
 	MaxObjectSize int64              `json:"max_object_size,omitempty"`
+
+	poolSpecs []string
 }
 
 type Config struct {
@@ -226,7 +228,8 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 		}
 		def := c.Repos["default"]
 		if set["pool"] {
-			def.Pools = poolSpecsToPoolsConfig(poolSpecs)
+			def.poolSpecs = poolSpecs
+			def.Pools = nil
 			def.BlobPools = nil
 		}
 		if set["access"] {
@@ -324,7 +327,8 @@ func (c *Config) loadFromEnv() {
 					specs = append(specs, spec)
 				}
 			}
-			def.Pools = poolSpecsToPoolsConfig(specs)
+			def.poolSpecs = specs
+			def.Pools = nil
 			def.BlobPools = nil
 		}
 		if hasMaxObjectSize {
@@ -407,6 +411,14 @@ func (c *Config) normalizeRepos() error {
 			repo.Access = "rw"
 		default:
 			return fmt.Errorf("repo %q: invalid access %q (must be r, ra, or rw)", name, repo.Access)
+		}
+
+		if repo.BlobPools == nil && len(repo.poolSpecs) > 0 {
+			pools, err := poolSpecsToPoolsConfig(repo.poolSpecs)
+			if err != nil {
+				return fmt.Errorf("repo %q: invalid pool configuration: %v", name, err)
+			}
+			repo.Pools = pools
 		}
 
 		if repo.BlobPools == nil && len(repo.Pools) > 0 {
@@ -555,17 +567,16 @@ func (p *ServerConfigPools) normalizeLayers() error {
 	return nil
 }
 
-func poolSpecsToPoolsConfig(specs []string) poolsConfig {
+func poolSpecsToPoolsConfig(specs []string) (poolsConfig, error) {
 	result := make(poolsConfig)
 	for _, spec := range specs {
 		key, types, err := parsePoolSpec(spec)
 		if err != nil {
-			result[spec] = nil
-			continue
+			return nil, err
 		}
 		result[key] = append(result[key], types...)
 	}
-	return result
+	return result, nil
 }
 
 func splitPoolKey(key string) (pool, namespace string) {
