@@ -107,17 +107,25 @@ func (s *striperIOContextWrapper) getObjectID(soid string, objectno uint64) stri
 	return fmt.Sprintf("%s"+stripeSuffixFormat, soid, objectno)
 }
 
-func (s *striperIOContextWrapper) stripeObjectSize(firstObjID string) (uint64, error) {
+func (s *striperIOContextWrapper) getXattrUint(object, name string) (uint64, error) {
 	attr := make([]byte, 32)
-	slog.Debug("rados.GetXattr", "object", firstObjID, "xattr", xattrObjectSize)
+	slog.Debug("rados.GetXattr", "object", object, "xattr", name)
 	atomic.AddUint64(s.radosCalls, 1)
-	n, err := s.ioctx.GetXattr(firstObjID, xattrObjectSize, attr)
+	n, err := s.ioctx.GetXattr(object, name, attr)
 	if err != nil {
-		return 0, fmt.Errorf("get object_size xattr: %w", err)
+		return 0, fmt.Errorf("get %s xattr: %w", name, err)
 	}
-	size, err := strconv.ParseUint(string(attr[:n]), 10, 64)
+	value, err := strconv.ParseUint(string(attr[:n]), 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("parse object_size xattr: %w", err)
+		return 0, fmt.Errorf("parse %s xattr: %w", name, err)
+	}
+	return value, nil
+}
+
+func (s *striperIOContextWrapper) stripeObjectSize(firstObjID string) (uint64, error) {
+	size, err := s.getXattrUint(firstObjID, xattrObjectSize)
+	if err != nil {
+		return 0, err
 	}
 	if size == 0 {
 		return 0, fmt.Errorf("invalid object_size xattr: 0")
@@ -142,17 +150,9 @@ func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
 		return StatInfo{}, err
 	}
 
-	sizeAttr := make([]byte, 32)
-	slog.Debug("rados.GetXattr", "object", firstObjID, "xattr", xattrSize)
-	atomic.AddUint64(s.radosCalls, 1)
-	n, err := s.ioctx.GetXattr(firstObjID, xattrSize, sizeAttr)
+	size, err := s.getXattrUint(firstObjID, xattrSize)
 	if err != nil {
-		return StatInfo{}, fmt.Errorf("get size xattr: %w", err)
-	}
-
-	size, err := strconv.ParseUint(string(sizeAttr[:n]), 10, 64)
-	if err != nil {
-		return StatInfo{}, fmt.Errorf("parse size xattr: %w", err)
+		return StatInfo{}, err
 	}
 
 	return StatInfo{Size: size, ModTime: stat.ModTime}, nil
@@ -167,20 +167,9 @@ func (r *radosIOContextWrapper) Remove(object string) error {
 func (s *striperIOContextWrapper) Remove(object string) error {
 	firstObjID := s.getObjectID(object, 0)
 
-	sizeAttr := make([]byte, 32)
-	slog.Debug("rados.GetXattr", "object", firstObjID, "xattr", xattrSize)
-	atomic.AddUint64(s.radosCalls, 1)
-	n, err := s.ioctx.GetXattr(firstObjID, xattrSize, sizeAttr)
+	totalSize, err := s.getXattrUint(firstObjID, xattrSize)
 	if err != nil {
-		if err.Error() == rados.ErrNotFound.Error() {
-			return rados.ErrNotFound
-		}
-		return fmt.Errorf("get size xattr: %w", err)
-	}
-
-	totalSize, err := strconv.ParseUint(string(sizeAttr[:n]), 10, 64)
-	if err != nil {
-		return fmt.Errorf("parse size: %w", err)
+		return err
 	}
 
 	numObjects := uint64(1)
@@ -193,7 +182,7 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 		slog.Debug("rados.Delete", "object", objectID)
 		atomic.AddUint64(s.radosCalls, 1)
 		err := s.ioctx.Delete(objectID)
-		if err != nil && err.Error() != rados.ErrNotFound.Error() {
+		if err != nil && !errors.Is(err, rados.ErrNotFound) {
 			return fmt.Errorf("delete object %d: %w", i, err)
 		}
 	}
@@ -275,17 +264,9 @@ func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64
 		return 0, [32]byte{}, err
 	}
 
-	sizeAttr := make([]byte, 32)
-	slog.Debug("rados.GetXattr", "object", firstObjID, "xattr", xattrSize)
-	atomic.AddUint64(s.radosCalls, 1)
-	xn, err := s.ioctx.GetXattr(firstObjID, xattrSize, sizeAttr)
+	totalSize, err := s.getXattrUint(firstObjID, xattrSize)
 	if err != nil {
-		return 0, [32]byte{}, fmt.Errorf("get size xattr: %w", err)
-	}
-
-	totalSize, err := strconv.ParseUint(string(sizeAttr[:xn]), 10, 64)
-	if err != nil {
-		return 0, [32]byte{}, fmt.Errorf("parse size xattr: %w", err)
+		return 0, [32]byte{}, err
 	}
 
 	objectSize, err := s.stripeObjectSize(firstObjID)
@@ -353,22 +334,31 @@ func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64
 	return totalWritten, [32]byte(hasher.Sum(nil)), nil
 }
 
+func createExclusive(ioctx *rados.IOContext, object string, xattrs [][2]string, radosCalls *uint64) error {
+	op := rados.CreateWriteOp()
+	defer op.Release()
+	op.Create(rados.CreateExclusive)
+	for _, xattr := range xattrs {
+		op.SetXattr(xattr[0], []byte(xattr[1]))
+	}
+	slog.Debug("rados.CreateWriteOp", "object", object)
+	atomic.AddUint64(radosCalls, 1)
+	if err := op.Operate(ioctx, object, rados.OperationNoFlag); err != nil {
+		if errors.Is(err, rados.ErrObjectExists) {
+			return errObjectExists
+		}
+		return fmt.Errorf("create object: %w", err)
+	}
+	return nil
+}
+
 func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int64, sum [32]byte, err error) {
 	buffer := r.writeBuf
 
 	hasher := sha256.New()
 
-	op := rados.CreateWriteOp()
-	defer op.Release()
-	op.Create(rados.CreateExclusive)
-	slog.Debug("rados.CreateWriteOp", "object", object)
-	atomic.AddUint64(r.radosCalls, 1)
-	err = op.Operate(r.ioctx, object, rados.OperationNoFlag)
-	if err != nil {
-		if errors.Is(err, rados.ErrObjectExists) {
-			return 0, [32]byte{}, errObjectExists
-		}
-		return 0, [32]byte{}, fmt.Errorf("create object: %w", err)
+	if err := createExclusive(r.ioctx, object, nil, r.radosCalls); err != nil {
+		return 0, [32]byte{}, err
 	}
 
 	totalRead := int64(0)
@@ -423,22 +413,14 @@ func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n in
 
 	firstObjID := s.getObjectID(object, 0)
 
-	op := rados.CreateWriteOp()
-	defer op.Release()
-	op.Create(rados.CreateExclusive)
 	objectSizeStr := strconv.FormatUint(s.objectSize, 10)
-	op.SetXattr(xattrStripeUnit, []byte(objectSizeStr))
-	op.SetXattr(xattrStripeCount, []byte("1"))
-	op.SetXattr(xattrObjectSize, []byte(objectSizeStr))
-	op.SetXattr(xattrSize, []byte("0"))
-	slog.Debug("rados.CreateWriteOp", "object", firstObjID)
-	atomic.AddUint64(s.radosCalls, 1)
-	err = op.Operate(s.ioctx, firstObjID, rados.OperationNoFlag)
-	if err != nil {
-		if errors.Is(err, rados.ErrObjectExists) {
-			return 0, [32]byte{}, errObjectExists
-		}
-		return 0, [32]byte{}, fmt.Errorf("create object: %w", err)
+	if err := createExclusive(s.ioctx, firstObjID, [][2]string{
+		{xattrStripeUnit, objectSizeStr},
+		{xattrStripeCount, "1"},
+		{xattrObjectSize, objectSizeStr},
+		{xattrSize, "0"},
+	}, s.radosCalls); err != nil {
+		return 0, [32]byte{}, err
 	}
 
 	totalRead := int64(0)
