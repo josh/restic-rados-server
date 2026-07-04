@@ -1,0 +1,27 @@
+! exec restic-rados-server --config slash-name.json
+stderr 'invalid repo name'
+
+! exec restic-rados-server --config space-name.json
+stderr 'invalid repo name'
+
+! exec restic-rados-server --config invalid-access.json
+stderr 'invalid access "RW" \(must be r, ra, or rw\)'
+
+-- slash-name.json --
+{
+    "repos": {
+        "bad/name": {"pools": {"pool": ["*"]}}
+    }
+}
+-- space-name.json --
+{
+    "repos": {
+        "bad name": {"pools": {"pool": ["*"]}}
+    }
+}
+-- invalid-access.json --
+{
+    "repos": {
+        "default": {"access": "RW", "pools": {"pool": ["*"]}}
+    }
+}

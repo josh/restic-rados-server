@@ -1,0 +1,29 @@
+tail-logs
+create-pool
+
+env RESTIC_RADOS_SERVER_ACCESS=ra
+env CEPH_RESTIC_SERVER_ACCESS=rw
+
+exec restic-rados-server --listen $WORK/env.sock &envserver&
+wait4socket $WORK/env.sock
+
+exec curl --silent --unix-socket $WORK/env.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/env.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/450d3bc4323dc737623ed173bfd3837b3ce423b9f6c85f42074a616c86ba1aac' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/env.sock --request DELETE 'http://localhost/data/450d3bc4323dc737623ed173bfd3837b3ce423b9f6c85f42074a616c86ba1aac' --output /dev/null
+stdout '403'
+
+kill envserver
+
+exec restic-rados-server --access rw --listen $WORK/cli.sock &cliserver&
+wait4socket $WORK/cli.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/cli.sock --request DELETE 'http://localhost/data/450d3bc4323dc737623ed173bfd3837b3ce423b9f6c85f42074a616c86ba1aac' --output /dev/null
+stdout '200'
+
+kill cliserver
+
+-- blob-data --
+env precedence blob

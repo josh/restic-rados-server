@@ -1,0 +1,37 @@
+! exec restic-rados-server --pool=foo/:keys
+stderr 'invalid pool'
+
+! exec restic-rados-server --pool=foo//foo:data
+stderr 'invalid pool'
+
+! exec restic-rados-server --pool=foo:data,*
+stderr 'cannot be mixed with explicit types'
+
+! exec restic-rados-server --pool=/ns:keys
+stderr 'empty pool name in specification'
+
+! exec restic-rados-server --pool=foo:
+stderr 'invalid pool'
+
+! exec restic-rados-server --config identical-layers.json
+stderr 'lower layer must differ from upper layer'
+
+! exec restic-rados-server --config empty-pool-name.json
+stderr 'empty pool name in specification'
+
+-- identical-layers.json --
+{
+    "repos": {
+        "default": {
+            "pools": {"foo//foo": ["data"]}
+        }
+    }
+}
+-- empty-pool-name.json --
+{
+    "repos": {
+        "default": {
+            "pools": {"": ["data"]}
+        }
+    }
+}

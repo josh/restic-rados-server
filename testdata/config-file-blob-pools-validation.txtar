@@ -1,0 +1,88 @@
+! exec restic-rados-server --config lower-only.json
+stderr 'blob type "data": lower layer requires an explicit upper layer'
+
+! exec restic-rados-server --config upper-only.json
+stderr 'blob type "data": upper layer requires a lower layer'
+
+! exec restic-rados-server --config pool-and-layers.json
+stderr 'blob type "data": cannot combine pool with upper/lower layers'
+
+! exec restic-rados-server --config identical-layers.json
+stderr 'blob type "data": lower layer must differ from upper layer'
+
+! exec restic-rados-server --config zero-max-object-size.json
+stderr 'blob type "data": max_object_size must be positive, got 0'
+
+! exec restic-rados-server --config empty-upper-pool.json
+stderr 'blob type "data": upper pool name cannot be empty'
+
+-- lower-only.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {"lower": {"pool": "old"}}
+            }
+        }
+    }
+}
+-- upper-only.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {"upper": {"pool": "new"}}
+            }
+        }
+    }
+}
+-- pool-and-layers.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "pool": "flat",
+                    "upper": {"pool": "new"},
+                    "lower": {"pool": "old"}
+                }
+            }
+        }
+    }
+}
+-- identical-layers.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "upper": {"pool": "same", "namespace": "ns"},
+                    "lower": {"pool": "same", "namespace": "ns"}
+                }
+            }
+        }
+    }
+}
+-- zero-max-object-size.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {"pool": "flat", "max_object_size": 0}
+            }
+        }
+    }
+}
+-- empty-upper-pool.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "upper": {"namespace": "ns"},
+                    "lower": {"pool": "old"}
+                }
+            }
+        }
+    }
+}

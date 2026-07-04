@@ -1,0 +1,15 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen 127.0.0.1:$PORT --max-idle-time 1s &server&
+wait4socket 127.0.0.1:$PORT
+
+exec curl --silent --write-out '%{http_code}' --request POST 'http://127.0.0.1:'$PORT'/?create=true' --output /dev/null
+stdout '200'
+
+wait
+
+grep 'server idle timeout reached' $RESTIC_RADOS_SERVER_LOG_FILE
+
+! exec restic-rados-server --stdio --max-idle-time 1s
+grep 'max-idle-time is not supported in stdio mode' $RESTIC_RADOS_SERVER_LOG_FILE

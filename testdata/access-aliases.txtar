@@ -1,0 +1,49 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --access read-append --listen $WORK/ra.sock &raserver&
+wait4socket $WORK/ra.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/ra.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/ra.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/ra.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/ra.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @lock-data 'http://localhost/locks/856cf155c888292cb59c4f852e32bb5e4255dedf6dbd2b1eaf174ed357fdc559' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/ra.sock --request DELETE 'http://localhost/locks/856cf155c888292cb59c4f852e32bb5e4255dedf6dbd2b1eaf174ed357fdc559' --output /dev/null
+stdout '200'
+
+kill raserver
+
+exec restic-rados-server --access read-only --listen $WORK/r.sock &rserver&
+wait4socket $WORK/r.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/r.sock 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/r.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @lock-data 'http://localhost/locks/856cf155c888292cb59c4f852e32bb5e4255dedf6dbd2b1eaf174ed357fdc559' --output /dev/null
+stdout '403'
+
+kill rserver
+
+exec restic-rados-server --access read-write --listen $WORK/rw.sock &rwserver&
+wait4socket $WORK/rw.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/rw.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+kill rwserver
+
+! exec restic-rados-server --access bogus --listen $WORK/bogus.sock
+stderr 'invalid access "bogus" \(must be r, ra, or rw\)'
+
+-- blob-data --
+test blob content
+-- lock-data --
+lock blob content
