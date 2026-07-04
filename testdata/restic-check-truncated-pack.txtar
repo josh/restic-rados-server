@@ -1,0 +1,27 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+mkdir data
+bin-file rand data/blob.bin 1048576
+
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec bash truncate-pack.sh
+
+! exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stderr 'repository contains errors'
+
+-- truncate-pack.sh --
+set -o errexit
+set -o pipefail
+
+pack=$(rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep '^data/' | head -n 1)
+printf 'truncated' > short.bin
+rados --pool "$RESTIC_RADOS_SERVER_POOL" rm "$pack"
+rados --pool "$RESTIC_RADOS_SERVER_POOL" put "$pack" short.bin
+-- password.txt --
+secret
