@@ -107,6 +107,24 @@ func (s *striperIOContextWrapper) getObjectID(soid string, objectno uint64) stri
 	return fmt.Sprintf("%s"+stripeSuffixFormat, soid, objectno)
 }
 
+func (s *striperIOContextWrapper) stripeObjectSize(firstObjID string) (uint64, error) {
+	attr := make([]byte, 32)
+	slog.Debug("rados.GetXattr", "object", firstObjID, "xattr", xattrObjectSize)
+	atomic.AddUint64(s.radosCalls, 1)
+	n, err := s.ioctx.GetXattr(firstObjID, xattrObjectSize, attr)
+	if err != nil {
+		return 0, fmt.Errorf("get object_size xattr: %w", err)
+	}
+	size, err := strconv.ParseUint(string(attr[:n]), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse object_size xattr: %w", err)
+	}
+	if size == 0 {
+		return 0, fmt.Errorf("invalid object_size xattr: 0")
+	}
+	return size, nil
+}
+
 func (r *radosIOContextWrapper) Stat(object string) (StatInfo, error) {
 	slog.Debug("rados.Stat", "object", object)
 	atomic.AddUint64(r.radosCalls, 1)
@@ -270,6 +288,11 @@ func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64
 		return 0, [32]byte{}, fmt.Errorf("parse size xattr: %w", err)
 	}
 
+	objectSize, err := s.stripeObjectSize(firstObjID)
+	if err != nil {
+		return 0, [32]byte{}, err
+	}
+
 	if uint64(offset) >= totalSize {
 		return 0, [32]byte{}, nil
 	}
@@ -288,10 +311,10 @@ func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64
 	remaining := int64(readLen)
 
 	for remaining > 0 {
-		objectNo := currentOffset / s.objectSize
-		objectOffset := currentOffset % s.objectSize
+		objectNo := currentOffset / objectSize
+		objectOffset := currentOffset % objectSize
 
-		availableInObject := s.objectSize - objectOffset
+		availableInObject := objectSize - objectOffset
 		toRead := remaining
 		if uint64(toRead) > availableInObject {
 			toRead = int64(availableInObject)
