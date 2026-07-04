@@ -24,9 +24,39 @@ var (
 	errPoolNotConfigured     = errors.New("pool not configured for blob type")
 )
 
+type connHandle struct {
+	conn *rados.Conn
+	refs atomic.Int64
+}
+
+func newConnHandle(conn *rados.Conn) *connHandle {
+	handle := &connHandle{conn: conn}
+	handle.refs.Store(1)
+	return handle
+}
+
+func (h *connHandle) acquire() bool {
+	for {
+		refs := h.refs.Load()
+		if refs <= 0 {
+			return false
+		}
+		if h.refs.CompareAndSwap(refs, refs+1) {
+			return true
+		}
+	}
+}
+
+func (h *connHandle) release() {
+	if h.refs.Add(-1) == 0 {
+		h.conn.Shutdown()
+	}
+}
+
 type ConnectionManager struct {
 	mu                sync.RWMutex
-	conn              *rados.Conn
+	handle            *connHandle
+	closed            bool
 	config            CephConfig
 	reconnecting      bool
 	lastReconnectTime time.Time
@@ -55,6 +85,13 @@ func NewConnectionManager(config CephConfig) *ConnectionManager {
 }
 
 func (cm *ConnectionManager) connect() error {
+	cm.mu.RLock()
+	closed := cm.closed
+	cm.mu.RUnlock()
+	if closed {
+		return errConnectionUnavailable
+	}
+
 	var conn *rados.Conn
 	var err error
 
@@ -151,87 +188,98 @@ func (cm *ConnectionManager) connect() error {
 	}
 
 	cm.mu.Lock()
-	oldConn := cm.conn
-	cm.conn = conn
+	if cm.closed {
+		cm.mu.Unlock()
+		conn.Shutdown()
+		return errConnectionUnavailable
+	}
+	oldHandle := cm.handle
+	cm.handle = newConnHandle(conn)
 	cm.maxObjectSize = maxSize
 	cm.maxWriteSize = maxWriteSize
 	cm.mu.Unlock()
 
-	if oldConn != nil {
-		oldConn.Shutdown()
+	if oldHandle != nil {
+		oldHandle.release()
 	}
 
 	return nil
 }
 
-func (cm *ConnectionManager) getIOContextsForBlobPool(bp *BlobPool, radosCalls *uint64) (*rados.IOContext, *rados.IOContext, error) {
+func (cm *ConnectionManager) acquireHandle() *connHandle {
+	for {
+		cm.mu.RLock()
+		handle := cm.handle
+		cm.mu.RUnlock()
+		if handle == nil {
+			return nil
+		}
+		if handle.acquire() {
+			return handle
+		}
+	}
+}
+
+func (cm *ConnectionManager) getIOContextsForBlobPool(bp *BlobPool, radosCalls *uint64) (*rados.IOContext, *rados.IOContext, *connHandle, error) {
 	const maxAttempts = 2
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		cm.mu.RLock()
-		conn := cm.conn
-		cm.mu.RUnlock()
-
-		if conn == nil {
+		handle := cm.acquireHandle()
+		if handle == nil {
 			if err := cm.tryReconnect(); err != nil {
-				return nil, nil, errConnectionUnavailable
+				return nil, nil, nil, errConnectionUnavailable
 			}
 
-			cm.mu.RLock()
-			conn = cm.conn
-			cm.mu.RUnlock()
-
-			if conn == nil {
-				return nil, nil, errConnectionUnavailable
+			handle = cm.acquireHandle()
+			if handle == nil {
+				return nil, nil, nil, errConnectionUnavailable
 			}
 		}
 
 		atomic.AddUint64(radosCalls, 1)
 		slog.Debug("rados.OpenIOContext", "pool", bp.Pool)
-		ioctx, err := conn.OpenIOContext(bp.Pool)
+		ioctx, err := handle.conn.OpenIOContext(bp.Pool)
 		if err != nil {
 			if errors.Is(err, rados.ErrNotFound) {
-				return nil, nil, err
+				handle.release()
+				return nil, nil, nil, err
 			}
 
 			slog.Error("failed to open IO context", "pool", bp.Pool, "error", err, "attempt", attempt+1)
-			cm.markConnectionBroken()
+			cm.markConnectionBroken(handle)
+			handle.release()
 			if attempt < maxAttempts-1 {
-				if err := cm.tryReconnect(); err != nil {
-					return nil, nil, errConnectionUnavailable
-				}
 				continue
 			}
-			return nil, nil, errConnectionUnavailable
+			return nil, nil, nil, errConnectionUnavailable
 		}
 
 		if bp.Lower == nil {
-			return ioctx, nil, nil
+			return ioctx, nil, handle, nil
 		}
 
 		atomic.AddUint64(radosCalls, 1)
 		slog.Debug("rados.OpenIOContext", "pool", bp.Lower.Pool)
-		lowerIoctx, err := conn.OpenIOContext(bp.Lower.Pool)
+		lowerIoctx, err := handle.conn.OpenIOContext(bp.Lower.Pool)
 		if err != nil {
 			ioctx.Destroy()
 			if errors.Is(err, rados.ErrNotFound) {
-				return nil, nil, fmt.Errorf("%w: lower pool %q not found", errConnectionUnavailable, bp.Lower.Pool)
+				handle.release()
+				return nil, nil, nil, fmt.Errorf("%w: lower pool %q not found", errConnectionUnavailable, bp.Lower.Pool)
 			}
 
 			slog.Error("failed to open IO context", "pool", bp.Lower.Pool, "error", err, "attempt", attempt+1)
-			cm.markConnectionBroken()
+			cm.markConnectionBroken(handle)
+			handle.release()
 			if attempt < maxAttempts-1 {
-				if err := cm.tryReconnect(); err != nil {
-					return nil, nil, errConnectionUnavailable
-				}
 				continue
 			}
-			return nil, nil, errConnectionUnavailable
+			return nil, nil, nil, errConnectionUnavailable
 		}
 
-		return ioctx, lowerIoctx, nil
+		return ioctx, lowerIoctx, handle, nil
 	}
 
-	return nil, nil, errConnectionUnavailable
+	return nil, nil, nil, errConnectionUnavailable
 }
 
 func (cm *ConnectionManager) GetBlobPoolForRepo(repo string, bt BlobType) (*BlobPool, error) {
@@ -252,7 +300,7 @@ func (cm *ConnectionManager) GetBlobPoolForRepo(repo string, bt BlobType) (*Blob
 	return bp, nil
 }
 
-func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType) (*rados.IOContext, *rados.IOContext, *BlobPool, error) {
+func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType) (*rados.IOContext, *rados.IOContext, *connHandle, *BlobPool, error) {
 	var radosCalls uint64
 	defer func() {
 		slog.Debug("GetIOContextForRepo", "repo", repo, "blob_type", blobType, "rados_calls", atomic.LoadUint64(&radosCalls))
@@ -260,12 +308,12 @@ func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType)
 
 	bp, err := cm.GetBlobPoolForRepo(repo, blobType)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	ioctx, lowerIoctx, err := cm.getIOContextsForBlobPool(bp, &radosCalls)
+	ioctx, lowerIoctx, handle, err := cm.getIOContextsForBlobPool(bp, &radosCalls)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	if bp.Namespace != "" {
@@ -276,17 +324,17 @@ func (cm *ConnectionManager) GetIOContextForRepo(repo string, blobType BlobType)
 		lowerIoctx.SetNamespace(bp.Lower.Namespace)
 	}
 
-	return ioctx, lowerIoctx, bp, nil
+	return ioctx, lowerIoctx, handle, bp, nil
 }
 
 func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConfig) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	conn := cm.conn
-	if conn == nil {
+	if cm.handle == nil {
 		return errConnectionUnavailable
 	}
+	conn := cm.handle.conn
 
 	allPools := make(map[string]struct{})
 	for _, repo := range repos {
@@ -452,21 +500,23 @@ func (cm *ConnectionManager) GetMaxWriteSize() (int64, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
-	if cm.conn == nil {
+	if cm.handle == nil {
 		return 0, errConnectionUnavailable
 	}
 
 	return cm.maxWriteSize, nil
 }
 
-func (cm *ConnectionManager) markConnectionBroken() {
+func (cm *ConnectionManager) markConnectionBroken(handle *connHandle) {
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
-	if cm.conn != nil {
-		cm.conn.Shutdown()
-		cm.conn = nil
+	if cm.handle != handle {
+		cm.mu.Unlock()
+		return
 	}
+	cm.handle = nil
+	cm.mu.Unlock()
+
+	handle.release()
 }
 
 func (cm *ConnectionManager) tryReconnect() error {
@@ -515,10 +565,12 @@ func (cm *ConnectionManager) tryReconnect() error {
 
 func (cm *ConnectionManager) Shutdown() {
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
+	cm.closed = true
+	handle := cm.handle
+	cm.handle = nil
+	cm.mu.Unlock()
 
-	if cm.conn != nil {
-		cm.conn.Shutdown()
-		cm.conn = nil
+	if handle != nil {
+		handle.release()
 	}
 }
