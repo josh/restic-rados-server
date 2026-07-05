@@ -1,0 +1,36 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic key add --new-password-file password2.txt --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+rados-object-count keys/
+cmp stdout two.txt
+
+exec restic snapshots --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt
+
+exec bash remove-first-key.sh
+
+rados-object-count keys/
+cmp stdout one.txt
+
+! exec restic snapshots --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stderr 'wrong password'
+
+exec restic snapshots --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt
+
+-- remove-first-key.sh --
+set -o errexit
+set -o pipefail
+
+id=$(restic key list --json --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt | jq -r '.[] | select(.current == false) | .id')
+restic key remove "$id" --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt
+-- password.txt --
+secret
+-- password2.txt --
+secret2
+-- two.txt --
+2
+-- one.txt --
+1
