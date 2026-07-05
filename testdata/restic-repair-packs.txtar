@@ -1,0 +1,43 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+mkdir data
+bin-file rand data/blob.bin 1048576
+
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec bash truncate-pack.sh
+
+! exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stderr 'repository contains errors'
+
+exec restic repair index --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic repair snapshots --forget --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic prune --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic restore latest --target $WORK/restored --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+bin-cmp $WORK/restored/data/blob.bin data/blob.bin
+
+-- truncate-pack.sh --
+set -o errexit
+set -o pipefail
+
+pack=$(rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep '^data/' | sed -n '1p')
+printf 'truncated' > short.bin
+rados --pool "$RESTIC_RADOS_SERVER_POOL" rm "$pack"
+rados --pool "$RESTIC_RADOS_SERVER_POOL" put "$pack" short.bin
+-- password.txt --
+secret
