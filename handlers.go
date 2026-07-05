@@ -46,6 +46,7 @@ type Handler struct {
 }
 
 type HandlerContext struct {
+	conn            *connHandle
 	ioctx           *rados.IOContext
 	radosIO         RadosIOContext
 	striperIO       RadosIOContext
@@ -86,6 +87,9 @@ func (hctx *HandlerContext) Destroy() {
 	hctx.ioctx.Destroy()
 	if hctx.lowerIoctx != nil {
 		hctx.lowerIoctx.Destroy()
+	}
+	if hctx.conn != nil {
+		hctx.conn.release()
 	}
 	if hctx.readBufPtr != nil {
 		hctx.readBufferPool.Put(hctx.readBufPtr)
@@ -209,7 +213,7 @@ func (h *Handler) logRequests(next http.Handler) http.Handler {
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, lowerIoctx, bp, err := h.connMgr.GetIOContextForRepo(h.repo, blobType)
+	ioctx, lowerIoctx, conn, bp, err := h.connMgr.GetIOContextForRepo(h.repo, blobType)
 	if err != nil {
 		return nil, err
 	}
@@ -219,6 +223,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 	radosCalls := radosCallCounter(ctx)
 
 	hctx := &HandlerContext{
+		conn:            conn,
 		ioctx:           ioctx,
 		lowerIoctx:      lowerIoctx,
 		maxObjectSize:   bp.MaxObjectSize,
