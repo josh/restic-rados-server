@@ -8,7 +8,8 @@ exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localh
 
 exec curl --silent --include --unix-socket $WORK/restic.sock --request PUT http://localhost/config
 stdout 'HTTP/.* 405'
-stdout 'Allow: .*POST'
+stdout 'Allow: DELETE, GET, HEAD, POST'
+stdout 'Method Not Allowed'
 
 exec curl --silent --include --unix-socket $WORK/restic.sock --request PATCH http://localhost/config
 stdout 'HTTP/.* 405'
@@ -18,7 +19,7 @@ stdout 'HTTP/.* 405'
 
 exec curl --silent --include --unix-socket $WORK/restic.sock --request PUT http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001
 stdout 'HTTP/.* 405'
-stdout 'Allow: .*POST'
+stdout 'Allow: DELETE, GET, HEAD, POST'
 
 exec curl --silent --include --unix-socket $WORK/restic.sock --request PATCH http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001
 stdout 'HTTP/.* 405'
@@ -28,6 +29,10 @@ stdout 'HTTP/.* 405'
 
 exec curl --silent --include --unix-socket $WORK/restic.sock --request DELETE http://localhost/
 stdout 'HTTP/.* 405'
-stdout 'Allow: .*POST'
+stdout 'Allow: POST'
+
+exec curl --silent --include --unix-socket $WORK/restic.sock --request DELETE http://localhost/data/
+stdout 'HTTP/.* 405'
+stdout 'Allow: GET, HEAD, POST'
 
 kill server
