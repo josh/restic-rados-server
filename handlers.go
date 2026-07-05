@@ -656,7 +656,7 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /{type}/{id}", h.requireAccess(AccessReadAppend, h.createBlob))
 	mux.HandleFunc("DELETE /{type}/{id}", h.deleteBlob)
 
-	mux.HandleFunc("POST /", h.requireAccess(AccessReadAppend, h.createRepo))
+	mux.HandleFunc("POST /{$}", h.requireAccess(AccessReadAppend, h.createRepo))
 }
 
 func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[string]*RepoConfig, tailscaleCapability string, readPool, writePool *BufferPool) {

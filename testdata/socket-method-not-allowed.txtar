@@ -33,6 +33,11 @@ stdout 'Allow: POST'
 
 exec curl --silent --include --unix-socket $WORK/restic.sock --request DELETE http://localhost/data/
 stdout 'HTTP/.* 405'
-stdout 'Allow: GET, HEAD, POST'
+stdout 'Allow: GET, HEAD'
+! stdout 'Allow: GET, HEAD, POST'
+
+exec curl --silent --include --unix-socket $WORK/restic.sock --request POST http://localhost/data/
+stdout 'HTTP/.* 405'
+stdout 'Allow: GET, HEAD'
 
 kill server
