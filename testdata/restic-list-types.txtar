@@ -1,0 +1,49 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic list snapshots --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+! stdout '.'
+
+exec restic list packs --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+! stdout '.'
+
+exec restic list index --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+! stdout '.'
+
+exec restic list locks --no-lock --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+! stdout '.'
+
+exec restic list keys --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stdout '^[0-9a-f]{64}$'
+
+mkdir data
+exec cp content.txt data/content.txt
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic list snapshots --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stdout '^[0-9a-f]{64}$'
+
+rados-object-count snapshots/
+cmp stdout one.txt
+
+exec bash compare-counts.sh
+
+-- compare-counts.sh --
+set -o errexit
+set -o pipefail
+
+packs=$(restic list packs --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt | grep -c '^[0-9a-f]')
+data_objects=$(rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep -c '^data/')
+test "$packs" = "$data_objects"
+
+indexes=$(restic list index --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt | grep -c '^[0-9a-f]')
+index_objects=$(rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep -c '^index/')
+test "$indexes" = "$index_objects"
+-- password.txt --
+secret
+-- content.txt --
+listing test content
+-- one.txt --
+1

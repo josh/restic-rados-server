@@ -1,0 +1,29 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+mkdir data
+exec cp content.txt data/content.txt
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put not-a-blob foreign.txt
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put data/README foreign.txt
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a07 foreign.txt
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic list packs --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+! stdout 'README'
+! stdout 'abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a07'
+
+grep 'skipping unknown object' $RESTIC_RADOS_SERVER_LOG_FILE
+
+-- password.txt --
+secret
+-- content.txt --
+foreign object test content
+-- foreign.txt --
+not a restic object

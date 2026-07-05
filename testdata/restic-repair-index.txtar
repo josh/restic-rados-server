@@ -1,0 +1,37 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+mkdir data
+bin-file rand data/first.bin 524288
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+bin-file rand data/second.bin 524288
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec bash delete-indexes.sh
+
+rados-object-count index/
+cmp stdout zero.txt
+
+exec restic repair index --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+rados-object-count index/
+stdout '^[1-9]'
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+-- delete-indexes.sh --
+set -o errexit
+set -o pipefail
+
+rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep '^index/' | while read -r object; do
+	rados --pool "$RESTIC_RADOS_SERVER_POOL" rm "$object"
+done
+-- password.txt --
+secret
+-- zero.txt --
+0
