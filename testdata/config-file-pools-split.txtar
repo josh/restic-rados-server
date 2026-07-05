@@ -1,0 +1,42 @@
+tail-logs
+create-pool data
+create-pool meta
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/66a575ca1f5a22ffafae6c796191c6496b49f149a63b465268023e7027364d96' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_META ls
+stdout '^config$'
+! stdout 'data/'
+
+exec rados --pool $CEPH_POOL_DATA ls
+stdout '^data/66a575ca1f5a22ffafae6c796191c6496b49f149a63b465268023e7027364d96$'
+! stdout '^config$'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {
+            "pools": {
+                "$CEPH_POOL_DATA": ["data", "snapshots"],
+                "$CEPH_POOL_META": ["*"]
+            }
+        }
+    }
+}
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- blob-data --
+fresh blob content

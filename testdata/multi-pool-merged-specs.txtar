@@ -1,0 +1,36 @@
+tail-logs
+create-pool bulk
+create-pool meta
+
+exec restic-rados-server --pool $CEPH_POOL_BULK:data --pool $CEPH_POOL_BULK:index --pool $CEPH_POOL_META:* --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @data-blob 'http://localhost/data/66a575ca1f5a22ffafae6c796191c6496b49f149a63b465268023e7027364d96' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @index-blob 'http://localhost/index/450d3bc4323dc737623ed173bfd3837b3ce423b9f6c85f42074a616c86ba1aac' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_BULK ls
+stdout '^data/66a575ca1f5a22ffafae6c796191c6496b49f149a63b465268023e7027364d96$'
+stdout '^index/450d3bc4323dc737623ed173bfd3837b3ce423b9f6c85f42074a616c86ba1aac$'
+! stdout '^config$'
+
+exec rados --pool $CEPH_POOL_META ls
+stdout '^config$'
+! stdout '^data/'
+! stdout '^index/'
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- data-blob --
+fresh blob content
+-- index-blob --
+env precedence blob

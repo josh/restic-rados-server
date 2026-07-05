@@ -1,0 +1,38 @@
+tail-logs
+create-pool
+
+env RESTIC_RADOS_SERVER_MAX_OBJECT_SIZE=4194304
+env RESTIC_RADOS_SERVER_WRITE_BUFFER_SIZE=1048576
+
+exec restic-rados-server --listen $WORK/striped.sock &stripedserver&
+wait4socket $WORK/striped.sock
+
+exec curl --silent --unix-socket $WORK/striped.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand striped-blob 8388608
+sha256 striped-blob STRIPEDHASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/striped.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @striped-blob 'http://localhost/data/'$STRIPEDHASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout '^data/'$STRIPEDHASH'\.0000000000000000$'
+
+kill stripedserver
+
+env RESTIC_RADOS_SERVER_STRIPER=false
+
+exec restic-rados-server --listen $WORK/plain.sock &plainserver&
+wait4socket $WORK/plain.sock
+
+bin-file rand plain-blob 8388608
+sha256 plain-blob PLAINHASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/plain.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @plain-blob 'http://localhost/data/'$PLAINHASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout '^data/'$PLAINHASH'$'
+! stdout $PLAINHASH'\.0000000000000000'
+
+kill plainserver

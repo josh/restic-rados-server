@@ -13,6 +13,15 @@ stderr 'invalid repo name "\." \(must not be "\." or "\.\."\)'
 ! exec restic-rados-server --config dotdot-name.json
 stderr 'invalid repo name "\.\." \(must not be "\." or "\.\."\)'
 
+! exec restic-rados-server --config empty-name.json
+stderr 'invalid repo name'
+
+! exec restic-rados-server --config brace-name.json
+stderr 'invalid repo name'
+
+! exec restic-rados-server --config tab-name.json
+stderr 'invalid repo name'
+
 -- slash-name.json --
 {
     "repos": {
@@ -41,5 +50,23 @@ stderr 'invalid repo name "\.\." \(must not be "\." or "\.\."\)'
 {
     "repos": {
         "..": {"pools": {"pool": ["*"]}}
+    }
+}
+-- empty-name.json --
+{
+    "repos": {
+        "": {"pools": {"pool": ["*"]}}
+    }
+}
+-- brace-name.json --
+{
+    "repos": {
+        "{x}": {"pools": {"pool": ["*"]}}
+    }
+}
+-- tab-name.json --
+{
+    "repos": {
+        "repo\ttab": {"pools": {"pool": ["*"]}}
     }
 }
