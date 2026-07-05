@@ -28,6 +28,10 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --
 stdout '416'
 ! grep 'internal server error' oob-body
 
+exec curl --silent --include --unix-socket $WORK/restic.sock --header 'Range: bytes=99999-' http://localhost/data/$HASH
+stdout 'HTTP/.* 416'
+stdout 'Content-Range: bytes \*/1000'
+
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=0-99' http://localhost/data/$HASH --output range-body
 stdout '206'
 byte-count range-body
