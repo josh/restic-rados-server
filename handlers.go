@@ -860,7 +860,7 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 			slog.Error("failed to clean up object after write error; a truncated object may remain",
 				"object", object, "write_error", err, "cleanup_error", rmErr)
 		}
-		if errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
 			return errClientAborted
 		}
 		return fmt.Errorf("write object %s: %w", object, err)
