@@ -395,6 +395,9 @@ func (c *Config) normalizeRepos() error {
 		if !validRepoNameRegex.MatchString(name) {
 			return fmt.Errorf("invalid repo name %q (must contain only letters, digits, '.', '_', or '-')", name)
 		}
+		if name == "." || name == ".." {
+			return fmt.Errorf("invalid repo name %q (must not be \".\" or \"..\")", name)
+		}
 		if name != "default" && isReservedRepoName(name) {
 			return fmt.Errorf("reserved repo name %q (conflicts with blob type)", name)
 		}
