@@ -32,9 +32,9 @@ var (
 )
 
 var (
-	hexBlobIDRegex          = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-	stripedBlobIDRegex      = regexp.MustCompile(`^[0-9a-fA-F]{64}\.[0-9a-f]{16}$`)
-	firstStripedBlobIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}\.0000000000000000$`)
+	hexBlobIDRegex          = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	stripedBlobIDRegex      = regexp.MustCompile(`^[0-9a-f]{64}\.[0-9a-f]{16}$`)
+	firstStripedBlobIDRegex = regexp.MustCompile(`^[0-9a-f]{64}\.0000000000000000$`)
 )
 
 type Handler struct {

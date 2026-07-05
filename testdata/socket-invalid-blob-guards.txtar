@@ -39,6 +39,15 @@ stdout '404'
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request GET 'http://localhost/keys/abc%20123' --output /dev/null
 stdout '404'
 
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request GET 'http://localhost/data/F2CA1BB6C7E907D06DAFE4687E579FCE76B37E4E93B7605022DA52E6CCC26FD2' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @test-data 'http://localhost/data/F2CA1BB6C7E907D06DAFE4687E579FCE76B37E4E93B7605022DA52E6CCC26FD2' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/F2CA1BB6C7E907D06DAFE4687E579FCE76B37E4E93B7605022DA52E6CCC26FD2' --output /dev/null
+stdout '404'
+
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request GET 'http://localhost/snapshots/' --output /dev/null
 stdout '200'
 
