@@ -1,0 +1,53 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --max-object-size 4194304 --listen $WORK/striped.sock &stripedserver&
+wait4socket $WORK/striped.sock
+
+exec curl --silent --unix-socket $WORK/striped.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand big-blob 8388608
+sha256 big-blob BIGHASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/striped.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @big-blob 'http://localhost/data/'$BIGHASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout '^data/'$BIGHASH'\.0000000000000000$'
+
+kill stripedserver
+
+exec restic-rados-server --striper=false --listen $WORK/plain.sock &plainserver&
+wait4socket $WORK/plain.sock
+
+exec curl --silent --unix-socket $WORK/plain.sock 'http://localhost/data/'$BIGHASH --output downloaded
+bin-cmp downloaded big-blob
+
+exec curl --silent --include --head --unix-socket $WORK/plain.sock 'http://localhost/data/'$BIGHASH
+stdout 'Content-Length: 8388608'
+
+exec curl --silent --header 'Accept: application/vnd.x.restic.rest.v2' --unix-socket $WORK/plain.sock 'http://localhost/data/'
+stdin stdout
+exec jq -r '.[] | select(.name == "'$BIGHASH'") | .size'
+stdout '^8388608$'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/plain.sock --request DELETE 'http://localhost/data/'$BIGHASH --output /dev/null
+stdout '200'
+
+rados-object-count data/
+cmp stdout zero.txt
+
+bin-file rand plain-blob 8388608
+sha256 plain-blob PLAINHASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/plain.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @plain-blob 'http://localhost/data/'$PLAINHASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout '^data/'$PLAINHASH'$'
+! stdout $PLAINHASH'\.'
+
+kill plainserver
+
+-- zero.txt --
+0

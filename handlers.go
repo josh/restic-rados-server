@@ -54,6 +54,7 @@ type HandlerContext struct {
 	lowerIoctx      *rados.IOContext
 	lowerRadosIO    RadosIOContext
 	lowerStriperIO  RadosIOContext
+	stripedWrites   bool
 	maxObjectSize   int64
 	radosCalls      *uint64
 	readBufferPool  *BufferPool
@@ -227,6 +228,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		conn:            conn,
 		ioctx:           ioctx,
 		lowerIoctx:      lowerIoctx,
+		stripedWrites:   bp.Striped,
 		maxObjectSize:   bp.MaxObjectSize,
 		radosCalls:      radosCalls,
 		readBufferPool:  h.readBufferPool,
@@ -236,16 +238,11 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 	}
 
 	hctx.radosIO = NewRadosIO(ioctx, bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-
-	if bp.Striped {
-		hctx.striperIO = NewStripedIO(ioctx, uint64(bp.MaxObjectSize), bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-	}
+	hctx.striperIO = NewStripedIO(ioctx, uint64(bp.MaxObjectSize), bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
 
 	if lowerIoctx != nil {
 		hctx.lowerRadosIO = NewRadosIO(lowerIoctx, bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-		if bp.Lower.Striped {
-			hctx.lowerStriperIO = NewStripedIO(lowerIoctx, uint64(bp.Lower.MaxObjectSize), bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-		}
+		hctx.lowerStriperIO = NewStripedIO(lowerIoctx, uint64(bp.Lower.MaxObjectSize), bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
 	}
 
 	return hctx, nil
@@ -835,7 +832,7 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Request, object string, hashID string, canStripe bool) error {
 	size := r.ContentLength
-	useStriper := canStripe && hctx.striperIO != nil && size > hctx.maxObjectSize
+	useStriper := canStripe && hctx.stripedWrites && size > hctx.maxObjectSize
 
 	expected, err := parseExpectedHash(hashID)
 	if err != nil {
