@@ -24,6 +24,11 @@ stdout '^[1-9]'
 
 exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 
+exec restic restore latest --target $WORK/restored --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+bin-cmp $WORK/restored/data/first.bin data/first.bin
+bin-cmp $WORK/restored/data/second.bin data/second.bin
+
 -- delete-indexes.sh --
 set -o errexit
 set -o pipefail
