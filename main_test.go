@@ -54,7 +54,18 @@ func TestScript(t *testing.T) {
 
 	var setupBuffer bytes.Buffer
 	detachSetup := cephDaemonLogs.Attach(&setupBuffer)
-	confPath, err := startCephCluster(t, ctx, cephDaemonLogs)
+	var confPath string
+	var err error
+	for attempt := 1; attempt <= 2; attempt++ {
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		confPath, err = startCephCluster(t, attemptCtx, cephDaemonLogs)
+		if err == nil {
+			t.Cleanup(attemptCancel)
+			break
+		}
+		attemptCancel()
+		t.Logf("ceph cluster startup attempt %d failed: %v", attempt, err)
+	}
 	if err != nil {
 		detachSetup()
 		t.Log("=== Ceph cluster setup logs ===")
