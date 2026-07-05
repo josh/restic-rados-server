@@ -190,7 +190,7 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 	slog.Debug("rados.Delete", "object", firstObjID)
 	atomic.AddUint64(s.radosCalls, 1)
 	err = s.ioctx.Delete(firstObjID)
-	if err != nil {
+	if err != nil && !errors.Is(err, rados.ErrNotFound) {
 		return fmt.Errorf("delete first object: %w", err)
 	}
 
@@ -202,7 +202,7 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 		}
 		slog.Debug("rados.Delete", "object", objectID, "orphaned", true)
 		atomic.AddUint64(s.radosCalls, 1)
-		if delErr := s.ioctx.Delete(objectID); delErr != nil {
+		if delErr := s.ioctx.Delete(objectID); delErr != nil && !errors.Is(delErr, rados.ErrNotFound) {
 			return fmt.Errorf("delete orphaned object %d: %w", i, delErr)
 		}
 	}

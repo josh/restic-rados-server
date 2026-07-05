@@ -148,7 +148,7 @@ func (hctx *HandlerContext) removeRadosObject(object string, canStripe bool) err
 		if err != nil {
 			return fmt.Errorf("stat object %s: %w", object, err)
 		}
-		if err := rioctx.Remove(object); err != nil {
+		if err := rioctx.Remove(object); err != nil && !errors.Is(err, rados.ErrNotFound) {
 			return fmt.Errorf("delete object %s: %w", object, err)
 		}
 	}
