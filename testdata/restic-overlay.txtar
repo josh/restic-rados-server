@@ -4,42 +4,38 @@ create-pool new
 
 exec restic init --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_OLD --repo rclone: --password-file password.txt
 
-mkdir data-first
-exec cp first.txt data-first/first.txt
 exec restic backup data-first --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_OLD --repo rclone: --password-file password.txt
 
-exec bash snapshot-count.sh '--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD 1
+exec restic snapshots --json --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
+stdin stdout
+exec jq 'length'
+stdout '^1$'
 
-mkdir data-second
-exec cp second.txt data-second/second.txt
 exec restic backup data-second --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
 
-exec bash snapshot-count.sh '--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD 2
+exec restic snapshots --json --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
+stdin stdout
+exec jq 'length'
+stdout '^2$'
 
 exec rados --pool $CEPH_POOL_NEW ls
 stdout 'snapshots/'
-
-env RESTIC_RADOS_SERVER_POOL=$CEPH_POOL_OLD
-rados-object-count snapshots/
-cmp stdout old-snapshot-count.txt
 
 exec restic check --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
 
 exec restic restore latest --target $WORK/restored --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
 
-cmp $WORK/restored/data-second/second.txt second.txt
+cmp $WORK/restored/data-second/second.txt data-second/second.txt
 
--- snapshot-count.sh --
-set -o errexit
-set -o pipefail
+env RESTIC_RADOS_SERVER_POOL=$CEPH_POOL_OLD
+rados-object-count snapshots/
+cmp stdout old-snapshot-count.txt
 
-count=$(restic snapshots --json --option rclone.program=restic-rados-server --option rclone.args="$1" --repo rclone: --password-file password.txt | jq 'length')
-test "$count" = "$2"
 -- password.txt --
 secret
--- first.txt --
+-- data-first/first.txt --
 first snapshot content
--- second.txt --
+-- data-second/second.txt --
 second snapshot content
 -- old-snapshot-count.txt --
 1

@@ -3,8 +3,6 @@ create-pool
 
 exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 
-mkdir data
-exec cp content.txt data/content.txt
 exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 
 exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
@@ -23,7 +21,7 @@ grep 'skipping unknown object' $RESTIC_RADOS_SERVER_LOG_FILE
 
 -- password.txt --
 secret
--- content.txt --
+-- data/content.txt --
 foreign object test content
 -- foreign.txt --
 not a restic object

@@ -13,13 +13,14 @@ exec restic check --option rclone.program=restic-rados-server --repo rclone: --p
 exec bash truncate-pack.sh
 
 ! exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stderr 'unexpected file size: got 9,'
 stderr 'repository contains errors'
 
 -- truncate-pack.sh --
 set -o errexit
 set -o pipefail
 
-pack=$(rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep '^data/' | head -n 1)
+pack=$(rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep '^data/' | sed -n '1p')
 printf 'truncated' > short.bin
 rados --pool "$RESTIC_RADOS_SERVER_POOL" rm "$pack"
 rados --pool "$RESTIC_RADOS_SERVER_POOL" put "$pack" short.bin
