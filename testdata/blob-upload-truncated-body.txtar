@@ -1,0 +1,26 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen 127.0.0.1:$PORT &server&
+wait4socket 127.0.0.1:$PORT
+
+exec curl --silent --request POST 'http://127.0.0.1:'$PORT'/?create=true'
+
+exec bash send-truncated.sh
+
+exec sleep 1
+
+grep 'path=/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a status=400' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'data/'
+
+kill server
+
+-- send-truncated.sh --
+set -o errexit
+
+exec 3<>/dev/tcp/127.0.0.1/$PORT
+printf 'POST /data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/octet-stream\r\nContent-Length: 100\r\n\r\nshort' >&3
+exec 3<&-
+exec 3>&-

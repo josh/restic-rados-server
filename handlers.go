@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"mime"
@@ -865,7 +866,7 @@ func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Req
 			slog.Error("failed to clean up object after write error; a truncated object may remain",
 				"object", object, "write_error", err, "cleanup_error", rmErr)
 		}
-		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, io.ErrUnexpectedEOF) || r.Context().Err() != nil {
 			return errClientAborted
 		}
 		return fmt.Errorf("write object %s: %w", object, err)
