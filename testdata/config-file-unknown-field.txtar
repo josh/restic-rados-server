@@ -1,8 +1,43 @@
 ! exec restic-rados-server --config config.json --listen $WORK/restic.sock
 stderr 'failed to load config file'
 
+! exec restic-rados-server --config flat-pools.json
+stderr 'failed to load config file'
+
+! exec restic-rados-server --config flat-access.json
+stderr 'failed to load config file'
+
+! exec restic-rados-server --config flat-striper.json
+stderr 'failed to load config file'
+
+! exec restic-rados-server --config flat-max-object-size.json
+stderr 'failed to load config file'
+
+! exec restic-rados-server --config bad-duration.json
+stderr 'failed to load config file'
+
 -- config.json --
 {
     "verbose": true,
     "typo_field": "bad"
+}
+-- flat-pools.json --
+{
+    "pools": {"my-pool": ["*"]}
+}
+-- flat-access.json --
+{
+    "access": "ra"
+}
+-- flat-striper.json --
+{
+    "striper": false
+}
+-- flat-max-object-size.json --
+{
+    "max_object_size": 4096
+}
+-- bad-duration.json --
+{
+    "shutdown_timeout": "banana"
 }

@@ -1,0 +1,20 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen unix://$WORK/scheme.sock --listen tcp://127.0.0.1:$PORT --shutdown-timeout 5s --log-file $WORK/server-flag.log --read-buffer-size 65536 &server&
+wait4socket $WORK/scheme.sock 127.0.0.1:$PORT
+
+exec curl --silent --unix-socket $WORK/scheme.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/scheme.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent 'http://127.0.0.1:'$PORT'/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output downloaded
+cmp downloaded blob-data
+
+grep 'listening' $WORK/server-flag.log
+
+kill server
+
+-- blob-data --
+test blob content

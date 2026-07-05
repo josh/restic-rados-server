@@ -1,9 +1,54 @@
 ! exec restic-rados-server --config config.json --listen $WORK/restic.sock
 stderr 'reserved repo name'
 
+! exec restic-rados-server --config keys.json
+stderr 'reserved repo name "keys"'
+
+! exec restic-rados-server --config locks.json
+stderr 'reserved repo name "locks"'
+
+! exec restic-rados-server --config snapshots.json
+stderr 'reserved repo name "snapshots"'
+
+! exec restic-rados-server --config index.json
+stderr 'reserved repo name "index"'
+
+! exec restic-rados-server --config config-name.json
+stderr 'reserved repo name "config"'
+
 -- config.json --
 {
     "repos": {
         "data": {"pools": {"my-pool": ["*"]}}
+    }
+}
+-- keys.json --
+{
+    "repos": {
+        "keys": {"pools": {"my-pool": ["*"]}}
+    }
+}
+-- locks.json --
+{
+    "repos": {
+        "locks": {"pools": {"my-pool": ["*"]}}
+    }
+}
+-- snapshots.json --
+{
+    "repos": {
+        "snapshots": {"pools": {"my-pool": ["*"]}}
+    }
+}
+-- index.json --
+{
+    "repos": {
+        "index": {"pools": {"my-pool": ["*"]}}
+    }
+}
+-- config-name.json --
+{
+    "repos": {
+        "config": {"pools": {"my-pool": ["*"]}}
     }
 }

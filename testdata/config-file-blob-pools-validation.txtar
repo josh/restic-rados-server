@@ -16,6 +16,18 @@ stderr 'blob type "data": max_object_size must be positive, got 0'
 ! exec restic-rados-server --config empty-upper-pool.json
 stderr 'blob type "data": upper pool name cannot be empty'
 
+! exec restic-rados-server --config empty-lower-pool.json
+stderr 'blob type "data": lower pool name cannot be empty'
+
+! exec restic-rados-server --config unknown-field-in-layer.json
+stderr 'failed to load config file'
+
+! exec restic-rados-server --config negative-max-object-size.json
+stderr 'blob type "data": max_object_size must be positive, got -1'
+
+! exec restic-rados-server --config zero-lower-max-object-size.json
+stderr 'blob type "data": lower layer max_object_size must be positive, got 0'
+
 -- lower-only.json --
 {
     "repos": {
@@ -81,6 +93,55 @@ stderr 'blob type "data": upper pool name cannot be empty'
                 "data": {
                     "upper": {"namespace": "ns"},
                     "lower": {"pool": "old"}
+                }
+            }
+        }
+    }
+}
+-- empty-lower-pool.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "upper": {"pool": "new"},
+                    "lower": {"pool": ""}
+                }
+            }
+        }
+    }
+}
+-- unknown-field-in-layer.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "upper": {"pool": "new", "lower": {"pool": "nested"}},
+                    "lower": {"pool": "old"}
+                }
+            }
+        }
+    }
+}
+-- negative-max-object-size.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {"pool": "flat", "max_object_size": -1}
+            }
+        }
+    }
+}
+-- zero-lower-max-object-size.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "upper": {"pool": "new"},
+                    "lower": {"pool": "old", "max_object_size": 0}
                 }
             }
         }

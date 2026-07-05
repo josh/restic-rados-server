@@ -25,5 +25,21 @@ stdout '200'
 
 kill cliserver
 
+env RADOS_RESTIC_SERVER_POOL=$RESTIC_RADOS_SERVER_POOL
+env RESTIC_RADOS_SERVER_POOL=
+env CEPH_RESTIC_SERVER_POOL=
+env RADOS_RESTIC_SERVER_ACCESS=rw
+
+exec restic-rados-server --listen $WORK/rados.sock &radosserver&
+wait4socket $WORK/rados.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/rados.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/450d3bc4323dc737623ed173bfd3837b3ce423b9f6c85f42074a616c86ba1aac' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/rados.sock --request DELETE 'http://localhost/data/450d3bc4323dc737623ed173bfd3837b3ce423b9f6c85f42074a616c86ba1aac' --output /dev/null
+stdout '403'
+
+kill radosserver
+
 -- blob-data --
 env precedence blob
