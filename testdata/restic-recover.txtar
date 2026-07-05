@@ -1,0 +1,33 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec bash forget-snapshot.sh
+
+exec restic snapshots --json --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stdin stdout
+exec jq 'length'
+stdout '^0$'
+
+exec restic recover --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic snapshots --json --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stdin stdout
+exec jq 'length'
+stdout '^1$'
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+-- forget-snapshot.sh --
+set -o errexit
+set -o pipefail
+
+id=$(restic snapshots --json --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt | jq -r '.[0].short_id')
+restic forget "$id" --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+-- password.txt --
+secret
+-- data/file.txt --
+recover me from the index

@@ -1,0 +1,47 @@
+tail-logs
+create-pool alpha
+create-pool beta
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen 127.0.0.1:$PORT &server&
+wait4socket 127.0.0.1:$PORT
+
+exec restic init --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+exec restic backup data --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+exec restic init --repo rest:http://127.0.0.1:$PORT/backup --password-file password2.txt --copy-chunker-params --from-repo rest:http://127.0.0.1:$PORT/ --from-password-file password.txt
+
+exec restic copy latest --repo rest:http://127.0.0.1:$PORT/backup --password-file password2.txt --from-repo rest:http://127.0.0.1:$PORT/ --from-password-file password.txt
+
+exec restic snapshots --json --repo rest:http://127.0.0.1:$PORT/backup --password-file password2.txt
+stdin stdout
+exec jq 'length'
+stdout '^1$'
+
+exec restic check --repo rest:http://127.0.0.1:$PORT/backup --password-file password2.txt
+
+exec restic restore latest --target $WORK/restored --repo rest:http://127.0.0.1:$PORT/backup --password-file password2.txt
+
+cmp $WORK/restored/data/file.txt data/file.txt
+
+exec rados --pool $CEPH_POOL_BETA ls
+stdout 'data/'
+stdout 'snapshots/'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {"pools": {"$CEPH_POOL_ALPHA": ["*"]}},
+        "backup": {"pools": {"$CEPH_POOL_BETA": ["*"]}}
+    }
+}
+-- password.txt --
+secret
+-- password2.txt --
+secret2
+-- data/file.txt --
+copy me between repos

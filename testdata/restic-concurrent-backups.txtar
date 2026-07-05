@@ -1,0 +1,23 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic backup data-a --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt &backup1&
+exec restic backup data-b --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt &backup2&
+
+wait
+
+exec restic snapshots --json --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stdin stdout
+exec jq 'length'
+stdout '^2$'
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+-- password.txt --
+secret
+-- data-a/a.txt --
+concurrent backup a
+-- data-b/b.txt --
+concurrent backup b

@@ -1,0 +1,26 @@
+tail-logs
+create-pool
+
+exec restic init --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic backup data --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic tag --add hourly latest --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+exec restic snapshots --json --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stdin stdout
+exec jq -r 'length, .[0].tags[0]'
+stdout '^1$'
+stdout '^hourly$'
+
+rados-object-count snapshots/
+cmp stdout one.txt
+
+exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+
+-- password.txt --
+secret
+-- data/file.txt --
+tag rewrite content
+-- one.txt --
+1
