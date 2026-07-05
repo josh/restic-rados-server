@@ -12,6 +12,7 @@ exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range
 stdout 'HTTP/.* 206'
 stdout 'Content-Range: bytes 0-9/51'
 stdout 'Content-Length: 10'
+stdout 'Accept-Ranges: bytes'
 stdout '0123456789'
 
 exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Range: bytes=10-19' 'http://localhost/data/179c1ce238f8d73ef6ff776abd51bad060c70810c0f812cb1396792a28a4a045'
