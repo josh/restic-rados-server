@@ -1083,7 +1083,10 @@ func TestPoolSpecsToPoolsConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := poolSpecsToPoolsConfig(tt.specs)
+			got, err := poolSpecsToPoolsConfig(tt.specs)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %d entries, want %d", len(got), len(tt.want))
 			}
