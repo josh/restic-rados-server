@@ -7,6 +7,12 @@ stderr 'invalid repo name'
 ! exec restic-rados-server --config invalid-access.json
 stderr 'invalid access "RW" \(must be r, ra, or rw\)'
 
+! exec restic-rados-server --config dot-name.json
+stderr 'invalid repo name "\." \(must not be "\." or "\.\."\)'
+
+! exec restic-rados-server --config dotdot-name.json
+stderr 'invalid repo name "\.\." \(must not be "\." or "\.\."\)'
+
 -- slash-name.json --
 {
     "repos": {
@@ -23,5 +29,17 @@ stderr 'invalid access "RW" \(must be r, ra, or rw\)'
 {
     "repos": {
         "default": {"access": "RW", "pools": {"pool": ["*"]}}
+    }
+}
+-- dot-name.json --
+{
+    "repos": {
+        ".": {"pools": {"pool": ["*"]}}
+    }
+}
+-- dotdot-name.json --
+{
+    "repos": {
+        "..": {"pools": {"pool": ["*"]}}
     }
 }

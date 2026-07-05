@@ -640,7 +640,7 @@ func TestLoadConfigReservedRepoName(t *testing.T) {
 }
 
 func TestLoadConfigInvalidRepoName(t *testing.T) {
-	invalid := []string{"my repo", "", "a/b", "{x}", "repo\ttab"}
+	invalid := []string{"my repo", "", "a/b", "{x}", "repo\ttab", ".", ".."}
 	for _, name := range invalid {
 		t.Run(name, func(t *testing.T) {
 			json := `{"repos": {` + strconv.Quote(name) + `: {"pools": {"my-pool": ["*"]}}}}`
