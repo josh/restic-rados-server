@@ -796,6 +796,7 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 	rng, err := parseRange(r, int64(stat.Size))
 	if err != nil {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", stat.Size))
 		return fmt.Errorf("%w: %v", errRangeNotSatisfiable, err)
 	}
 
