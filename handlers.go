@@ -384,7 +384,7 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	blobType := r.PathValue("type")
-	if !isValidBlobType(blobType) {
+	if !isValidBlobType(blobType) || r.URL.Path != "/"+blobType+"/" {
 		http.NotFound(w, r)
 		return
 	}

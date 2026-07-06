@@ -1,0 +1,35 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @config-data http://localhost/config
+
+exec curl --silent --include --path-as-is --unix-socket $WORK/restic.sock http://localhost//config
+stdout 'HTTP/.* 307'
+stdout 'Location: /config'
+
+exec curl --silent --include --path-as-is --unix-socket $WORK/restic.sock http://localhost/data/../config
+stdout 'HTTP/.* 307'
+stdout 'Location: /config'
+
+exec curl --silent --include --path-as-is --unix-socket $WORK/restic.sock http://localhost/data
+stdout 'HTTP/.* 307'
+stdout 'Location: /data/'
+
+exec curl --silent --write-out '%{http_code}' --path-as-is --unix-socket $WORK/restic.sock 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001/' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --path-as-is --unix-socket $WORK/restic.sock 'http://localhost/data/%2E%2E/' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/' --output /dev/null
+stdout '200'
+
+kill server
+
+-- config-data --
+{"version":2,"id":"canonical","chunker_polynomial":"25b468838dcb75ea"}
