@@ -1,0 +1,39 @@
+tail-logs
+create-pool
+
+bin-file rand part0 4194304
+bin-file rand part1 4194304
+exec bash make-foreign.sh
+
+bin-file rand friendly.bin 8388608
+exec rados --pool $RESTIC_RADOS_SERVER_POOL --striper put data/0000000000000000000000000000000000000000000000000000000000000002 friendly.bin
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --head 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
+stdout '500'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
+stdout '500'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000002' --output got.bin
+bin-cmp got.bin friendly.bin
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000002' --output /dev/null
+stdout '200'
+
+kill server
+
+-- make-foreign.sh --
+set -o errexit
+
+id=data/0000000000000000000000000000000000000000000000000000000000000001
+rados --pool "$RESTIC_RADOS_SERVER_POOL" put "$id.0000000000000000" part0
+rados --pool "$RESTIC_RADOS_SERVER_POOL" put "$id.0000000000000001" part1
+rados --pool "$RESTIC_RADOS_SERVER_POOL" setxattr "$id.0000000000000000" striper.layout.stripe_unit 1048576
+rados --pool "$RESTIC_RADOS_SERVER_POOL" setxattr "$id.0000000000000000" striper.layout.stripe_count 2
+rados --pool "$RESTIC_RADOS_SERVER_POOL" setxattr "$id.0000000000000000" striper.layout.object_size 4194304
+rados --pool "$RESTIC_RADOS_SERVER_POOL" setxattr "$id.0000000000000000" striper.size 8388608
