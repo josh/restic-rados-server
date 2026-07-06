@@ -5,9 +5,11 @@ exec restic-rados-server --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
 ! exec restic-rados-server --listen $WORK/restic.sock
+grep 'another server is already listening' $RESTIC_RADOS_SERVER_LOG_FILE
 
 exec cp $WORK/regular.txt.src $WORK/regular.txt
 ! exec restic-rados-server --listen $WORK/regular.txt
+grep 'not a socket' $RESTIC_RADOS_SERVER_LOG_FILE
 exec cmp $WORK/regular.txt $WORK/regular.txt.src
 
 kill server

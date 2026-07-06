@@ -18,6 +18,16 @@ stdout '200'
 
 kill server
 
+exec bash make-dangling.sh
+
+exec restic-rados-server --listen $WORK/dangling.sock &server2&
+wait4socket $WORK/dangling.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/dangling.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+kill server2
+
 -- check-stale.sh --
 set -o errexit
 
@@ -26,3 +36,7 @@ test -S "$WORK/stale.sock"
 set -o errexit
 
 ln -s "$WORK/stale.sock" "$WORK/link.sock"
+-- make-dangling.sh --
+set -o errexit
+
+ln -s "$WORK/does-not-exist.sock" "$WORK/dangling.sock"
