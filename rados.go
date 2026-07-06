@@ -130,6 +130,17 @@ func (s *striperIOContextWrapper) stripeObjectSize(firstObjID string) (uint64, e
 	if size == 0 {
 		return 0, fmt.Errorf("invalid object_size xattr: 0")
 	}
+	unit, err := s.getXattrUint(firstObjID, xattrStripeUnit)
+	if err != nil {
+		return 0, err
+	}
+	count, err := s.getXattrUint(firstObjID, xattrStripeCount)
+	if err != nil {
+		return 0, err
+	}
+	if count != 1 || unit != size {
+		return 0, fmt.Errorf("unsupported striper layout: stripe_count=%d stripe_unit=%d object_size=%d", count, unit, size)
+	}
 	return size, nil
 }
 
@@ -152,6 +163,10 @@ func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
 
 	size, err := s.getXattrUint(firstObjID, xattrSize)
 	if err != nil {
+		return StatInfo{}, err
+	}
+
+	if _, err := s.stripeObjectSize(firstObjID); err != nil {
 		return StatInfo{}, err
 	}
 
