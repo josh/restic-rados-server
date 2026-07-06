@@ -4,11 +4,11 @@ create-pool
 exec restic-rados-server --listen $WORK/stale.sock &victim&
 wait4socket $WORK/stale.sock
 kill victim
-exec sleep 1
+! wait4socket $WORK/stale.sock
 
-exec bash check-stale.sh
+exists $WORK/stale.sock
 
-exec bash make-symlink.sh
+symlink $WORK/link.sock -> $WORK/stale.sock
 
 exec restic-rados-server --listen $WORK/link.sock &server&
 wait4socket $WORK/link.sock
@@ -17,12 +17,3 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/link.sock --re
 stdout '200'
 
 kill server
-
--- check-stale.sh --
-set -o errexit
-
-test -S "$WORK/stale.sock"
--- make-symlink.sh --
-set -o errexit
-
-ln -s "$WORK/stale.sock" "$WORK/link.sock"

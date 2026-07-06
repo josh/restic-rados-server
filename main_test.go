@@ -8,8 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -20,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -598,48 +601,52 @@ func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("context not found in testscript Env.Values")
 	}
 
-	if neg {
-		ts.Fatalf("unsupported: ! wait4socket")
-	}
 	if len(args) < 1 {
 		ts.Fatalf("usage: wait4socket <endpoint> [<endpoint>...]")
 	}
 
 	for _, endpoint := range args {
+		network := "unix"
+		if strings.Contains(endpoint, ":") {
+			network = "tcp"
+		}
+
+		check := func() bool {
+			conn, err := net.DialTimeout(network, endpoint, 100*time.Millisecond)
+			if err == nil {
+				_ = conn.Close()
+				return !neg
+			}
+			if neg {
+				return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, fs.ErrNotExist)
+			}
+			return false
+		}
+
+		if check() {
+			continue
+		}
+
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
 		timeout := time.After(3 * time.Second)
 		var success bool
 
-		if strings.Contains(endpoint, ":") {
-			for !success {
-				select {
-				case <-ctx.Done():
-					ts.Fatalf("context cancelled while waiting for %s: %v", endpoint, ctx.Err())
-				case <-timeout:
+		for !success {
+			select {
+			case <-ctx.Done():
+				ts.Fatalf("context cancelled while waiting for %s: %v", endpoint, ctx.Err())
+			case <-timeout:
+				if neg {
+					ts.Fatalf("endpoint still accepting connections: %s", endpoint)
+				}
+				if network == "tcp" {
 					ts.Fatalf("TCP listener did not respond in time: %s", endpoint)
-				case <-ticker.C:
-					conn, err := net.DialTimeout("tcp", endpoint, 100*time.Millisecond)
-					if err == nil {
-						_ = conn.Close()
-						success = true
-					}
 				}
-			}
-		} else {
-			for !success {
-				select {
-				case <-ctx.Done():
-					ts.Fatalf("context cancelled while waiting for %s: %v", endpoint, ctx.Err())
-				case <-timeout:
-					ts.Fatalf("socket did not appear in time: %s", endpoint)
-				case <-ticker.C:
-					info, err := os.Stat(endpoint)
-					if err == nil && info.Mode()&os.ModeSocket != 0 {
-						success = true
-					}
-				}
+				ts.Fatalf("socket did not appear in time: %s", endpoint)
+			case <-ticker.C:
+				success = check()
 			}
 		}
 	}

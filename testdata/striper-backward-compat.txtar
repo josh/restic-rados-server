@@ -15,6 +15,7 @@ stdout 'data/7899a615e333c749b0204beb73adf1b3304405f592f716872c8fbdbd4be82ed9'
 ! stdout '\.0000000000000000'
 
 kill server1
+! wait4socket $WORK/restic.sock
 
 exec restic-rados-server --listen $WORK/restic.sock &server2&
 wait4socket $WORK/restic.sock

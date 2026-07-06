@@ -12,6 +12,7 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --
 stdout '200'
 
 kill server
+! wait4socket $WORK/restic.sock
 
 bin-file zeros orphan-data 1024
 exec rados --pool $RESTIC_RADOS_SERVER_POOL --conf $CEPH_CONF put data/$HASH.0000000000000002 orphan-data
