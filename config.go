@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -576,7 +577,11 @@ func poolSpecsToPoolsConfig(specs []string) (poolsConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		result[key] = append(result[key], types...)
+		for _, t := range types {
+			if !slices.Contains(result[key], t) {
+				result[key] = append(result[key], t)
+			}
+		}
 	}
 	return result, nil
 }
