@@ -11,26 +11,9 @@ stdout '200'
 
 exec ceph osd pool rm $RESTIC_RADOS_SERVER_POOL $RESTIC_RADOS_SERVER_POOL --yes-i-really-really-mean-it
 
-exec bash wait-pool-gone.sh
-cmp stdout expected-status.txt
+wait4http 503 $WORK/restic.sock /data/
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '503'
 
 kill server
-
--- wait-pool-gone.sh --
-set -o errexit
-
-for i in $(seq 1 30); do
-	code=$(curl --silent --write-out '%{http_code}' --unix-socket "$WORK/restic.sock" 'http://localhost/data/' --output /dev/null)
-	if [ "$code" != "200" ]; then
-		printf '%s\n' "$code"
-		exit 0
-	fi
-	sleep 1
-done
-printf 'pool deletion never became visible'
-exit 1
--- expected-status.txt --
-503
