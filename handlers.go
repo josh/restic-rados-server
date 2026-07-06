@@ -131,14 +131,15 @@ func (hctx *HandlerContext) statRadosObject(object string) (RadosIOContext, Stat
 
 func (hctx *HandlerContext) removeRadosObject(object string, canStripe bool) error {
 	type layer struct {
+		name      string
 		plainIO   RadosIOContext
 		striperIO RadosIOContext
 	}
 	var layers []layer
 	if hctx.lowerRadosIO != nil {
-		layers = append(layers, layer{hctx.lowerRadosIO, hctx.lowerStriperIO})
+		layers = append(layers, layer{"lower", hctx.lowerRadosIO, hctx.lowerStriperIO})
 	}
-	layers = append(layers, layer{hctx.radosIO, hctx.striperIO})
+	layers = append(layers, layer{"upper", hctx.radosIO, hctx.striperIO})
 
 	for _, l := range layers {
 		striperIO := l.striperIO
@@ -152,6 +153,7 @@ func (hctx *HandlerContext) removeRadosObject(object string, canStripe bool) err
 		if err != nil {
 			return fmt.Errorf("stat object %s: %w", object, err)
 		}
+		slog.Debug("removing object from layer", "object", object, "layer", l.name)
 		if err := rioctx.Remove(object); err != nil && !errors.Is(err, rados.ErrNotFound) {
 			return fmt.Errorf("delete object %s: %w", object, err)
 		}
