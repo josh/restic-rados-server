@@ -380,7 +380,7 @@ func loadConfig(args []string) (Config, bool, error) {
 
 func isReservedRepoName(name string) bool {
 	switch name {
-	case "keys", "locks", "snapshots", "data", "index", "config":
+	case "keys", "locks", "snapshots", "data", "index", "config", "healthz", "readyz":
 		return true
 	default:
 		return false
@@ -396,7 +396,7 @@ func (c *Config) normalizeRepos() error {
 			return fmt.Errorf("invalid repo name %q (must not be \".\" or \"..\")", name)
 		}
 		if name != "default" && isReservedRepoName(name) {
-			return fmt.Errorf("reserved repo name %q (conflicts with blob type)", name)
+			return fmt.Errorf("reserved repo name %q (conflicts with server path)", name)
 		}
 
 		if repo.Access == "" {

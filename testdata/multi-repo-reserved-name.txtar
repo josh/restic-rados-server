@@ -16,6 +16,12 @@ stderr 'reserved repo name "index"'
 ! exec restic-rados-server --config config-name.json
 stderr 'reserved repo name "config"'
 
+! exec restic-rados-server --config healthz.json
+stderr 'reserved repo name "healthz"'
+
+! exec restic-rados-server --config readyz.json
+stderr 'reserved repo name "readyz"'
+
 -- config.json --
 {
     "repos": {
@@ -50,5 +56,17 @@ stderr 'reserved repo name "config"'
 {
     "repos": {
         "config": {"pools": {"my-pool": ["*"]}}
+    }
+}
+-- healthz.json --
+{
+    "repos": {
+        "healthz": {"pools": {"my-pool": ["*"]}}
+    }
+}
+-- readyz.json --
+{
+    "repos": {
+        "readyz": {"pools": {"my-pool": ["*"]}}
     }
 }

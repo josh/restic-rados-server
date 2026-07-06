@@ -1,0 +1,33 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/healthz' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/readyz' --output /dev/null
+stdout '200'
+
+kill server
+! wait4socket $WORK/restic.sock
+
+exec restic-rados-server --config cap.json --listen $WORK/gated.sock &gated&
+wait4socket $WORK/gated.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/gated.sock 'http://localhost/healthz' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/gated.sock 'http://localhost/readyz' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/gated.sock 'http://localhost/config' --output /dev/null
+stdout '403'
+
+kill gated
+
+-- cap.json --
+{
+    "tailscale_capability": "github.com/josh/restic-rados-server"
+}

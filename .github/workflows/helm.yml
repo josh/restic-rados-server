@@ -1,0 +1,51 @@
+name: Helm
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Helm
+        run: |
+          curl --fail --silent --show-error --location --output get-helm.sh https://raw.githubusercontent.com/helm/helm/5ae85868d45ca7bb9ac3ef7a10e0db54b8a8695c/scripts/get-helm-4
+          bash get-helm.sh --version "v${HELM_VERSION}"
+        env:
+          HELM_VERSION: "4.1.0"
+
+      - name: Lint chart
+        run: |
+          helm lint ./charts/restic-rados-server \
+            --set 'ceph.monitors={mon.ceph.svc.cluster.local}' \
+            --set-json 'config.repos.default.pools={"restic":["*"]}'
+
+      - name: Template chart
+        run: |
+          helm template test ./charts/restic-rados-server \
+            --set 'ceph.monitors={mon.ceph.svc.cluster.local}' \
+            --set-json 'config.repos.default.pools={"restic":["*"]}'
+
+      - name: Template chart with keyring secret
+        run: |
+          helm template test ./charts/restic-rados-server \
+            --set 'ceph.monitors={mon.ceph.svc.cluster.local}' \
+            --set ceph.clientID=restic \
+            --set ceph.keyring.secret.name=ceph-keyring \
+            --set-json 'config.repos.default.pools={"restic":["*"]}'
+
+      - name: Template chart with named repo
+        run: |
+          helm template test ./charts/restic-rados-server \
+            --set 'ceph.monitors={mon.ceph.svc.cluster.local}' \
+            --set-json 'config.repos.default=null' \
+            --set-json 'config.repos.backups.pools={"restic":["*"]}'
+
+      - name: Template chart with per-type pools
+        run: |
+          helm template test ./charts/restic-rados-server \
+            --set 'ceph.monitors={mon.ceph.svc.cluster.local}' \
+            --set-json 'config.repos.default.pools={"restic_data":["data","index"],"restic_metadata":["config","keys","locks","snapshots"]}'

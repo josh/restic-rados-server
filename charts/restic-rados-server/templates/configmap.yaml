@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "restic-rados-server.fullname" . }}
+  labels:
+    {{- include "restic-rados-server.labels" . | nindent 4 }}
+data:
+  ceph.conf: |
+    {{- include "restic-rados-server.cephConf" . | nindent 4 }}
+  restic-rados-server.json: |
+    {{- include "restic-rados-server.configJson" . | nindent 4 }}

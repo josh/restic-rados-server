@@ -507,6 +507,15 @@ func (cm *ConnectionManager) GetMaxWriteSize() (int64, error) {
 	return cm.maxWriteSize, nil
 }
 
+func (cm *ConnectionManager) Ready() bool {
+	if handle := cm.acquireHandle(); handle != nil {
+		handle.release()
+		return true
+	}
+	go func() { _ = cm.tryReconnect() }()
+	return false
+}
+
 func (cm *ConnectionManager) markConnectionBroken(handle *connHandle) {
 	cm.mu.Lock()
 	if cm.handle != handle {
