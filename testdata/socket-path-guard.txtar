@@ -6,9 +6,9 @@ wait4socket $WORK/restic.sock
 
 ! exec restic-rados-server --listen $WORK/restic.sock
 
-exec cp $WORK/regular.txt.src $WORK/regular.txt
+cp $WORK/regular.txt.src $WORK/regular.txt
 ! exec restic-rados-server --listen $WORK/regular.txt
-exec cmp $WORK/regular.txt $WORK/regular.txt.src
+cmp $WORK/regular.txt $WORK/regular.txt.src
 
 kill server
 

@@ -10,7 +10,6 @@ stdout '200'
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/keys/' --output $WORK/keys-response.txt
 stdout '503'
 
-exec cat $WORK/keys-response.txt
-stdout 'pool not configured'
+grep 'pool not configured' $WORK/keys-response.txt
 
 kill server
