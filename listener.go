@@ -338,7 +338,7 @@ func serveListener(ctx context.Context, listener net.Listener, handler http.Hand
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("server shutdown error", "error", err)
 		}
-		return ctx.Err()
+		return nil
 	case err := <-errChan:
 		if err != nil && err != http.ErrServerClosed {
 			return err
