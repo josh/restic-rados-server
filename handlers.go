@@ -806,6 +806,7 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 	contentLength := rng.end - rng.start + 1
 	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
 	w.WriteHeader(rng.status)
 
