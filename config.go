@@ -577,10 +577,23 @@ func poolSpecsToPoolsConfig(specs []string) (poolsConfig, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(types) > 1 {
+			for _, t := range types {
+				if t == "*" {
+					return nil, fmt.Errorf("pool %q: wildcard '*' cannot be mixed with explicit types", key)
+				}
+				if !isValidBlobTypeForMapping(BlobType(t)) {
+					return nil, fmt.Errorf("pool %q: unknown blob type %q", key, t)
+				}
+			}
+		}
 		for _, t := range types {
 			if !slices.Contains(result[key], t) {
 				result[key] = append(result[key], t)
 			}
+		}
+		if len(result[key]) > 1 && slices.Contains(result[key], "*") {
+			result[key] = []string{"*"}
 		}
 	}
 	return result, nil

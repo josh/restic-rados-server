@@ -16,3 +16,19 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic2.sock '
 stdout '404'
 
 kill server2
+
+exec restic-rados-server --pool $RESTIC_RADOS_SERVER_POOL --pool $RESTIC_RADOS_SERVER_POOL':data' --listen $WORK/restic3.sock &server3&
+wait4socket $WORK/restic3.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic3.sock 'http://localhost/data/' --output /dev/null
+stdout '200'
+
+kill server3
+
+exec restic-rados-server --pool $RESTIC_RADOS_SERVER_POOL':data' --pool $RESTIC_RADOS_SERVER_POOL --listen $WORK/restic4.sock &server4&
+wait4socket $WORK/restic4.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic4.sock 'http://localhost/data/' --output /dev/null
+stdout '200'
+
+kill server4
