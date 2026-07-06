@@ -680,6 +680,17 @@ func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[st
 			mux.Handle("/"+name+"/", http.StripPrefix("/"+name, h.logRequests(repoMux)))
 		}
 	}
+
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok\n")
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !connMgr.Ready() {
+			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, "ok\n")
+	})
 }
 
 func parseExpectedHash(object string) ([32]byte, error) {
