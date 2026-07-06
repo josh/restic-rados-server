@@ -11,6 +11,11 @@ exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary 
 exec curl --silent --unix-socket $WORK/restic.sock --head --include 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
 stdout 'HTTP.* 200'
 stdout 'Content-Length: 18'
+stdout 'Content-Type: application/octet-stream'
+
+exec curl --silent --include --unix-socket $WORK/restic.sock 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+stdout 'HTTP.* 200'
+stdout 'Content-Type: application/octet-stream'
 
 exec curl --silent --unix-socket $WORK/restic.sock --request GET 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
 cmp stdout blob-data
