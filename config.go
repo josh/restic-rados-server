@@ -128,6 +128,16 @@ func (c *Config) loadFromFile(path string) error {
 	return dec.Decode(c)
 }
 
+func (c *Config) defaultRepo() *RepoConfig {
+	if c.Repos == nil {
+		c.Repos = make(map[string]*RepoConfig)
+	}
+	if c.Repos["default"] == nil {
+		c.Repos["default"] = &RepoConfig{}
+	}
+	return c.Repos["default"]
+}
+
 func (c *Config) loadFromArgs(args []string) (configFile string, showVersion bool, err error) {
 	fs := flag.NewFlagSet("restic-rados-server", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -220,13 +230,7 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 	}
 
 	if set["pool"] || set["access"] || set["striper"] || set["max-object-size"] {
-		if c.Repos == nil {
-			c.Repos = make(map[string]*RepoConfig)
-		}
-		if c.Repos["default"] == nil {
-			c.Repos["default"] = &RepoConfig{}
-		}
-		def := c.Repos["default"]
+		def := c.defaultRepo()
 		if set["pool"] {
 			def.poolSpecs = poolSpecs
 			def.Pools = nil
@@ -306,13 +310,7 @@ func (c *Config) loadFromEnv() {
 	envPool := getEnv("POOL")
 
 	if envAccess != "" || hasStriper || hasMaxObjectSize || envPool != "" {
-		if c.Repos == nil {
-			c.Repos = make(map[string]*RepoConfig)
-		}
-		if c.Repos["default"] == nil {
-			c.Repos["default"] = &RepoConfig{}
-		}
-		def := c.Repos["default"]
+		def := c.defaultRepo()
 		if envAccess != "" {
 			def.Access = envAccess
 		}
