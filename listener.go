@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -42,8 +43,13 @@ func (cfg listenerConfig) Close() {
 }
 
 func prepareUnixSocketPath(path string) error {
-	info, err := os.Lstat(path)
+	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
+		if _, lerr := os.Lstat(path); lerr == nil {
+			if rerr := os.Remove(path); rerr != nil {
+				return fmt.Errorf("failed to remove dangling symlink %q: %w", path, rerr)
+			}
+		}
 		return nil
 	}
 	if err != nil {
@@ -52,9 +58,13 @@ func prepareUnixSocketPath(path string) error {
 	if info.Mode()&os.ModeSocket == 0 {
 		return fmt.Errorf("refusing to remove %q: not a socket", path)
 	}
-	if conn, err := net.DialTimeout("unix", path, time.Second); err == nil {
+	conn, dialErr := net.DialTimeout("unix", path, time.Second)
+	if dialErr == nil {
 		_ = conn.Close()
 		return fmt.Errorf("refusing to bind %q: another server is already listening", path)
+	}
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+		return fmt.Errorf("refusing to remove %q: cannot verify socket is stale: %w", path, dialErr)
 	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("failed to remove stale socket %q: %w", path, err)
