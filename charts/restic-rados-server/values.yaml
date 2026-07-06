@@ -1,0 +1,84 @@
+image:
+  repository: ghcr.io/josh/restic-rados-server
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Replicas coordinate through Ceph and restic's own locking protocol, so
+# scaling beyond 1 replica is safe.
+replicaCount: 1
+
+# Ceph cluster connectivity. Rendered into the ceph.conf in the chart's
+# ConfigMap and injected into the server config as ceph_conf/keyring/client_id.
+ceph:
+  # Cluster fsid (optional).
+  clusterID: ""
+  # mon_host entries (required), e.g. [mon.ceph.svc.cluster.local].
+  monitors: []
+  # Ceph client name, e.g. "restic" authenticates as client.restic.
+  clientID: ""
+  # Existing Secret holding a Ceph keyring file. The chart never creates
+  # Secrets; create it yourself (sealed-secrets, External Secrets, sops,
+  # kubectl, ...). The keyring is mounted at /etc/ceph/ceph.keyring. Leave
+  # secret.name empty to skip it.
+  keyring:
+    secret:
+      name: ""
+    key: keyring
+
+# Application config. Maps 1:1 to restic-rados-server's JSON config schema.
+# The chart injects ceph_conf, keyring, and client_id at template time from
+# the `ceph` block above — do not set them here.
+config:
+  listen:
+    - "0.0.0.0:8000"
+  repos:
+    default:
+      # Pool assignments are required, e.g.
+      #   pools:
+      #     restic_data: [data, index]
+      #     restic_metadata: ["*"]
+      # When configuring your own repo name instead, remove this repo by
+      # setting config.repos.default to null.
+      pools: {}
+
+service:
+  type: ClusterIP
+  port: 8000
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# The server holds 16MiB read and write buffers per in-flight transfer.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

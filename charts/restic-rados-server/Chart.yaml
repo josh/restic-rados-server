@@ -1,0 +1,18 @@
+apiVersion: v2
+name: restic-rados-server
+description: Restic REST backend server backed by Ceph RADOS
+type: application
+version: "0.7.0"
+appVersion: "0.7.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/josh/restic-rados-server
+sources:
+  - https://github.com/josh/restic-rados-server
+keywords:
+  - restic
+  - backup
+  - ceph
+  - rados
+  - rest-server
+maintainers:
+  - name: Joshua Peek

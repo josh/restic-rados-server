@@ -1,0 +1,92 @@
+{{- include "restic-rados-server.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "restic-rados-server.fullname" . }}
+  labels:
+    {{- include "restic-rados-server.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "restic-rados-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ print (include "restic-rados-server.cephConf" .) (include "restic-rados-server.configJson" .) | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "restic-rados-server.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "restic-rados-server.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: restic-rados-server
+          image: {{ include "restic-rados-server.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/restic-rados-server/restic-rados-server.json
+          ports:
+            - name: http
+              containerPort: {{ include "restic-rados-server.httpPort" . }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/restic-rados-server/restic-rados-server.json
+              subPath: restic-rados-server.json
+              readOnly: true
+            - name: ceph
+              mountPath: /etc/ceph
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "restic-rados-server.fullname" . }}
+        - name: ceph
+          projected:
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: {{ include "restic-rados-server.fullname" . }}
+                  items:
+                    - key: ceph.conf
+                      path: ceph.conf
+              {{- if .Values.ceph.keyring.secret.name }}
+              - secret:
+                  name: {{ .Values.ceph.keyring.secret.name | quote }}
+                  items:
+                    - key: {{ .Values.ceph.keyring.key }}
+                      path: ceph.keyring
+              {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
