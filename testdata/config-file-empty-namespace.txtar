@@ -1,0 +1,18 @@
+! exec restic-rados-server --config trailing-slash.json
+stderr 'empty namespace'
+
+! exec restic-rados-server --config lower-trailing-slash.json
+stderr 'empty namespace'
+
+-- trailing-slash.json --
+{
+    "repos": {
+        "default": {"pools": {"foo/": ["*"]}}
+    }
+}
+-- lower-trailing-slash.json --
+{
+    "repos": {
+        "default": {"pools": {"foo//bar/": ["*"]}}
+    }
+}

@@ -595,6 +595,9 @@ func parsePoolKey(key string) (BlobPoolConfig, error) {
 	if poolName == "" {
 		return BlobPoolConfig{}, fmt.Errorf("empty pool name in specification: %q", key)
 	}
+	if strings.Contains(upperPart, "/") && namespace == "" {
+		return BlobPoolConfig{}, fmt.Errorf("empty namespace in specification: %q", key)
+	}
 	if strings.HasPrefix(namespace, "/") {
 		return BlobPoolConfig{}, fmt.Errorf("namespace cannot start with '/' in specification: %q", key)
 	}
@@ -604,6 +607,9 @@ func parsePoolKey(key string) (BlobPoolConfig, error) {
 		lowerPool, lowerNamespace := splitPoolKey(lowerPart)
 		if lowerPool == "" {
 			return BlobPoolConfig{}, fmt.Errorf("empty lower pool name in specification: %q", key)
+		}
+		if strings.Contains(lowerPart, "/") && lowerNamespace == "" {
+			return BlobPoolConfig{}, fmt.Errorf("empty namespace in specification: %q", key)
 		}
 		if strings.HasPrefix(lowerNamespace, "/") {
 			return BlobPoolConfig{}, fmt.Errorf("namespace cannot start with '/' in specification: %q", key)
