@@ -174,7 +174,11 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 
 	numObjects := uint64(1)
 	if totalSize > 0 {
-		numObjects = (totalSize + s.objectSize - 1) / s.objectSize
+		objectSize, err := s.stripeObjectSize(firstObjID)
+		if err != nil {
+			return err
+		}
+		numObjects = (totalSize + objectSize - 1) / objectSize
 	}
 
 	for i := int64(numObjects - 1); i >= 1; i-- {
@@ -197,8 +201,11 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 	for i := numObjects; ; i++ {
 		objectID := s.getObjectID(object, i)
 		_, err := s.ioctx.Stat(objectID)
-		if err != nil {
+		if errors.Is(err, rados.ErrNotFound) {
 			break
+		}
+		if err != nil {
+			return fmt.Errorf("scan orphaned object %d: %w", i, err)
 		}
 		slog.Debug("rados.Delete", "object", objectID, "orphaned", true)
 		atomic.AddUint64(s.radosCalls, 1)
