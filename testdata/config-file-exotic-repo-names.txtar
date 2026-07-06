@@ -1,0 +1,27 @@
+tail-logs
+create-pool
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/backup@laptop/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/repo+extra/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/tilde~equals=/?create=true' --output /dev/null
+stdout '200'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "backup@laptop": {"pools": {"$RESTIC_RADOS_SERVER_POOL/at": ["*"]}},
+        "repo+extra": {"pools": {"$RESTIC_RADOS_SERVER_POOL/plus": ["*"]}},
+        "tilde~equals=": {"pools": {"$RESTIC_RADOS_SERVER_POOL/tilde": ["*"]}}
+    }
+}
