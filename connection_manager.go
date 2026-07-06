@@ -241,7 +241,7 @@ func (cm *ConnectionManager) getIOContextsForBlobPool(bp *BlobPool, radosCalls *
 		if err != nil {
 			if errors.Is(err, rados.ErrNotFound) {
 				handle.release()
-				return nil, nil, nil, err
+				return nil, nil, nil, fmt.Errorf("%w: pool %q not found", errConnectionUnavailable, bp.Pool)
 			}
 
 			slog.Error("failed to open IO context", "pool", bp.Pool, "error", err, "attempt", attempt+1)
