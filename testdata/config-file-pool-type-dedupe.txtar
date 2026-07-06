@@ -1,0 +1,40 @@
+tail-logs
+create-pool
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/dup/data/' --output /dev/null
+stdout '200'
+
+kill server
+
+! exec restic-rados-server --config conflict.json
+stderr 'assigned to multiple pools'
+stderr 'foo/ns1'
+stderr 'foo/ns2'
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "dup": {
+            "pools": {
+                "$RESTIC_RADOS_SERVER_POOL/dup": ["data", "data"],
+                "$RESTIC_RADOS_SERVER_POOL": ["*"]
+            }
+        }
+    }
+}
+-- conflict.json --
+{
+    "repos": {
+        "confl": {
+            "pools": {
+                "foo/ns1": ["data"],
+                "foo/ns2": ["data"]
+            }
+        }
+    }
+}

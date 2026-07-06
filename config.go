@@ -634,6 +634,7 @@ func parsePoolsConfig(pc poolsConfig) (ServerConfigPools, error) {
 	}
 
 	typeToConfig := make(map[BlobType]BlobPoolConfig)
+	typeToKey := make(map[BlobType]string)
 	var catchAll *BlobPoolConfig
 
 	for key, types := range pc {
@@ -663,9 +664,13 @@ func parsePoolsConfig(pc poolsConfig) (ServerConfigPools, error) {
 			if !isValidBlobTypeForMapping(blobType) {
 				return ServerConfigPools{}, fmt.Errorf("pool %q: unknown blob type %q", poolName, t)
 			}
-			if existing, ok := typeToConfig[blobType]; ok {
-				return ServerConfigPools{}, fmt.Errorf("blob type %q assigned to multiple pools: %q and %q", t, existing.Pool, poolName)
+			if existingKey, ok := typeToKey[blobType]; ok {
+				if existingKey == key {
+					continue
+				}
+				return ServerConfigPools{}, fmt.Errorf("blob type %q assigned to multiple pools: %q and %q", t, existingKey, key)
 			}
+			typeToKey[blobType] = key
 			typeToConfig[blobType] = bpc
 		}
 	}
