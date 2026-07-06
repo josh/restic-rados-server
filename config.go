@@ -458,7 +458,8 @@ func (c *Config) validateTailscaleCapabilityListeners() {
 		if err != nil {
 			continue
 		}
-		if host == "" || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
+		ip := net.ParseIP(host)
+		if host == "" || ip == nil || !ip.IsLoopback() {
 			slog.Warn("tailscale_capability with non-loopback TCP listener; ensure Tailscale is the only route to this address", "address", l.address)
 		}
 	}
