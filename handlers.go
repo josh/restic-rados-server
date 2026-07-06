@@ -108,9 +108,12 @@ func statInLayer(plainIO, striperIO RadosIOContext, object string) (RadosIOConte
 			return plainIO, stat, err
 		}
 		_, stripeErr := plainIO.Stat(object + firstStripeSuffix)
-		if !errors.Is(stripeErr, rados.ErrNotFound) {
+		if stripeErr == nil {
 			stat, err = striperIO.Stat(object)
 			return striperIO, stat, err
+		}
+		if !errors.Is(stripeErr, rados.ErrNotFound) {
+			return plainIO, StatInfo{}, stripeErr
 		}
 		return plainIO, StatInfo{}, err
 	}
