@@ -259,8 +259,6 @@ func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request, blob
 			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
 		case errors.Is(err, errPoolNotConfigured):
 			http.Error(w, "pool not configured", http.StatusServiceUnavailable)
-		case errors.Is(err, rados.ErrNotFound):
-			http.NotFound(w, r)
 		default:
 			slog.Error("failed to open IO context", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
