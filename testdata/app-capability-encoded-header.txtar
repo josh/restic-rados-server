@@ -19,6 +19,8 @@ stdout '403'
 exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: this is not json' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '403'
 
+grep 'capability check failed.*unmarshal capabilities' $RESTIC_RADOS_SERVER_LOG_FILE
+
 exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: =?utf-8?B?!!!not-base64!!!?=' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '403'
 
