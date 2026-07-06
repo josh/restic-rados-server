@@ -20,6 +20,9 @@ wait4socket $WORK/restic.sock
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c' --output /dev/null
 stdout '200'
 
+grep '(?s)removing object from layer.*layer=lower.*removing object from layer.*layer=upper' $RESTIC_RADOS_SERVER_LOG_FILE
+! grep '(?s)removing object from layer.*layer=upper.*removing object from layer.*layer=lower' $RESTIC_RADOS_SERVER_LOG_FILE
+
 exec rados --pool $CEPH_POOL_NEW ls
 ! stdout 'data/b5bb9d80'
 
