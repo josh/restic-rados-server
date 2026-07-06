@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,6 +96,8 @@ func TestScript(t *testing.T) {
 					"rados-object-count": cmdRadosObjectCount,
 					"scrubhex":           cmdScrubHex,
 					"tail-logs":          cmdTailLogs,
+					"wait4http":          cmdWait4HTTP,
+					"wait4log":           cmdWait4log,
 					"wait4socket":        cmdWait4socket,
 				},
 				Setup: func(env *testscript.Env) error {
@@ -637,6 +640,105 @@ func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
 						success = true
 					}
 				}
+			}
+		}
+	}
+}
+
+func cmdWait4log(ts *testscript.TestScript, neg bool, args []string) {
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
+
+	if neg {
+		ts.Fatalf("unsupported: ! wait4log")
+	}
+	if len(args) != 2 {
+		ts.Fatalf("usage: wait4log <pattern> <file>")
+	}
+
+	pattern, err := regexp.Compile(args[0])
+	if err != nil {
+		ts.Fatalf("invalid pattern: %v", err)
+	}
+	path := ts.MkAbs(args[1])
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(15 * time.Second)
+
+	for {
+		select {
+		case <-ctx.Done():
+			ts.Fatalf("context cancelled while waiting for %q in %s: %v", args[0], args[1], ctx.Err())
+		case <-timeout:
+			ts.Fatalf("pattern %q did not appear in %s in time", args[0], args[1])
+		case <-ticker.C:
+			data, err := os.ReadFile(path)
+			if err == nil && pattern.Match(data) {
+				return
+			}
+		}
+	}
+}
+
+func cmdWait4HTTP(ts *testscript.TestScript, neg bool, args []string) {
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
+
+	if neg {
+		ts.Fatalf("unsupported: ! wait4http")
+	}
+	if len(args) != 3 {
+		ts.Fatalf("usage: wait4http <expected-status> <endpoint> <path>")
+	}
+
+	expected, err := strconv.Atoi(args[0])
+	if err != nil {
+		ts.Fatalf("invalid expected status: %v", err)
+	}
+	endpoint := args[1]
+	urlPath := args[2]
+
+	transport := &http.Transport{}
+	if strings.Contains(endpoint, ":") {
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", endpoint)
+		}
+	} else {
+		socketPath := ts.MkAbs(endpoint)
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		}
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	defer transport.CloseIdleConnections()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	timeout := time.After(30 * time.Second)
+
+	lastStatus := "none"
+	for {
+		select {
+		case <-ctx.Done():
+			ts.Fatalf("context cancelled while waiting for status %d from %s%s: %v", expected, endpoint, urlPath, ctx.Err())
+		case <-timeout:
+			ts.Fatalf("status %d never returned from %s%s (last=%s)", expected, endpoint, urlPath, lastStatus)
+		case <-ticker.C:
+			resp, err := client.Get("http://localhost" + urlPath)
+			if err != nil {
+				lastStatus = err.Error()
+				continue
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			lastStatus = strconv.Itoa(resp.StatusCode)
+			if resp.StatusCode == expected {
+				return
 			}
 		}
 	}
