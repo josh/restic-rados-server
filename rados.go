@@ -200,6 +200,8 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 
 	for i := numObjects; ; i++ {
 		objectID := s.getObjectID(object, i)
+		slog.Debug("rados.Stat", "object", objectID)
+		atomic.AddUint64(s.radosCalls, 1)
 		_, err := s.ioctx.Stat(objectID)
 		if errors.Is(err, rados.ErrNotFound) {
 			break
