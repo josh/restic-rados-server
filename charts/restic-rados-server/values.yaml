@@ -16,7 +16,9 @@ replicaCount: 1
 ceph:
   # Cluster fsid (optional).
   clusterID: ""
-  # mon_host entries (required), e.g. [mon.ceph.svc.cluster.local].
+  # mon_host entries, e.g. [mon.ceph.svc.cluster.local]. Needed for a working
+  # deploy so the chart-managed ceph.conf can reach the cluster; leave empty
+  # when bringing your own Ceph config.
   monitors: []
   # Ceph client name, e.g. "restic" authenticates as client.restic.
   clientID: ""
@@ -35,15 +37,15 @@ ceph:
 config:
   listen:
     - "0.0.0.0:8000"
-  repos:
-    default:
-      # Pool assignments are required, e.g.
-      #   pools:
-      #     restic_data: [data, index]
-      #     restic_metadata: ["*"]
-      # When configuring your own repo name instead, remove this repo by
-      # setting config.repos.default to null.
-      pools: {}
+  # Configure one or more repos, each with its pool assignments, e.g.
+  #   repos:
+  #     default:
+  #       pools:
+  #         restic_data: [data, index]
+  #         restic_metadata: ["*"]
+  # Left empty so the chart renders without required values; add your own repos
+  # for a working deploy.
+  repos: {}
 
 service:
   type: ClusterIP

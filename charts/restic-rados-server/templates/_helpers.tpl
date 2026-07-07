@@ -55,7 +55,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if .Values.ceph.clusterID }}
 fsid = {{ .Values.ceph.clusterID }}
 {{- end }}
+{{- if .Values.ceph.monitors }}
 mon_host = {{ join "," .Values.ceph.monitors }}
+{{- end }}
 {{- end -}}
 
 {{- /* Render the server config, injecting the ceph connectivity settings. */ -}}
@@ -72,17 +74,11 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- end -}}
 
 {{- define "restic-rados-server.validate" -}}
-{{- if not .Values.ceph.monitors -}}
-{{- fail "ceph.monitors is required" -}}
-{{- end -}}
 {{- if not .Values.config.listen -}}
 {{- fail "config.listen must not be empty" -}}
 {{- end -}}
 {{- if not (regexMatch "^[0-9]+$" (include "restic-rados-server.httpPort" .)) -}}
 {{- fail (printf "config.listen[0] must be a TCP host:port address, got %q" (first .Values.config.listen)) -}}
-{{- end -}}
-{{- if not .Values.config.repos -}}
-{{- fail "configure at least one repo with pools (config.repos.<name>.pools)" -}}
 {{- end -}}
 {{- range $name, $repo := .Values.config.repos -}}
 {{- if not (or $repo.pools $repo.blob_pools) -}}
