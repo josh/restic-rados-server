@@ -1,6 +1,6 @@
 module github.com/josh/restic-rados-server
 
-go 1.26.3
+go 1.26.4
 
 require (
 	github.com/ceph/go-ceph v0.40.0
