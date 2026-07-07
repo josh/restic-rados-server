@@ -38,12 +38,11 @@ var (
 )
 
 type Handler struct {
-	connMgr             *ConnectionManager
-	repo                string
-	access              Access
-	tailscaleCapability string
-	readBufferPool      *BufferPool
-	writeBufferPool     *BufferPool
+	connMgr         *ConnectionManager
+	repo            string
+	access          Access
+	readBufferPool  *BufferPool
+	writeBufferPool *BufferPool
 }
 
 type HandlerContext struct {
@@ -579,7 +578,7 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	if blobType == "locks" {
 		minAccess = AccessReadAppend
 	}
-	if h.effectiveAccess(r) < minAccess {
+	if h.access < minAccess {
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
@@ -625,25 +624,9 @@ func acceptsBlobListV2(r *http.Request) bool {
 	return false
 }
 
-func (h *Handler) effectiveAccess(r *http.Request) Access {
-	repoAccess := h.access
-	if h.tailscaleCapability == "" {
-		return repoAccess
-	}
-	capAccess, err := checkRepoAccess(h.tailscaleCapability, h.repo, r)
-	if err != nil {
-		slog.Info("capability check failed", "repo", h.repo, "error", err)
-		return AccessNone
-	}
-	if capAccess < repoAccess {
-		return capAccess
-	}
-	return repoAccess
-}
-
 func (h *Handler) requireAccess(minAccess Access, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.effectiveAccess(r) < minAccess {
+		if h.access < minAccess {
 			http.Error(w, "access denied", http.StatusForbidden)
 			return
 		}
@@ -666,15 +649,14 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /{$}", h.requireAccess(AccessReadAppend, h.createRepo))
 }
 
-func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[string]*RepoConfig, tailscaleCapability string, readPool, writePool *BufferPool) {
+func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[string]*RepoConfig, readPool, writePool *BufferPool) {
 	for name, repo := range repos {
 		h := &Handler{
-			connMgr:             connMgr,
-			repo:                name,
-			access:              ParseAccess(repo.Access),
-			tailscaleCapability: tailscaleCapability,
-			readBufferPool:      readPool,
-			writeBufferPool:     writePool,
+			connMgr:         connMgr,
+			repo:            name,
+			access:          ParseAccess(repo.Access),
+			readBufferPool:  readPool,
+			writeBufferPool: writePool,
 		}
 		repoMux := http.NewServeMux()
 		h.setupRoutes(repoMux)

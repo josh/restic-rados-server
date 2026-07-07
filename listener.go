@@ -16,28 +16,24 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
-	"tailscale.com/tailcfg"
 )
 
 type listenerType string
 
 const (
-	listenerTypeStdio            listenerType = "stdio"
-	listenerTypeUnix             listenerType = "unix"
-	listenerTypeTCP              listenerType = "tcp"
-	listenerTypeSystemd          listenerType = "systemd"
-	listenerTypeTailscaleService listenerType = "tailscale+svc"
+	listenerTypeStdio   listenerType = "stdio"
+	listenerTypeUnix    listenerType = "unix"
+	listenerTypeTCP     listenerType = "tcp"
+	listenerTypeSystemd listenerType = "systemd"
 )
 
 const listenFdsStart = 3
 
 type listenerConfig struct {
-	kind     listenerType
-	address  string
-	raw      string
-	file     *os.File
-	listener net.Listener
-	drain    func()
+	kind    listenerType
+	address string
+	raw     string
+	file    *os.File
 }
 
 func (cfg listenerConfig) Close() {
@@ -137,24 +133,6 @@ func (l *listenerFlags) Set(value string) error {
 	case strings.HasPrefix(lower, "tcp:"):
 		working = working[len("tcp:"):]
 		cfg.kind = listenerTypeTCP
-	case strings.HasPrefix(lower, "tailscale+svc://"):
-		working = working[len("tailscale+svc://"):]
-		cfg.kind = listenerTypeTailscaleService
-	case strings.HasPrefix(lower, "tailscale+svc:"):
-		working = working[len("tailscale+svc:"):]
-		cfg.kind = listenerTypeTailscaleService
-	case strings.HasPrefix(lower, "svc:") && tailcfg.ServiceName(lower).Validate() == nil:
-		return fmt.Errorf("invalid --listen value %q: use tailscale+%s to serve a Tailscale Service", value, lower)
-	}
-
-	if cfg.kind == listenerTypeTailscaleService {
-		name := "svc:" + strings.ToLower(working)
-		if err := tailcfg.ServiceName(name).Validate(); err != nil {
-			return fmt.Errorf("invalid --listen value %q: %v", value, err)
-		}
-		cfg.address = name
-		*l = append(*l, cfg)
-		return nil
 	}
 
 	if cfg.kind == listenerTypeUnix {
@@ -202,8 +180,6 @@ func (cfg listenerConfig) description() string {
 		return fmt.Sprintf("unix://%s", cfg.address)
 	case listenerTypeTCP:
 		return cfg.address
-	case listenerTypeTailscaleService:
-		return fmt.Sprintf("tailscale+%s", cfg.address)
 	case listenerTypeSystemd:
 		if cfg.address != "" {
 			return fmt.Sprintf("systemd:%s", cfg.address)
@@ -308,26 +284,6 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 			_ = listener.Close()
 		}()
 		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
-	case listenerTypeTailscaleService:
-		if cfg.listener == nil {
-			return fmt.Errorf("tailscale listener %s not initialized", cfg.description())
-		}
-		defer func() { _ = cfg.listener.Close() }()
-		if cfg.drain != nil {
-			done := make(chan struct{})
-			drained := make(chan struct{})
-			defer func() { <-drained }()
-			defer close(done)
-			go func() {
-				defer close(drained)
-				select {
-				case <-ctx.Done():
-				case <-done:
-				}
-				cfg.drain()
-			}()
-		}
-		return serveListener(ctx, cfg.listener, handler, shutdownTimeout, monitor)
 	default:
 		return fmt.Errorf("unsupported listener type %s", cfg.kind)
 	}

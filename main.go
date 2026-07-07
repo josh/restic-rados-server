@@ -119,16 +119,8 @@ func main() {
 		config.Stdio = true
 	}
 
-	config.validateTailscaleCapabilityListeners()
-	config.warnUnusedTailscaleConfig()
-
-	tailscaleCapability := config.TailscaleCapability
-	if config.Stdio {
-		tailscaleCapability = ""
-	}
-
 	mux := http.NewServeMux()
-	setupAllRoutes(mux, connMgr, config.Repos, tailscaleCapability, readPool, writePool)
+	setupAllRoutes(mux, connMgr, config.Repos, readPool, writePool)
 
 	if config.Stdio && time.Duration(config.MaxIdleTime) > 0 {
 		slog.Error("--max-idle-time is not supported in stdio mode")
@@ -147,16 +139,6 @@ func main() {
 				monitor.Stop()
 			}
 		}()
-	}
-
-	if !config.Stdio {
-		if err := setupTailscaleListeners(ctx, &config); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			slog.Error("tailscale setup failed", "error", err)
-			os.Exit(1)
-		}
 	}
 
 	if config.Stdio {
