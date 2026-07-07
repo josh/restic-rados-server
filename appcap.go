@@ -61,9 +61,9 @@ func mergePermissions(configs []map[string]string, repo string) Access {
 }
 
 func checkRepoAccess(capName, repo string, r *http.Request) (Access, error) {
-	header := r.Header.Get("Tailscale-Caps")
+	header := r.Header.Get("Tailscale-App-Capabilities")
 	if header == "" {
-		return AccessNone, fmt.Errorf("missing Tailscale-Caps header")
+		return AccessNone, fmt.Errorf("missing Tailscale-App-Capabilities header")
 	}
 
 	caps, err := parseAppCapabilities(header)

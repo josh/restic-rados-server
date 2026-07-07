@@ -4,43 +4,43 @@ create-pool
 exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"rw"}]}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"rw"}]}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"rw"}]}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"rw"}]}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data 'http://localhost/config' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"read-only"}]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"read-only"}]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"read-only"}]}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"read-only"}]}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
 stdout '403'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"read-append"}]}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"read-append"}]}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"read-append"}]}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"read-append"}]}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
 stdout '403'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"read-write"}]}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"read-write"}]}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"rw"}]}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"rw"}]}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"*":"rw","default":"r"}]}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"*":"rw","default":"r"}]}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"RW"}]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"RW"}]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '403'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[{"default":"invalid"}]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"default":"invalid"}]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '403'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"github.com/josh/restic-rados-server":[]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '403'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: {"other.example.com/cap":[{"default":"rw"}]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"other.example.com/cap":[{"default":"rw"}]}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '403'
 
 kill server
