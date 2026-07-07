@@ -1,0 +1,52 @@
+tail-logs
+create-pool
+
+! exec restic-rados-server --listen tailscale+svc:
+stderr 'missing Tailscale service name'
+
+! exec restic-rados-server --listen tailscale+svc:foo/bar
+stderr 'DNS label'
+
+! exec restic-rados-server --listen 'tailscale+svc:foo bar'
+stderr 'DNS label'
+
+! exec restic-rados-server --listen tailscale+svc:backup_repo
+stderr 'DNS label'
+
+! exec restic-rados-server --listen tailscale+svc:restic?tscaps=github.com/josh/restic-rados-server
+stderr 'DNS label'
+
+! exec restic-rados-server --listen tailscale+svc:restic?trusted-caps-header=X-Restic-Capabilities
+stderr 'use trusted-ts-caps'
+
+! exec restic-rados-server --config capsheader.json
+stderr 'trusted_tailscale_caps, not trusted_caps_header'
+
+! exec restic-rados-server --config badport.json
+stderr 'tailscale port must be between'
+
+envsubst collision.json.tmpl collision.json
+! exec restic-rados-server --config collision.json
+grep 'cannot be shared' $RESTIC_RADOS_SERVER_LOG_FILE
+
+! exec restic-rados-server --config toolong.json
+grep 'too long' $RESTIC_RADOS_SERVER_LOG_FILE
+
+-- capsheader.json --
+{
+    "listen": [{"address": "tailscale+svc:restic", "trusted_caps_header": "X-Restic-Capabilities"}]
+}
+-- badport.json --
+{
+    "tailscale": {"port": 70000}
+}
+-- collision.json.tmpl --
+{
+    "listen": ["tailscale+svc:a", "tailscale+svc:b"],
+    "tailscale": {"upstream_socket": "$WORK/shared.sock"}
+}
+-- toolong.json --
+{
+    "listen": ["tailscale+svc:restic"],
+    "tailscale": {"upstream_socket": "/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sock"}
+}

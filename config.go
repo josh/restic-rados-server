@@ -111,7 +111,15 @@ type Config struct {
 	CephConf        string                 `json:"ceph_conf,omitempty"`
 	ReadBufferSize  int64                  `json:"read_buffer_size,omitempty"`
 	WriteBufferSize int64                  `json:"write_buffer_size,omitempty"`
+	Tailscale       *TailscaleConfig       `json:"tailscale,omitempty"`
 	Repos           map[string]*RepoConfig `json:"repos,omitempty"`
+}
+
+type TailscaleConfig struct {
+	Socket         string `json:"socket,omitempty"`
+	HTTPS          *bool  `json:"https,omitempty"`
+	Port           int    `json:"port,omitempty"`
+	UpstreamSocket string `json:"upstream_socket,omitempty"`
 }
 
 func (c *Config) loadFromFile(path string) error {
@@ -366,6 +374,10 @@ func loadConfig(args []string) (Config, bool, error) {
 
 	if config.WriteBufferSize <= 0 {
 		return Config{}, false, fmt.Errorf("write-buffer-size must be positive, got %d", config.WriteBufferSize)
+	}
+
+	if config.Tailscale != nil && (config.Tailscale.Port < 0 || config.Tailscale.Port > 65535) {
+		return Config{}, false, fmt.Errorf("tailscale port must be between 0 and 65535, got %d", config.Tailscale.Port)
 	}
 
 	if err := config.normalizeRepos(); err != nil {

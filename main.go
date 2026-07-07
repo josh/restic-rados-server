@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -17,6 +18,8 @@ import (
 var logger *slog.Logger
 
 var version = "0.7.0"
+
+const tailscaleDrainTimeout = 10 * time.Second
 
 func initLogger(verbose bool, logFilePath string) error {
 	logOutput := io.Writer(os.Stderr)
@@ -160,7 +163,58 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		if err := serveAllListeners(ctx, cancel, config.Listeners, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil {
+		tailscaleCount := 0
+		for _, l := range config.Listeners {
+			if l.kind == listenerTypeTailscaleService {
+				tailscaleCount++
+			}
+		}
+		if tailscaleCount > 1 && config.Tailscale != nil && config.Tailscale.UpstreamSocket != "" {
+			slog.Error("tailscale.upstream_socket cannot be shared by multiple tailscale services")
+			os.Exit(1)
+		}
+
+		var withdrawals []func(context.Context)
+		var withdrawOnce sync.Once
+		withdrawAll := func() {
+			withdrawOnce.Do(func() {
+				if len(withdrawals) == 0 {
+					return
+				}
+				drainCtx, drainCancel := context.WithTimeout(context.Background(), tailscaleDrainTimeout)
+				defer drainCancel()
+				for _, withdraw := range withdrawals {
+					withdraw(drainCtx)
+				}
+			})
+		}
+
+		for i := range config.Listeners {
+			if config.Listeners[i].kind == listenerTypeTailscaleService {
+				upstream, withdraw, err := setupTailscaleService(ctx, config.Listeners[i], config.Tailscale)
+				if err != nil {
+					withdrawAll()
+					slog.Error("failed to set up tailscale service", "error", err)
+					os.Exit(1)
+				}
+				config.Listeners[i] = upstream
+				withdrawals = append(withdrawals, withdraw)
+			}
+		}
+		if len(withdrawals) > 0 {
+			serveCtx, serveCancel := context.WithCancel(context.Background())
+			go func() {
+				<-ctx.Done()
+				withdrawAll()
+				serveCancel()
+			}()
+			if err := serveAllListeners(serveCtx, serveCancel, config.Listeners, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil {
+				withdrawAll()
+				slog.Error("server error", "error", err)
+				os.Exit(1)
+			}
+			withdrawAll()
+		} else if err := serveAllListeners(ctx, cancel, config.Listeners, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil {
 			slog.Error("server error", "error", err)
 			os.Exit(1)
 		}

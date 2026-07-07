@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,13 +23,16 @@ import (
 type listenerType string
 
 const (
-	listenerTypeStdio   listenerType = "stdio"
-	listenerTypeUnix    listenerType = "unix"
-	listenerTypeTCP     listenerType = "tcp"
-	listenerTypeSystemd listenerType = "systemd"
+	listenerTypeStdio            listenerType = "stdio"
+	listenerTypeUnix             listenerType = "unix"
+	listenerTypeTCP              listenerType = "tcp"
+	listenerTypeSystemd          listenerType = "systemd"
+	listenerTypeTailscaleService listenerType = "tailscale"
 )
 
 const listenFdsStart = 3
+
+var tailscaleServiceNameRegex = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
 type listenerConfig struct {
 	kind                 listenerType
@@ -37,6 +41,8 @@ type listenerConfig struct {
 	file                 *os.File
 	trustedCapsHeader    string
 	trustedTailscaleCaps string
+	serviceName          string
+	bound                net.Listener
 }
 
 func (cfg listenerConfig) trustsCaps() bool {
@@ -169,6 +175,9 @@ func (l *listenerFlags) UnmarshalJSON(data []byte) error {
 			if last := &(*l)[len(*l)-1]; last.trustedCapsHeader != "" && last.trustedTailscaleCaps != "" {
 				return fmt.Errorf("invalid listen entry %s: only one of trusted_caps_header or trusted_tailscale_caps may be set", entry)
 			}
+			if last := &(*l)[len(*l)-1]; last.kind == listenerTypeTailscaleService && last.trustedCapsHeader != "" {
+				return fmt.Errorf("invalid listen entry %s: Tailscale services use trusted_tailscale_caps, not trusted_caps_header", entry)
+			}
 			continue
 		}
 		var s string
@@ -244,6 +253,23 @@ func (l *listenerFlags) Set(value string) error {
 	working := spec
 	lower := strings.ToLower(working)
 
+	if strings.HasPrefix(lower, "tailscale+svc:") {
+		label := strings.TrimPrefix(working[len("tailscale+svc:"):], "svc:")
+		if label == "" {
+			return fmt.Errorf("invalid --listen value %q: missing Tailscale service name", value)
+		}
+		if !tailscaleServiceNameRegex.MatchString(label) {
+			return fmt.Errorf("invalid --listen value %q: Tailscale service name must be a DNS label (letters, digits, hyphens; no leading/trailing hyphen)", value)
+		}
+		if cfg.trustedCapsHeader != "" {
+			return fmt.Errorf("invalid --listen value %q: Tailscale services use trusted-ts-caps, not trusted-caps-header", value)
+		}
+		cfg.kind = listenerTypeTailscaleService
+		cfg.serviceName = "svc:" + label
+		*l = append(*l, cfg)
+		return nil
+	}
+
 	switch {
 	case strings.HasPrefix(lower, "unix://"):
 		working = working[len("unix://"):]
@@ -311,6 +337,8 @@ func (cfg listenerConfig) description() string {
 		return "systemd"
 	case listenerTypeStdio:
 		return "stdio"
+	case listenerTypeTailscaleService:
+		return "tailscale:" + cfg.serviceName
 	default:
 		return "unknown"
 	}
@@ -411,12 +439,16 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 		})
 		return nil
 	case listenerTypeUnix:
-		if err := prepareUnixSocketPath(cfg.address); err != nil {
-			return err
-		}
-		listener, err := net.Listen("unix", cfg.address)
-		if err != nil {
-			return fmt.Errorf("failed to create Unix socket listener: %w", err)
+		listener := cfg.bound
+		if listener == nil {
+			if err := prepareUnixSocketPath(cfg.address); err != nil {
+				return err
+			}
+			l, err := net.Listen("unix", cfg.address)
+			if err != nil {
+				return fmt.Errorf("failed to create Unix socket listener: %w", err)
+			}
+			listener = l
 		}
 		defer func() { _ = listener.Close() }()
 		warnIfUntrustedCapsBind(cfg, listener)
@@ -443,6 +475,8 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 		}()
 		warnIfUntrustedCapsBind(cfg, listener)
 		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
+	case listenerTypeTailscaleService:
+		return fmt.Errorf("tailscale service listener %s was not resolved to an upstream socket", cfg.description())
 	default:
 		return fmt.Errorf("unsupported listener type %s", cfg.kind)
 	}

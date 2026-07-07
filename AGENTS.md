@@ -98,6 +98,7 @@ main.go
 ├── connection_manager.go  → config.go
 ├── handlers.go            → appcap.go, buffer.go, config.go, connection_manager.go, rados.go
 ├── listener.go            → appcap.go, stdio_conn.go, idle.go
+├── tailscale.go           → config.go, listener.go
 ├── idle.go
 └── rados.go
 ```
