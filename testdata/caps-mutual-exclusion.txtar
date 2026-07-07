@@ -1,0 +1,10 @@
+! exec restic-rados-server --listen 'tcp://127.0.0.1:8000?trusted-caps-header=X-Restic-Capabilities&trusted-ts-caps=github.com/josh/restic-rados-server'
+stderr 'only one of'
+
+! exec restic-rados-server --config both.json
+stderr 'only one of'
+
+-- both.json --
+{
+    "listen": [{"address": "/tmp/x.sock", "trusted_caps_header": "X-Restic-Capabilities", "trusted_tailscale_caps": "github.com/josh/restic-rados-server"}]
+}

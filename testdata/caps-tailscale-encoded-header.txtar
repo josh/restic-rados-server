@@ -1,0 +1,19 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock?trusted-ts-caps=github.com/josh/restic-rados-server &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: =?utf-8?B?eyJnaXRodWIuY29tL2pvc2gvcmVzdGljLXJhZG9zLXNlcnZlciI6W3siKiI6InJ3In1dfQ==?=' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: =?utf-8?B?eyJnaXRodWIuY29tL2pvc2gvcmVzdGljLXJhZG9zLXNlcnZlciI6W3siKiI6InJ3In1dfQ==?=' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: not valid json' --unix-socket $WORK/restic.sock --request GET 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+kill server
+
+-- blob-data --
+test blob content

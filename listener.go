@@ -31,15 +31,16 @@ const (
 const listenFdsStart = 3
 
 type listenerConfig struct {
-	kind              listenerType
-	address           string
-	raw               string
-	file              *os.File
-	trustedCapsHeader string
+	kind                 listenerType
+	address              string
+	raw                  string
+	file                 *os.File
+	trustedCapsHeader    string
+	trustedTailscaleCaps string
 }
 
 func (cfg listenerConfig) trustsCaps() bool {
-	return cfg.trustedCapsHeader != ""
+	return cfg.trustedCapsHeader != "" || cfg.trustedTailscaleCaps != ""
 }
 
 func (cfg listenerConfig) Close() {
@@ -118,9 +119,10 @@ func (l *listenerFlags) String() string {
 }
 
 type listenerSpec struct {
-	Address           string `json:"address,omitempty"`
-	Systemd           string `json:"systemd,omitempty"`
-	TrustedCapsHeader string `json:"trusted_caps_header,omitempty"`
+	Address              string `json:"address,omitempty"`
+	Systemd              string `json:"systemd,omitempty"`
+	TrustedCapsHeader    string `json:"trusted_caps_header,omitempty"`
+	TrustedTailscaleCaps string `json:"trusted_tailscale_caps,omitempty"`
 }
 
 func (l *listenerFlags) UnmarshalJSON(data []byte) error {
@@ -143,11 +145,15 @@ func (l *listenerFlags) UnmarshalJSON(data []byte) error {
 				return fmt.Errorf("invalid listen entry %s: address and systemd are mutually exclusive", entry)
 			}
 			if spec.Systemd != "" {
+				if spec.TrustedCapsHeader != "" && spec.TrustedTailscaleCaps != "" {
+					return fmt.Errorf("invalid listen entry %s: only one of trusted_caps_header or trusted_tailscale_caps may be set", entry)
+				}
 				*l = append(*l, listenerConfig{
-					kind:              listenerTypeSystemd,
-					address:           spec.Systemd,
-					raw:               "systemd:" + spec.Systemd,
-					trustedCapsHeader: spec.TrustedCapsHeader,
+					kind:                 listenerTypeSystemd,
+					address:              spec.Systemd,
+					raw:                  "systemd:" + spec.Systemd,
+					trustedCapsHeader:    spec.TrustedCapsHeader,
+					trustedTailscaleCaps: spec.TrustedTailscaleCaps,
 				})
 				continue
 			}
@@ -156,6 +162,12 @@ func (l *listenerFlags) UnmarshalJSON(data []byte) error {
 			}
 			if spec.TrustedCapsHeader != "" {
 				(*l)[len(*l)-1].trustedCapsHeader = spec.TrustedCapsHeader
+			}
+			if spec.TrustedTailscaleCaps != "" {
+				(*l)[len(*l)-1].trustedTailscaleCaps = spec.TrustedTailscaleCaps
+			}
+			if last := &(*l)[len(*l)-1]; last.trustedCapsHeader != "" && last.trustedTailscaleCaps != "" {
+				return fmt.Errorf("invalid listen entry %s: only one of trusted_caps_header or trusted_tailscale_caps may be set", entry)
 			}
 			continue
 		}
@@ -170,7 +182,7 @@ func (l *listenerFlags) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func parseListenerQuery(query string) (trustedCapsHeader string, isCapsQuery bool, err error) {
+func parseListenerQuery(query string) (trustedCapsHeader, trustedTailscaleCaps string, isCapsQuery bool, err error) {
 	parts := strings.Split(query, "&")
 	for _, part := range parts {
 		if key, _, _ := strings.Cut(part, "="); strings.HasPrefix(key, "trusted-") {
@@ -178,7 +190,7 @@ func parseListenerQuery(query string) (trustedCapsHeader string, isCapsQuery boo
 		}
 	}
 	if !isCapsQuery {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	for _, part := range parts {
 		if part == "" {
@@ -188,14 +200,22 @@ func parseListenerQuery(query string) (trustedCapsHeader string, isCapsQuery boo
 		switch key {
 		case "trusted-caps-header":
 			if !hasVal || val == "" {
-				return "", true, fmt.Errorf("--listen query %q requires a header name", key)
+				return "", "", true, fmt.Errorf("--listen query %q requires a header name", key)
 			}
 			trustedCapsHeader = val
+		case "trusted-ts-caps":
+			if !hasVal || val == "" {
+				return "", "", true, fmt.Errorf("--listen query %q requires a capability name", key)
+			}
+			trustedTailscaleCaps = val
 		default:
-			return "", true, fmt.Errorf("unknown --listen query parameter %q", key)
+			return "", "", true, fmt.Errorf("unknown --listen query parameter %q", key)
 		}
 	}
-	return trustedCapsHeader, true, nil
+	if trustedCapsHeader != "" && trustedTailscaleCaps != "" {
+		return "", "", true, fmt.Errorf("--listen may set only one of trusted-caps-header or trusted-ts-caps")
+	}
+	return trustedCapsHeader, trustedTailscaleCaps, true, nil
 }
 
 func (l *listenerFlags) Set(value string) error {
@@ -207,12 +227,13 @@ func (l *listenerFlags) Set(value string) error {
 	cfg := listenerConfig{raw: trimmed}
 	spec := trimmed
 	if i := strings.IndexByte(trimmed, '?'); i != -1 {
-		trustedCapsHeader, isCapsQuery, err := parseListenerQuery(trimmed[i+1:])
+		trustedCapsHeader, trustedTailscaleCaps, isCapsQuery, err := parseListenerQuery(trimmed[i+1:])
 		if err != nil {
 			return err
 		}
 		if isCapsQuery {
 			cfg.trustedCapsHeader = trustedCapsHeader
+			cfg.trustedTailscaleCaps = trustedTailscaleCaps
 			spec = trimmed[:i]
 		}
 	}
@@ -354,6 +375,7 @@ func resolveSystemdListeners(configured []listenerConfig) ([]listenerConfig, err
 	for _, sl := range systemdListeners() {
 		if p, ok := policies[sl.address]; ok {
 			sl.trustedCapsHeader = p.trustedCapsHeader
+			sl.trustedTailscaleCaps = p.trustedTailscaleCaps
 			matched[sl.address] = true
 		}
 		result = append(result, sl)
@@ -434,7 +456,7 @@ func serveAllListeners(ctx context.Context, cancel context.CancelFunc, listeners
 		cfg := cfg
 		listenerHandler := handler
 		if cfg.trustsCaps() {
-			listenerHandler = enforceCaps(cfg.trustedCapsHeader, handler)
+			listenerHandler = enforceCaps(cfg.trustedCapsHeader, cfg.trustedTailscaleCaps, handler)
 		}
 		wg.Add(1)
 		go func() {
