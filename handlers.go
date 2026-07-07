@@ -578,7 +578,7 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	if blobType == "locks" {
 		minAccess = AccessReadAppend
 	}
-	if h.access < minAccess {
+	if min(h.access, grantForRepo(r.Context(), h.repo)) < minAccess {
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
@@ -626,7 +626,7 @@ func acceptsBlobListV2(r *http.Request) bool {
 
 func (h *Handler) requireAccess(minAccess Access, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.access < minAccess {
+		if min(h.access, grantForRepo(r.Context(), h.repo)) < minAccess {
 			http.Error(w, "access denied", http.StatusForbidden)
 			return
 		}

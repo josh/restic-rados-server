@@ -1,0 +1,24 @@
+tail-logs
+create-pool
+
+exec systemd-socket-activate --fdname=public:lan --setenv=RESTIC_RADOS_SERVER_POOL --setenv=CEPH_CONF --setenv=RESTIC_RADOS_SERVER_VERBOSE --setenv=RESTIC_RADOS_SERVER_LOG_FILE --listen=127.0.0.1:$PORT --listen=$WORK/lan.sock restic-rados-server --config config.json &server&
+wait4socket 127.0.0.1:$PORT
+wait4socket $WORK/lan.sock
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"rw"}' --request POST http://127.0.0.1:$PORT/?create=true --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"r"}' --request POST --data-binary @blob-data http://127.0.0.1:$PORT/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"r"}' --unix-socket $WORK/lan.sock --request POST --data-binary @blob-data http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '200'
+
+kill server
+
+-- config.json --
+{
+    "listen": [{"systemd": "public", "trusted_caps_header": "X-Restic-Capabilities"}]
+}
+-- blob-data --
+test blob content

@@ -1,5 +1,13 @@
 package main
 
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+)
+
 type Access int
 
 const (
@@ -20,4 +28,88 @@ func ParseAccess(s string) Access {
 	default:
 		return AccessNone
 	}
+}
+
+type capGrant map[string]Access
+
+type grantContextKey struct{}
+
+func withGrant(ctx context.Context, grant capGrant) context.Context {
+	return context.WithValue(ctx, grantContextKey{}, grant)
+}
+
+func grantForRepo(ctx context.Context, repo string) Access {
+	grant, ok := ctx.Value(grantContextKey{}).(capGrant)
+	if !ok {
+		return AccessReadWrite
+	}
+	if access, ok := grant[repo]; ok {
+		return access
+	}
+	if access, ok := grant["*"]; ok {
+		return access
+	}
+	return AccessNone
+}
+
+func mergeGrantObject(grant capGrant, obj map[string]string) {
+	for repo, accessStr := range obj {
+		access := ParseAccess(accessStr)
+		if access == AccessNone && accessStr != "" {
+			slog.Debug("ignoring unrecognized capability access token", "repo", repo, "access", accessStr)
+			continue
+		}
+		if access > grant[repo] {
+			grant[repo] = access
+		}
+	}
+}
+
+func mergeGrantList(grant capGrant, raw []byte) {
+	var rules []json.RawMessage
+	if err := json.Unmarshal(raw, &rules); err != nil {
+		return
+	}
+	for _, rule := range rules {
+		var obj map[string]string
+		if err := json.Unmarshal(rule, &obj); err != nil {
+			continue
+		}
+		mergeGrantObject(grant, obj)
+	}
+}
+
+func mergeGrantValue(grant capGrant, raw []byte) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return
+	}
+	if trimmed[0] == '[' {
+		mergeGrantList(grant, trimmed)
+		return
+	}
+	var obj map[string]string
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return
+	}
+	mergeGrantObject(grant, obj)
+}
+
+func lastHeaderValue(h http.Header, name string) string {
+	vals := h.Values(name)
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[len(vals)-1]
+}
+
+func enforceCaps(trustedCapsHeader string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		grant := capGrant{}
+		if v := lastHeaderValue(r.Header, trustedCapsHeader); v != "" {
+			mergeGrantValue(grant, []byte(v))
+		}
+		r.Header.Del(trustedCapsHeader)
+		next.ServeHTTP(w, r.WithContext(withGrant(r.Context(), grant)))
+	})
 }
