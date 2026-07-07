@@ -4,24 +4,24 @@ create-pool
 exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: =?utf-8?B?eyJnaXRodWIuY29tL2pvc2gvcmVzdGljLXJhZG9zLXNlcnZlciI6W3siZGVmYXVsdCI6InJ3In1dfQ==?=' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: =?utf-8?B?eyJnaXRodWIuY29tL2pvc2gvcmVzdGljLXJhZG9zLXNlcnZlciI6W3siZGVmYXVsdCI6InJ3In1dfQ==?=' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: =?utf-8?B?eyJnaXRodWIuY29tL2pvc2gvcmVzdGljLXJhZG9zLXNlcnZlciI6W3siZGVmYXVsdCI6InJ3In1dfQ==?=' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: =?utf-8?B?eyJnaXRodWIuY29tL2pvc2gvcmVzdGljLXJhZG9zLXNlcnZlciI6W3siZGVmYXVsdCI6InJ3In1dfQ==?=' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data 'http://localhost/config' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: =?utf-8?Q?{"github.com/josh/restic-rados-server":[{"default":"r"}]}?=' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: =?utf-8?Q?{"github.com/josh/restic-rados-server":[{"default":"r"}]}?=' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '200'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: =?utf-8?Q?{"github.com/josh/restic-rados-server":[{"default":"r"}]}?=' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: =?utf-8?Q?{"github.com/josh/restic-rados-server":[{"default":"r"}]}?=' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/config' --output /dev/null
 stdout '403'
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: this is not json' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: this is not json' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '403'
 
 grep 'capability check failed.*unmarshal capabilities' $RESTIC_RADOS_SERVER_LOG_FILE
 
-exec curl --silent --write-out '%{http_code}' --header 'Tailscale-Caps: =?utf-8?B?!!!not-base64!!!?=' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: =?utf-8?B?!!!not-base64!!!?=' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
 stdout '403'
 
 kill server

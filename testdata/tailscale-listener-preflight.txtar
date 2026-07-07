@@ -1,0 +1,34 @@
+tail-logs
+create-pool
+
+env TS_SOCKET=$WORK/one.sock
+! exec restic-rados-server --listen tailscale+svc:restic
+grep 'cannot reach tailscaled.*one\.sock' $RESTIC_RADOS_SERVER_LOG_FILE
+
+env TS_SOCKET=$WORK/two.sock
+! exec restic-rados-server --listen unix:$WORK/restic.sock --listen tailscale+svc:restic
+grep 'tailscale setup failed.*two\.sock' $RESTIC_RADOS_SERVER_LOG_FILE
+
+env TS_SOCKET=
+! exec restic-rados-server --config config.json
+grep 'three\.sock.*is tailscaled running' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec restic-rados-server --listen unix:$WORK/warn.sock --config warn.json &server&
+wait4socket $WORK/warn.sock
+kill server
+grep 'tailscale configuration is set but no tailscale\+svc listener' $RESTIC_RADOS_SERVER_LOG_FILE
+
+-- warn.json --
+{
+    "tailscale": {
+        "https": false
+    }
+}
+-- config.json --
+{
+    "listen": ["tailscale+svc:restic"],
+    "tailscale": {
+        "https": false,
+        "socket": "three.sock"
+    }
+}
