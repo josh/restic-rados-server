@@ -487,6 +487,10 @@ func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, prefix string, us
 
 		if useV2 {
 			_, stat, err := hctx.statRadosObject(baseObjectName)
+			if errors.Is(err, errUnsupportedStriperLayout) {
+				slog.Warn("skipping striped object with unsupported layout", "object", baseObjectName, "error", err)
+				continue
+			}
 			if err != nil {
 				return fmt.Errorf("stat %s: %w", baseObjectName, err)
 			}
