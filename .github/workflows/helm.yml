@@ -19,15 +19,11 @@ jobs:
 
       - name: Lint chart
         run: |
-          helm lint ./charts/restic-rados-server \
-            --set 'ceph.monitors={mon.ceph.svc.cluster.local}' \
-            --set-json 'config.repos.default.pools={"restic":["*"]}'
+          helm lint ./charts/restic-rados-server
 
       - name: Template chart
         run: |
-          helm template test ./charts/restic-rados-server \
-            --set 'ceph.monitors={mon.ceph.svc.cluster.local}' \
-            --set-json 'config.repos.default.pools={"restic":["*"]}'
+          helm template test ./charts/restic-rados-server
 
       - name: Template chart with keyring secret
         run: |
