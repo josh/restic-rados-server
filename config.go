@@ -101,6 +101,13 @@ type RepoConfig struct {
 	poolSpecs []string
 }
 
+type TailscaleConfig struct {
+	Socket         string `json:"socket,omitempty"`
+	HTTPS          *bool  `json:"https,omitempty"`
+	Port           int    `json:"port,omitempty"`
+	UpstreamSocket string `json:"upstream_socket,omitempty"`
+}
+
 type Config struct {
 	Verbose             bool                   `json:"verbose,omitempty"`
 	Listeners           listenerFlags          `json:"listen,omitempty"`
@@ -114,7 +121,76 @@ type Config struct {
 	ReadBufferSize      int64                  `json:"read_buffer_size,omitempty"`
 	WriteBufferSize     int64                  `json:"write_buffer_size,omitempty"`
 	TailscaleCapability string                 `json:"tailscale_capability,omitempty"`
+	Tailscale           *TailscaleConfig       `json:"tailscale,omitempty"`
 	Repos               map[string]*RepoConfig `json:"repos,omitempty"`
+}
+
+func (c *Config) tailscaleSocket() string {
+	if c.Tailscale != nil && c.Tailscale.Socket != "" {
+		return c.Tailscale.Socket
+	}
+	return os.Getenv("TS_SOCKET")
+}
+
+func (c *Config) tailscaleUseTLS() bool {
+	if c.Tailscale != nil && c.Tailscale.HTTPS != nil {
+		return *c.Tailscale.HTTPS
+	}
+	return true
+}
+
+func (c *Config) tailscalePort() uint16 {
+	if c.Tailscale != nil && c.Tailscale.Port != 0 {
+		return uint16(c.Tailscale.Port)
+	}
+	if c.tailscaleUseTLS() {
+		return 443
+	}
+	return 80
+}
+
+func (c *Config) tailscaleUpstreamSocket() string {
+	if c.Tailscale == nil {
+		return ""
+	}
+	return c.Tailscale.UpstreamSocket
+}
+
+func (c *Config) validateTailscale() error {
+	if c.Tailscale != nil && (c.Tailscale.Port < 0 || c.Tailscale.Port > 65535) {
+		return fmt.Errorf("tailscale port must be between 1 and 65535, got %d", c.Tailscale.Port)
+	}
+	serviceListeners := 0
+	seen := make(map[string]bool)
+	for _, l := range c.Listeners {
+		if l.kind != listenerTypeTailscaleService {
+			continue
+		}
+		serviceListeners++
+		if seen[l.address] {
+			return fmt.Errorf("duplicate tailscale+svc listener for %q", l.address)
+		}
+		seen[l.address] = true
+	}
+	if c.tailscaleUpstreamSocket() != "" && serviceListeners != 1 {
+		return fmt.Errorf("tailscale upstream_socket requires exactly one tailscale+svc listener, got %d", serviceListeners)
+	}
+	if serviceListeners > 0 && time.Duration(c.MaxIdleTime) > 0 {
+		return fmt.Errorf("max-idle-time is not supported with tailscale+svc listeners")
+	}
+	return nil
+}
+
+func (c *Config) warnUnusedTailscaleConfig() {
+	if c.Tailscale == nil {
+		return
+	}
+	for _, l := range c.Listeners {
+		if l.kind == listenerTypeTailscaleService {
+			return
+		}
+	}
+	slog.Warn("tailscale configuration is set but no tailscale+svc listener is configured; it will be ignored")
 }
 
 func (c *Config) loadFromFile(path string) error {
@@ -372,6 +448,10 @@ func loadConfig(args []string) (Config, bool, error) {
 	}
 
 	if err := config.normalizeRepos(); err != nil {
+		return Config{}, false, err
+	}
+
+	if err := config.validateTailscale(); err != nil {
 		return Config{}, false, err
 	}
 

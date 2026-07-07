@@ -120,6 +120,7 @@ func main() {
 	}
 
 	config.validateTailscaleCapabilityListeners()
+	config.warnUnusedTailscaleConfig()
 
 	tailscaleCapability := config.TailscaleCapability
 	if config.Stdio {
@@ -146,6 +147,16 @@ func main() {
 				monitor.Stop()
 			}
 		}()
+	}
+
+	if !config.Stdio {
+		if err := setupTailscaleListeners(ctx, &config); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Error("tailscale setup failed", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	if config.Stdio {
