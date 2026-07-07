@@ -32,3 +32,9 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic4.sock '
 stdout '200'
 
 kill server4
+
+! exec restic-rados-server --pool $RESTIC_RADOS_SERVER_POOL':datta' --pool $RESTIC_RADOS_SERVER_POOL':*' --listen $WORK/restic5.sock
+stderr 'unknown blob type "datta"'
+
+! exec restic-rados-server --pool $RESTIC_RADOS_SERVER_POOL':*' --pool $RESTIC_RADOS_SERVER_POOL':datta' --listen $WORK/restic6.sock
+stderr 'unknown blob type "datta"'
