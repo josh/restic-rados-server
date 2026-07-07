@@ -697,6 +697,9 @@ func parsePoolKey(key string) (BlobPoolConfig, error) {
 	if strings.HasPrefix(namespace, "/") {
 		return BlobPoolConfig{}, fmt.Errorf("namespace cannot start with '/' in specification: %q", key)
 	}
+	if strings.Contains(namespace, "/") {
+		return BlobPoolConfig{}, fmt.Errorf("namespace cannot contain '/' in specification: %q", key)
+	}
 	bpc := BlobPoolConfig{Pool: poolName, Namespace: namespace}
 
 	if hasLower {
@@ -709,6 +712,9 @@ func parsePoolKey(key string) (BlobPoolConfig, error) {
 		}
 		if strings.HasPrefix(lowerNamespace, "/") {
 			return BlobPoolConfig{}, fmt.Errorf("namespace cannot start with '/' in specification: %q", key)
+		}
+		if strings.Contains(lowerNamespace, "/") {
+			return BlobPoolConfig{}, fmt.Errorf("namespace cannot contain '/' in specification: %q", key)
 		}
 		if lowerPool == poolName && lowerNamespace == namespace {
 			return BlobPoolConfig{}, fmt.Errorf("lower layer must differ from upper layer in specification: %q", key)
@@ -851,6 +857,9 @@ func validatePoolLayer(layer, spec string) error {
 	}
 	if strings.HasPrefix(namespace, "/") {
 		return fmt.Errorf("namespace cannot start with '/' in specification: %q", spec)
+	}
+	if strings.Contains(namespace, "/") {
+		return fmt.Errorf("namespace cannot contain '/' in specification: %q", spec)
 	}
 	return nil
 }

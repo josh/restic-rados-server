@@ -19,6 +19,15 @@ stderr 'empty lower pool name in specification'
 ! exec restic-rados-server --pool=pool1//pool2//pool3
 stderr 'namespace cannot start with ./. in specification'
 
+! exec restic-rados-server --pool=foo/a/b:data
+stderr 'namespace cannot contain ./. in specification'
+
+! exec restic-rados-server --config slash-namespace.json
+stderr 'namespace cannot contain ./. in specification'
+
+! exec restic-rados-server --config lower-slash-namespace.json
+stderr 'namespace cannot contain ./. in specification'
+
 ! exec restic-rados-server --config identical-layers.json
 stderr 'lower layer must differ from upper layer'
 
@@ -28,6 +37,22 @@ stderr 'empty pool name in specification'
 ! exec restic-rados-server --config empty-lower-pool.json
 stderr 'empty lower pool name in specification'
 
+-- slash-namespace.json --
+{
+    "repos": {
+        "default": {
+            "pools": {"foo/a/b": ["*"]}
+        }
+    }
+}
+-- lower-slash-namespace.json --
+{
+    "repos": {
+        "default": {
+            "pools": {"foo//bar/a/b": ["*"]}
+        }
+    }
+}
 -- identical-layers.json --
 {
     "repos": {
