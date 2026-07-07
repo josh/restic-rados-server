@@ -24,6 +24,8 @@ const (
 	firstStripeSuffix  = ".0000000000000000"
 )
 
+var errUnsupportedStriperLayout = errors.New("unsupported striper layout")
+
 type RadosIOContext interface {
 	Stat(object string) (StatInfo, error)
 	Remove(object string) error
@@ -128,7 +130,7 @@ func (s *striperIOContextWrapper) stripeObjectSize(firstObjID string) (uint64, e
 		return 0, err
 	}
 	if size == 0 {
-		return 0, fmt.Errorf("invalid object_size xattr: 0")
+		return 0, fmt.Errorf("%w: object_size=0", errUnsupportedStriperLayout)
 	}
 	unit, err := s.getXattrUint(firstObjID, xattrStripeUnit)
 	if err != nil {
@@ -139,7 +141,7 @@ func (s *striperIOContextWrapper) stripeObjectSize(firstObjID string) (uint64, e
 		return 0, err
 	}
 	if count != 1 || unit != size {
-		return 0, fmt.Errorf("unsupported striper layout: stripe_count=%d stripe_unit=%d object_size=%d", count, unit, size)
+		return 0, fmt.Errorf("%w: stripe_count=%d stripe_unit=%d object_size=%d", errUnsupportedStriperLayout, count, unit, size)
 	}
 	return size, nil
 }

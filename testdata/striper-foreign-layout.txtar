@@ -16,6 +16,12 @@ exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localh
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --head 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
 stdout '500'
 
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Accept: application/vnd.x.restic.rest.v2' 'http://localhost/data/' --output list.json
+stdout '200'
+grep '0000000000000000000000000000000000000000000000000000000000000002' list.json
+! grep '0000000000000000000000000000000000000000000000000000000000000001' list.json
+wait4log 'skipping striped object with unsupported layout' $RESTIC_RADOS_SERVER_LOG_FILE
+
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
 stdout '500'
 
