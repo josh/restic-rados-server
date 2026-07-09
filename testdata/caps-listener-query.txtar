@@ -1,0 +1,26 @@
+tail-logs
+create-pool
+
+! exec restic-rados-server --listen 'unix:$WORK/x.sock?trusted-caps-header='
+stderr 'requires a header name'
+
+! exec restic-rados-server --listen unix:$WORK/x.sock?trusted-caps-headers=X-Restic-Capabilities
+stderr 'unknown --listen query parameter'
+
+exec restic-rados-server --listen unix:$WORK/we?rd.sock &pathserver&
+wait4socket $WORK/we?rd.sock
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/we?rd.sock --request GET 'http://localhost/healthz' --output /dev/null
+stdout '200'
+kill pathserver
+
+exec restic-rados-server --listen tcp://0.0.0.0:$PORT?trusted-caps-header=X-Restic-Capabilities --log-file $WORK/warn.log &server&
+wait4socket 127.0.0.1:$PORT
+wait4log 'non-loopback' $WORK/warn.log
+kill server
+
+exec restic-rados-server --listen $WORK/caps.sock?trusted-caps-header=X-Restic-Capabilities --log-file $WORK/loopback.log &server2&
+wait4socket $WORK/caps.sock
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/caps.sock --request GET 'http://localhost/healthz' --output /dev/null
+stdout '200'
+! grep 'non-loopback' $WORK/loopback.log
+kill server2

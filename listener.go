@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,10 +31,15 @@ const (
 const listenFdsStart = 3
 
 type listenerConfig struct {
-	kind    listenerType
-	address string
-	raw     string
-	file    *os.File
+	kind              listenerType
+	address           string
+	raw               string
+	file              *os.File
+	trustedCapsHeader string
+}
+
+func (cfg listenerConfig) trustsCaps() bool {
+	return cfg.trustedCapsHeader != ""
 }
 
 func (cfg listenerConfig) Close() {
@@ -72,6 +78,20 @@ func prepareUnixSocketPath(path string) error {
 	return nil
 }
 
+func listenerIsNonLoopback(l net.Listener) bool {
+	tcpAddr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		return false
+	}
+	return !tcpAddr.IP.IsLoopback()
+}
+
+func warnIfUntrustedCapsBind(cfg listenerConfig, l net.Listener) {
+	if cfg.trustsCaps() && listenerIsNonLoopback(l) {
+		slog.Warn("capability-trusting listener bound to a non-loopback address; only enable trusted caps headers behind a trusted proxy that sets them", "address", l.Addr().String())
+	}
+}
+
 func (cfg *listenerConfig) setTCPAddress(value string, rawInput string) error {
 	if !strings.Contains(value, ":") {
 		return fmt.Errorf("invalid --listen value %q: TCP listeners must specify host:port", rawInput)
@@ -97,17 +117,85 @@ func (l *listenerFlags) String() string {
 	return strings.Join(parts, ",")
 }
 
+type listenerSpec struct {
+	Address           string `json:"address,omitempty"`
+	Systemd           string `json:"systemd,omitempty"`
+	TrustedCapsHeader string `json:"trusted_caps_header,omitempty"`
+}
+
 func (l *listenerFlags) UnmarshalJSON(data []byte) error {
-	var ss []string
-	if err := json.Unmarshal(data, &ss); err != nil {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil {
 		return err
 	}
-	for _, s := range ss {
+	for _, entry := range entries {
+		if bytes.HasPrefix(bytes.TrimSpace(entry), []byte("{")) {
+			var spec listenerSpec
+			dec := json.NewDecoder(bytes.NewReader(entry))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&spec); err != nil {
+				return err
+			}
+			if spec.Address == "" && spec.Systemd == "" {
+				return fmt.Errorf("invalid listen entry %s: one of address or systemd is required", entry)
+			}
+			if spec.Address != "" && spec.Systemd != "" {
+				return fmt.Errorf("invalid listen entry %s: address and systemd are mutually exclusive", entry)
+			}
+			if spec.Systemd != "" {
+				*l = append(*l, listenerConfig{
+					kind:              listenerTypeSystemd,
+					address:           spec.Systemd,
+					raw:               "systemd:" + spec.Systemd,
+					trustedCapsHeader: spec.TrustedCapsHeader,
+				})
+				continue
+			}
+			if err := l.Set(spec.Address); err != nil {
+				return err
+			}
+			if spec.TrustedCapsHeader != "" {
+				(*l)[len(*l)-1].trustedCapsHeader = spec.TrustedCapsHeader
+			}
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(entry, &s); err != nil {
+			return err
+		}
 		if err := l.Set(s); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func parseListenerQuery(query string) (trustedCapsHeader string, isCapsQuery bool, err error) {
+	parts := strings.Split(query, "&")
+	for _, part := range parts {
+		if key, _, _ := strings.Cut(part, "="); strings.HasPrefix(key, "trusted-") {
+			isCapsQuery = true
+		}
+	}
+	if !isCapsQuery {
+		return "", false, nil
+	}
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		key, val, hasVal := strings.Cut(part, "=")
+		switch key {
+		case "trusted-caps-header":
+			if !hasVal || val == "" {
+				return "", true, fmt.Errorf("--listen query %q requires a header name", key)
+			}
+			trustedCapsHeader = val
+		default:
+			return "", true, fmt.Errorf("unknown --listen query parameter %q", key)
+		}
+	}
+	return trustedCapsHeader, true, nil
 }
 
 func (l *listenerFlags) Set(value string) error {
@@ -117,7 +205,22 @@ func (l *listenerFlags) Set(value string) error {
 	}
 
 	cfg := listenerConfig{raw: trimmed}
-	working := trimmed
+	spec := trimmed
+	if i := strings.IndexByte(trimmed, '?'); i != -1 {
+		trustedCapsHeader, isCapsQuery, err := parseListenerQuery(trimmed[i+1:])
+		if err != nil {
+			return err
+		}
+		if isCapsQuery {
+			cfg.trustedCapsHeader = trustedCapsHeader
+			spec = trimmed[:i]
+		}
+	}
+	if spec == "" {
+		return fmt.Errorf("invalid --listen value %q: empty specification", value)
+	}
+
+	working := spec
 	lower := strings.ToLower(working)
 
 	switch {
@@ -232,6 +335,37 @@ func systemdListeners() []listenerConfig {
 	return configs
 }
 
+func resolveSystemdListeners(configured []listenerConfig) ([]listenerConfig, error) {
+	policies := make(map[string]listenerConfig)
+	bound := configured[:0]
+	for _, l := range configured {
+		if l.kind == listenerTypeSystemd && l.file == nil {
+			if _, dup := policies[l.address]; dup {
+				return nil, fmt.Errorf("duplicate systemd caps policy for %q", l.address)
+			}
+			policies[l.address] = l
+			continue
+		}
+		bound = append(bound, l)
+	}
+
+	result := bound
+	matched := make(map[string]bool)
+	for _, sl := range systemdListeners() {
+		if p, ok := policies[sl.address]; ok {
+			sl.trustedCapsHeader = p.trustedCapsHeader
+			matched[sl.address] = true
+		}
+		result = append(result, sl)
+	}
+	for name := range policies {
+		if !matched[name] {
+			return nil, fmt.Errorf("systemd caps policy %q has no matching inherited socket", name)
+		}
+	}
+	return result, nil
+}
+
 func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutdownTimeout time.Duration, monitor *idleMonitor) error {
 	switch cfg.kind {
 	case listenerTypeStdio:
@@ -263,6 +397,7 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 			return fmt.Errorf("failed to create Unix socket listener: %w", err)
 		}
 		defer func() { _ = listener.Close() }()
+		warnIfUntrustedCapsBind(cfg, listener)
 		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
 	case listenerTypeTCP:
 		listener, err := net.Listen("tcp", cfg.address)
@@ -270,6 +405,7 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 			return fmt.Errorf("failed to create TCP listener: %w", err)
 		}
 		defer func() { _ = listener.Close() }()
+		warnIfUntrustedCapsBind(cfg, listener)
 		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
 	case listenerTypeSystemd:
 		if cfg.file == nil {
@@ -283,6 +419,7 @@ func (cfg listenerConfig) Serve(ctx context.Context, handler http.Handler, shutd
 		defer func() {
 			_ = listener.Close()
 		}()
+		warnIfUntrustedCapsBind(cfg, listener)
 		return serveListener(ctx, listener, handler, shutdownTimeout, monitor)
 	default:
 		return fmt.Errorf("unsupported listener type %s", cfg.kind)
@@ -295,11 +432,15 @@ func serveAllListeners(ctx context.Context, cancel context.CancelFunc, listeners
 
 	for _, cfg := range listeners {
 		cfg := cfg
+		listenerHandler := handler
+		if cfg.trustsCaps() {
+			listenerHandler = enforceCaps(cfg.trustedCapsHeader, handler)
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			slog.Info("listening", "address", cfg.description())
-			if err := cfg.Serve(ctx, handler, shutdownTimeout, monitor); err != nil && ctx.Err() == nil {
+			if err := cfg.Serve(ctx, listenerHandler, shutdownTimeout, monitor); err != nil && ctx.Err() == nil {
 				select {
 				case errChan <- fmt.Errorf("listener %s error: %w", cfg.description(), err):
 				default:

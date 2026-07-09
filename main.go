@@ -108,7 +108,12 @@ func main() {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	config.Listeners = append(config.Listeners, systemdListeners()...)
+	resolvedListeners, err := resolveSystemdListeners(config.Listeners)
+	if err != nil {
+		slog.Error("failed to resolve listeners", "error", err)
+		os.Exit(1)
+	}
+	config.Listeners = resolvedListeners
 	if config.Stdio && len(config.Listeners) > 0 {
 		slog.Error("--stdio cannot be combined with --listen")
 		os.Exit(1)

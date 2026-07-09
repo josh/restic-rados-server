@@ -1,0 +1,49 @@
+tail-logs
+create-pool
+
+! exec restic-rados-server --config bad-field.json
+stderr 'unknown field'
+
+! exec restic-rados-server --config no-address.json
+stderr 'one of address or systemd is required'
+
+! exec restic-rados-server --config both.json
+stderr 'address and systemd are mutually exclusive'
+
+envsubst config.json.tmpl config.json
+exec restic-rados-server --config config.json &server&
+wait4socket $WORK/caps.sock
+wait4socket $WORK/plain.sock
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"rw"}' --unix-socket $WORK/caps.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"r"}' --unix-socket $WORK/caps.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"r"}' --unix-socket $WORK/plain.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "listen": [
+        {"address": "$WORK/caps.sock", "trusted_caps_header": "X-Restic-Capabilities"},
+        {"address": "$WORK/plain.sock"}
+    ]
+}
+-- bad-field.json --
+{
+    "listen": [{"address": "/tmp/x.sock", "trust": true}]
+}
+-- no-address.json --
+{
+    "listen": [{"trusted_caps_header": "X-Restic-Capabilities"}]
+}
+-- both.json --
+{
+    "listen": [{"address": "/tmp/x.sock", "systemd": "restic"}]
+}
+-- blob-data --
+test blob content

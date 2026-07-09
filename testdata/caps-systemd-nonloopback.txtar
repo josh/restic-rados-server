@@ -1,0 +1,12 @@
+tail-logs
+create-pool
+
+exec systemd-socket-activate --fdname=restic --setenv=RESTIC_RADOS_SERVER_POOL --setenv=CEPH_CONF --setenv=RESTIC_RADOS_SERVER_VERBOSE --setenv=RESTIC_RADOS_SERVER_LOG_FILE --listen=0.0.0.0:$PORT restic-rados-server --config config.json &server&
+wait4socket 127.0.0.1:$PORT
+wait4log 'non-loopback' $RESTIC_RADOS_SERVER_LOG_FILE
+kill server
+
+-- config.json --
+{
+    "listen": [{"systemd": "restic", "trusted_caps_header": "X-Restic-Capabilities"}]
+}

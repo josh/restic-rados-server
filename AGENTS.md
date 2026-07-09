@@ -92,11 +92,12 @@ The non-test `*.go` files form a strict DAG with no cycles:
 
 ```
 main.go
+├── appcap.go
 ├── buffer.go
 ├── config.go
 ├── connection_manager.go  → config.go
-├── handlers.go            → buffer.go, config.go, connection_manager.go, rados.go
-├── listener.go            → stdio_conn.go, idle.go
+├── handlers.go            → appcap.go, buffer.go, config.go, connection_manager.go, rados.go
+├── listener.go            → appcap.go, stdio_conn.go, idle.go
 ├── idle.go
 └── rados.go
 ```
