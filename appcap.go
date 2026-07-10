@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"mime"
 	"net/http"
+	"strings"
 )
+
+const tailscaleCapHeader = "Tailscale-App-Capabilities"
 
 type Access int
 
@@ -95,6 +99,27 @@ func mergeGrantValue(grant capGrant, raw []byte) {
 	mergeGrantObject(grant, obj)
 }
 
+func parseTailscaleCaps(grant capGrant, headerValue, capName string) {
+	if capName == "" {
+		return
+	}
+	decoded := headerValue
+	if strings.HasPrefix(strings.TrimSpace(headerValue), "=?") {
+		if dec, err := new(mime.WordDecoder).DecodeHeader(headerValue); err == nil {
+			decoded = dec
+		}
+	}
+	var caps map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(decoded), &caps); err != nil {
+		return
+	}
+	capRaw, ok := caps[capName]
+	if !ok {
+		return
+	}
+	mergeGrantList(grant, capRaw)
+}
+
 func lastHeaderValue(h http.Header, name string) string {
 	vals := h.Values(name)
 	if len(vals) == 0 {
@@ -103,13 +128,23 @@ func lastHeaderValue(h http.Header, name string) string {
 	return vals[len(vals)-1]
 }
 
-func enforceCaps(trustedCapsHeader string, next http.Handler) http.Handler {
+func enforceCaps(trustedCapsHeader, trustedTailscaleCaps string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		grant := capGrant{}
-		if v := lastHeaderValue(r.Header, trustedCapsHeader); v != "" {
-			mergeGrantValue(grant, []byte(v))
+		if trustedCapsHeader != "" {
+			if v := lastHeaderValue(r.Header, trustedCapsHeader); v != "" {
+				mergeGrantValue(grant, []byte(v))
+			}
 		}
-		r.Header.Del(trustedCapsHeader)
+		if trustedTailscaleCaps != "" {
+			if v := lastHeaderValue(r.Header, tailscaleCapHeader); v != "" {
+				parseTailscaleCaps(grant, v, trustedTailscaleCaps)
+			}
+		}
+		if trustedCapsHeader != "" {
+			r.Header.Del(trustedCapsHeader)
+		}
+		r.Header.Del(tailscaleCapHeader)
 		next.ServeHTTP(w, r.WithContext(withGrant(r.Context(), grant)))
 	})
 }
