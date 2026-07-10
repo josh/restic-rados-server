@@ -134,15 +134,32 @@ func TestScript(t *testing.T) {
 	}
 }
 
-func getFreePort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = listener.Close() }()
+var (
+	usedPortsMu sync.Mutex
+	usedPorts   = map[int]struct{}{}
+)
 
-	addr := listener.Addr().(*net.TCPAddr)
-	return addr.Port, nil
+func getFreePort() (int, error) {
+	for attempt := 0; attempt < 100; attempt++ {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return 0, err
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		_ = listener.Close()
+
+		usedPortsMu.Lock()
+		_, seen := usedPorts[port]
+		if !seen {
+			usedPorts[port] = struct{}{}
+		}
+		usedPortsMu.Unlock()
+
+		if !seen {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("could not find an unused free port after 100 attempts")
 }
 
 func touchServerLog(t *testing.T, tmpDir string) (string, error) {
