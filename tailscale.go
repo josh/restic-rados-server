@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,14 +10,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
+	"syscall"
 
 	"tailscale.com/client/local"
 	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 )
-
-var tailscaleMu sync.Mutex
 
 const maxUnixSocketPathLen = 107
 
@@ -35,29 +34,50 @@ func prepareTailscaleUpstreamPath(tsCfg *TailscaleConfig, service string) (strin
 		if len(tsCfg.UpstreamSocket) > maxUnixSocketPathLen {
 			return "", fmt.Errorf("upstream_socket path too long (%d > %d bytes): %s", len(tsCfg.UpstreamSocket), maxUnixSocketPathLen, tsCfg.UpstreamSocket)
 		}
+		if err := os.MkdirAll(filepath.Dir(tsCfg.UpstreamSocket), 0o700); err != nil {
+			return "", err
+		}
 		return tsCfg.UpstreamSocket, nil
 	}
-	dir := filepath.Join(tailscaleUpstreamBaseDir(), "restic-rados-server")
-	name := strings.NewReplacer("/", "-", " ", "-", ":", "-").Replace(strings.TrimPrefix(service, "svc:"))
+	dir := filepath.Join(tailscaleUpstreamBaseDir(), fmt.Sprintf("restic-rados-server.%d", os.Getuid()))
+	name := strings.TrimPrefix(service, "svc:")
 	path := filepath.Join(dir, name+".sock")
 	if len(path) > maxUnixSocketPathLen {
 		return "", fmt.Errorf("derived upstream socket path too long (%d > %d bytes): %s", len(path), maxUnixSocketPathLen, path)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-func removeTailscaleServeHandler(ctx context.Context, lc *local.Client, service string) {
-	tailscaleMu.Lock()
-	defer tailscaleMu.Unlock()
+func ensurePrivateDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		return os.Chmod(dir, 0o700)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("upstream socket directory %s is not a directory", dir)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("upstream socket directory %s is owned by uid %d, refusing to use it", dir, st.Uid)
+	}
+	return os.Chmod(dir, 0o700)
+}
 
+func removeTailscaleServeHandler(ctx context.Context, lc *local.Client, service string) {
 	sc, err := lc.GetServeConfig(ctx)
-	if err != nil || sc == nil {
+	if err != nil {
+		slog.Error("failed to read tailscale serve config", "service", service, "error", err)
+		return
+	}
+	if sc == nil {
 		return
 	}
 	if _, ok := sc.Services[tailcfg.ServiceName(service)]; !ok {
@@ -70,9 +90,6 @@ func removeTailscaleServeHandler(ctx context.Context, lc *local.Client, service 
 }
 
 func setServiceAdvertised(ctx context.Context, lc *local.Client, service string, advertise bool) error {
-	tailscaleMu.Lock()
-	defer tailscaleMu.Unlock()
-
 	prefs, err := lc.GetPrefs(ctx)
 	if err != nil {
 		return err
@@ -140,6 +157,10 @@ func setupTailscaleService(ctx context.Context, cfg listenerConfig, tsCfg *Tails
 	listener, err := net.Listen("unix", upstream)
 	if err != nil {
 		return listenerConfig{}, nil, fmt.Errorf("tailscale %s: bind upstream socket: %w", service, err)
+	}
+	if err := os.Chmod(upstream, 0o600); err != nil {
+		_ = listener.Close()
+		return listenerConfig{}, nil, fmt.Errorf("tailscale %s: restrict upstream socket permissions: %w", service, err)
 	}
 
 	proxyValue, err := ipn.ExpandProxyTargetValue("unix:"+upstream, []string{"unix"}, "http")

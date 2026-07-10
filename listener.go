@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
+	"tailscale.com/tailcfg"
 )
 
 type listenerType string
@@ -31,8 +31,6 @@ const (
 )
 
 const listenFdsStart = 3
-
-var tailscaleServiceNameRegex = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
 type listenerConfig struct {
 	kind                 listenerType
@@ -254,18 +252,19 @@ func (l *listenerFlags) Set(value string) error {
 	lower := strings.ToLower(working)
 
 	if strings.HasPrefix(lower, "tailscale+svc:") {
-		label := strings.TrimPrefix(working[len("tailscale+svc:"):], "svc:")
+		label := working[len("tailscale+svc:"):]
 		if label == "" {
 			return fmt.Errorf("invalid --listen value %q: missing Tailscale service name", value)
 		}
-		if !tailscaleServiceNameRegex.MatchString(label) {
+		service := tailcfg.AsServiceName("svc:" + label)
+		if service == "" {
 			return fmt.Errorf("invalid --listen value %q: Tailscale service name must be a DNS label (letters, digits, hyphens; no leading/trailing hyphen)", value)
 		}
 		if cfg.trustedCapsHeader != "" {
 			return fmt.Errorf("invalid --listen value %q: Tailscale services use trusted-ts-caps, not trusted-caps-header", value)
 		}
 		cfg.kind = listenerTypeTailscaleService
-		cfg.serviceName = "svc:" + label
+		cfg.serviceName = service.String()
 		*l = append(*l, cfg)
 		return nil
 	}

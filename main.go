@@ -164,10 +164,17 @@ func main() {
 		}
 	} else {
 		tailscaleCount := 0
+		tsServiceNames := map[string]bool{}
 		for _, l := range config.Listeners {
-			if l.kind == listenerTypeTailscaleService {
-				tailscaleCount++
+			if l.kind != listenerTypeTailscaleService {
+				continue
 			}
+			tailscaleCount++
+			if tsServiceNames[l.serviceName] {
+				slog.Error("multiple tailscale services resolve to the same upstream socket", "service", l.serviceName)
+				os.Exit(1)
+			}
+			tsServiceNames[l.serviceName] = true
 		}
 		if tailscaleCount > 1 && config.Tailscale != nil && config.Tailscale.UpstreamSocket != "" {
 			slog.Error("tailscale.upstream_socket cannot be shared by multiple tailscale services")
@@ -178,13 +185,10 @@ func main() {
 		var withdrawOnce sync.Once
 		withdrawAll := func() {
 			withdrawOnce.Do(func() {
-				if len(withdrawals) == 0 {
-					return
-				}
-				drainCtx, drainCancel := context.WithTimeout(context.Background(), tailscaleDrainTimeout)
-				defer drainCancel()
 				for _, withdraw := range withdrawals {
+					drainCtx, drainCancel := context.WithTimeout(context.Background(), tailscaleDrainTimeout)
 					withdraw(drainCtx)
+					drainCancel()
 				}
 			})
 		}
@@ -201,22 +205,15 @@ func main() {
 				withdrawals = append(withdrawals, withdraw)
 			}
 		}
-		if len(withdrawals) > 0 {
-			serveCtx, serveCancel := context.WithCancel(context.Background())
-			go func() {
-				<-ctx.Done()
-				withdrawAll()
-				serveCancel()
-			}()
-			if err := serveAllListeners(serveCtx, serveCancel, config.Listeners, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil {
-				withdrawAll()
-				slog.Error("server error", "error", err)
-				os.Exit(1)
-			}
+		go func() {
+			<-ctx.Done()
 			withdrawAll()
-		} else if err := serveAllListeners(ctx, cancel, config.Listeners, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil {
+		}()
+		if err := serveAllListeners(ctx, cancel, config.Listeners, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil {
+			withdrawAll()
 			slog.Error("server error", "error", err)
 			os.Exit(1)
 		}
+		withdrawAll()
 	}
 }
