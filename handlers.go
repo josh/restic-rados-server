@@ -479,7 +479,6 @@ func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, prefix string, us
 			if _, ok := seen[blobID]; ok {
 				continue
 			}
-			seen[blobID] = struct{}{}
 		}
 
 		baseObjectName := prefix + blobID
@@ -499,6 +498,10 @@ func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, prefix string, us
 			})
 		} else {
 			*blobNames = append(*blobNames, blobID)
+		}
+
+		if seen != nil {
+			seen[blobID] = struct{}{}
 		}
 	}
 
