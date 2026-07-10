@@ -1,0 +1,12 @@
+tail-logs
+create-pool
+
+envsubst config.json.tmpl config.json
+
+! exec restic-rados-server --listen tailscale+svc:restic?trusted-ts-caps=github.com/josh/restic-rados-server --config config.json
+grep 'cannot reach tailscaled' $RESTIC_RADOS_SERVER_LOG_FILE
+
+-- config.json.tmpl --
+{
+    "tailscale": {"socket": "$WORK/missing/tailscaled.sock"}
+}

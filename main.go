@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -17,6 +18,8 @@ import (
 var logger *slog.Logger
 
 var version = "0.7.0"
+
+const tailscaleDrainTimeout = 10 * time.Second
 
 func initLogger(verbose bool, logFilePath string) error {
 	logOutput := io.Writer(os.Stderr)
@@ -160,9 +163,57 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
+		tailscaleCount := 0
+		tsServiceNames := map[string]bool{}
+		for _, l := range config.Listeners {
+			if l.kind != listenerTypeTailscaleService {
+				continue
+			}
+			tailscaleCount++
+			if tsServiceNames[l.serviceName] {
+				slog.Error("multiple tailscale services resolve to the same upstream socket", "service", l.serviceName)
+				os.Exit(1)
+			}
+			tsServiceNames[l.serviceName] = true
+		}
+		if tailscaleCount > 1 && config.Tailscale != nil && config.Tailscale.UpstreamSocket != "" {
+			slog.Error("tailscale.upstream_socket cannot be shared by multiple tailscale services")
+			os.Exit(1)
+		}
+
+		var withdrawals []func(context.Context)
+		var withdrawOnce sync.Once
+		withdrawAll := func() {
+			withdrawOnce.Do(func() {
+				for _, withdraw := range withdrawals {
+					drainCtx, drainCancel := context.WithTimeout(context.Background(), tailscaleDrainTimeout)
+					withdraw(drainCtx)
+					drainCancel()
+				}
+			})
+		}
+
+		for i := range config.Listeners {
+			if config.Listeners[i].kind == listenerTypeTailscaleService {
+				upstream, withdraw, err := setupTailscaleService(ctx, config.Listeners[i], config.Tailscale)
+				if err != nil {
+					withdrawAll()
+					slog.Error("failed to set up tailscale service", "error", err)
+					os.Exit(1)
+				}
+				config.Listeners[i] = upstream
+				withdrawals = append(withdrawals, withdraw)
+			}
+		}
+		go func() {
+			<-ctx.Done()
+			withdrawAll()
+		}()
 		if err := serveAllListeners(ctx, cancel, config.Listeners, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil {
+			withdrawAll()
 			slog.Error("server error", "error", err)
 			os.Exit(1)
 		}
+		withdrawAll()
 	}
 }
