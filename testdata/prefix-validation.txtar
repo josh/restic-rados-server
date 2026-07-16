@@ -1,0 +1,75 @@
+! exec restic-rados-server --config control-char-prefix.json
+stderr 'blob type "data": prefix cannot contain control characters'
+
+! exec restic-rados-server --config control-char-lower-prefix.json
+stderr 'blob type "data": lower layer prefix cannot contain control characters'
+
+! exec restic-rados-server --config prefix-and-layers.json
+stderr 'blob type "data": cannot combine pool with upper/lower layers'
+
+! exec restic-rados-server --config identical-layers-with-prefix.json
+stderr 'blob type "data": lower layer must differ from upper layer'
+
+! exec restic-rados-server --config unknown-prefix-field.json
+stderr 'failed to load config file'
+
+-- control-char-prefix.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {"pool": "flat", "prefix": "p\t/"}
+            }
+        }
+    }
+}
+-- control-char-lower-prefix.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "upper": {"pool": "new"},
+                    "lower": {"pool": "old", "prefix": "p\t/"}
+                }
+            }
+        }
+    }
+}
+-- prefix-and-layers.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "prefix": "p/",
+                    "upper": {"pool": "new"},
+                    "lower": {"pool": "old"}
+                }
+            }
+        }
+    }
+}
+-- identical-layers-with-prefix.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {
+                    "upper": {"pool": "same", "namespace": "ns", "prefix": "p/"},
+                    "lower": {"pool": "same", "namespace": "ns", "prefix": "p/"}
+                }
+            }
+        }
+    }
+}
+-- unknown-prefix-field.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "data": {"pool": "flat", "prefixx": "p/"}
+            }
+        }
+    }
+}

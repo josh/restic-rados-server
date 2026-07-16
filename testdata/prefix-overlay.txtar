@@ -1,0 +1,68 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+
+exec rados --pool $CEPH_POOL_SHARED put old/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c blob-x
+exec rados --pool $CEPH_POOL_SHARED put old/data/7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730 blob-y
+exec rados --pool $CEPH_POOL_SHARED put new/data/7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730 blob-y
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c' --output downloaded-x
+cmp downloaded-x blob-x
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-z 'http://localhost/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED ls
+stdout '^new/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2$'
+stdout '^old/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c$'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/'
+stdout 'b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c'
+stdout 'f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+stdout '7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730' --output /dev/null
+stdout '200'
+
+grep '(?s)removing object from layer.*layer=lower.*removing object from layer.*layer=upper' $RESTIC_RADOS_SERVER_LOG_FILE
+! grep '(?s)removing object from layer.*layer=upper.*removing object from layer.*layer=lower' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec rados --pool $CEPH_POOL_SHARED ls
+! stdout 'data/7d865e95'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED ls
+! stdout 'data/b5bb9d80'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_SHARED", "prefix": "new/"},
+                "keys": {"pool": "$CEPH_POOL_SHARED", "prefix": "new/"},
+                "locks": {"pool": "$CEPH_POOL_SHARED", "prefix": "new/"},
+                "snapshots": {"pool": "$CEPH_POOL_SHARED", "prefix": "new/"},
+                "index": {"pool": "$CEPH_POOL_SHARED", "prefix": "new/"},
+                "data": {
+                    "upper": {"pool": "$CEPH_POOL_SHARED", "prefix": "new/"},
+                    "lower": {"pool": "$CEPH_POOL_SHARED", "prefix": "old/"}
+                }
+            }
+        }
+    }
+}
+-- blob-x --
+foo
+-- blob-y --
+bar
+-- blob-z --
+test

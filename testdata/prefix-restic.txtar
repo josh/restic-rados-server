@@ -1,0 +1,51 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen 127.0.0.1:$PORT &server&
+wait4socket 127.0.0.1:$PORT
+
+exec restic init --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+exec restic backup data --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+exec restic check --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+exec restic restore latest --target $WORK/restored --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+cmp $WORK/restored/data/file.txt data/file.txt
+
+exec rados --pool $CEPH_POOL_SHARED ls
+stdout '^p1/config$'
+stdout '^p1/keys/'
+stdout '^p1/data/'
+stdout '^p1/snapshots/'
+stdout '^p1/index/'
+! stdout '^config$'
+! stdout '^keys/'
+! stdout '^data/'
+! stdout '^snapshots/'
+! stdout '^index/'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "keys": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "locks": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "snapshots": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "data": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "index": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"}
+            }
+        }
+    }
+}
+-- password.txt --
+secret
+-- data/file.txt --
+backup me with a prefix

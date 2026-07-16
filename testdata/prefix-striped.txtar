@@ -1,0 +1,53 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file zeros large-blob 40000000
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED ls
+stdout 'p1/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562\.0000000000000000'
+stdout 'p1/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562\.0000000000000001'
+! stdout '^data/'
+
+exec curl --silent --unix-socket $WORK/restic.sock --head --include 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 40000000'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562' --output downloaded-blob
+bin-cmp downloaded-blob large-blob
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/'
+stdout 'c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED ls
+! stdout 'data/'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "keys": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "locks": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "snapshots": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "data": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"},
+                "index": {"pool": "$CEPH_POOL_SHARED", "prefix": "p1/"}
+            }
+        }
+    }
+}

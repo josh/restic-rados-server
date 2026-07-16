@@ -48,9 +48,11 @@ type Handler struct {
 type HandlerContext struct {
 	conn            *connHandle
 	ioctx           *rados.IOContext
+	prefix          string
 	radosIO         RadosIOContext
 	striperIO       RadosIOContext
 	lowerIoctx      *rados.IOContext
+	lowerPrefix     string
 	lowerRadosIO    RadosIOContext
 	lowerStriperIO  RadosIOContext
 	stripedWrites   bool
@@ -231,6 +233,7 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 	hctx := &HandlerContext{
 		conn:            conn,
 		ioctx:           ioctx,
+		prefix:          bp.Prefix,
 		lowerIoctx:      lowerIoctx,
 		stripedWrites:   bp.Striped,
 		maxObjectSize:   bp.MaxObjectSize,
@@ -241,12 +244,13 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 		writeBufPtr:     writeBufPtr,
 	}
 
-	hctx.radosIO = NewRadosIO(ioctx, bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-	hctx.striperIO = NewStripedIO(ioctx, uint64(bp.MaxObjectSize), bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
+	hctx.radosIO = NewRadosIO(ioctx, bp.Prefix, bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
+	hctx.striperIO = NewStripedIO(ioctx, bp.Prefix, uint64(bp.MaxObjectSize), bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
 
 	if lowerIoctx != nil {
-		hctx.lowerRadosIO = NewRadosIO(lowerIoctx, bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-		hctx.lowerStriperIO = NewStripedIO(lowerIoctx, uint64(bp.Lower.MaxObjectSize), bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
+		hctx.lowerPrefix = bp.Lower.Prefix
+		hctx.lowerRadosIO = NewRadosIO(lowerIoctx, bp.Lower.Prefix, bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
+		hctx.lowerStriperIO = NewStripedIO(lowerIoctx, bp.Lower.Prefix, uint64(bp.Lower.MaxObjectSize), bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
 	}
 
 	return hctx, nil
@@ -398,20 +402,24 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	defer hctx.Destroy()
 
 	useV2 := acceptsBlobListV2(r)
-	prefix := blobType + "/"
+	logicalPrefix := blobType + "/"
 
 	blobNames := []string{}
 	blobInfos := []blobInfo{}
 
-	sources := []*rados.IOContext{hctx.ioctx}
+	type listSource struct {
+		ioctx  *rados.IOContext
+		prefix string
+	}
+	sources := []listSource{{hctx.ioctx, hctx.prefix}}
 	var seen map[string]struct{}
 	if hctx.lowerIoctx != nil {
-		sources = append(sources, hctx.lowerIoctx)
+		sources = append(sources, listSource{hctx.lowerIoctx, hctx.lowerPrefix})
 		seen = make(map[string]struct{})
 	}
 
 	for _, src := range sources {
-		err := hctx.collectBlobs(src, prefix, useV2, seen, &blobNames, &blobInfos)
+		err := hctx.collectBlobs(src.ioctx, src.prefix+logicalPrefix, logicalPrefix, useV2, seen, &blobNames, &blobInfos)
 		if err != nil {
 			slog.Error("failed to list blobs", "type", blobType, "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -445,7 +453,7 @@ func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, prefix string, useV2 bool, seen map[string]struct{}, blobNames *[]string, blobInfos *[]blobInfo) error {
+func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, storagePrefix, logicalPrefix string, useV2 bool, seen map[string]struct{}, blobNames *[]string, blobInfos *[]blobInfo) error {
 	slog.Debug("rados.Iter")
 	atomic.AddUint64(hctx.radosCalls, 1)
 	iter, err := src.Iter()
@@ -456,11 +464,11 @@ func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, prefix string, us
 
 	for iter.Next() {
 		objectName := iter.Value()
-		if objectName == "" || !strings.HasPrefix(objectName, prefix) {
+		if objectName == "" || !strings.HasPrefix(objectName, storagePrefix) {
 			continue
 		}
 
-		blobID := strings.TrimPrefix(objectName, prefix)
+		blobID := strings.TrimPrefix(objectName, storagePrefix)
 
 		if stripedBlobIDRegex.MatchString(blobID) && !firstStripedBlobIDRegex.MatchString(blobID) {
 			continue
@@ -482,7 +490,7 @@ func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, prefix string, us
 			seen[blobID] = struct{}{}
 		}
 
-		baseObjectName := prefix + blobID
+		baseObjectName := logicalPrefix + blobID
 
 		if useV2 {
 			_, stat, err := hctx.statRadosObject(baseObjectName)

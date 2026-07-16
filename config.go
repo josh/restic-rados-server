@@ -452,6 +452,7 @@ func (c *Config) normalizeRepos() error {
 type LayerPoolConfig struct {
 	Pool          string `json:"pool"`
 	Namespace     string `json:"namespace,omitempty"`
+	Prefix        string `json:"prefix,omitempty"`
 	Striped       *bool  `json:"striped,omitempty"`
 	MaxObjectSize *int64 `json:"max_object_size,omitempty"`
 }
@@ -459,6 +460,7 @@ type LayerPoolConfig struct {
 type BlobPoolConfig struct {
 	Pool          string           `json:"pool"`
 	Namespace     string           `json:"namespace,omitempty"`
+	Prefix        string           `json:"prefix,omitempty"`
 	Striped       *bool            `json:"striped,omitempty"`
 	MaxObjectSize *int64           `json:"max_object_size,omitempty"`
 	Upper         *LayerPoolConfig `json:"upper,omitempty"`
@@ -483,6 +485,7 @@ type CephConfig struct {
 type BlobPool struct {
 	Pool          string
 	Namespace     string
+	Prefix        string
 	Striped       bool
 	Alignment     uint64
 	MaxObjectSize int64
@@ -521,7 +524,7 @@ func (p *ServerConfigPools) normalizeLayers() error {
 		if bpc.Lower == nil {
 			return fmt.Errorf("blob type %q: upper layer requires a lower layer (use the flat pool form for a single layer)", bt)
 		}
-		if bpc.Pool != "" || bpc.Namespace != "" || bpc.Striped != nil || bpc.MaxObjectSize != nil {
+		if bpc.Pool != "" || bpc.Namespace != "" || bpc.Prefix != "" || bpc.Striped != nil || bpc.MaxObjectSize != nil {
 			return fmt.Errorf("blob type %q: cannot combine pool with upper/lower layers", bt)
 		}
 		if bpc.Upper.Pool == "" {
@@ -530,12 +533,13 @@ func (p *ServerConfigPools) normalizeLayers() error {
 		if bpc.Lower.Pool == "" {
 			return fmt.Errorf("blob type %q: lower pool name cannot be empty", bt)
 		}
-		if bpc.Upper.Pool == bpc.Lower.Pool && bpc.Upper.Namespace == bpc.Lower.Namespace {
+		if bpc.Upper.Pool == bpc.Lower.Pool && bpc.Upper.Namespace == bpc.Lower.Namespace && bpc.Upper.Prefix == bpc.Lower.Prefix {
 			return fmt.Errorf("blob type %q: lower layer must differ from upper layer", bt)
 		}
 
 		bpc.Pool = bpc.Upper.Pool
 		bpc.Namespace = bpc.Upper.Namespace
+		bpc.Prefix = bpc.Upper.Prefix
 		bpc.Striped = bpc.Upper.Striped
 		bpc.MaxObjectSize = bpc.Upper.MaxObjectSize
 		bpc.Upper = nil
@@ -543,6 +547,12 @@ func (p *ServerConfigPools) normalizeLayers() error {
 
 	for i, bt := range AllBlobTypes {
 		bpc := fields[i]
+		if strings.ContainsFunc(bpc.Prefix, unicode.IsControl) {
+			return fmt.Errorf("blob type %q: prefix cannot contain control characters", bt)
+		}
+		if bpc.Lower != nil && strings.ContainsFunc(bpc.Lower.Prefix, unicode.IsControl) {
+			return fmt.Errorf("blob type %q: lower layer prefix cannot contain control characters", bt)
+		}
 		if bpc.MaxObjectSize != nil && *bpc.MaxObjectSize <= 0 {
 			return fmt.Errorf("blob type %q: max_object_size must be positive, got %d", bt, *bpc.MaxObjectSize)
 		}
