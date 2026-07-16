@@ -50,14 +50,34 @@ func grantForRepo(ctx context.Context, repo string) Access {
 	if access, ok := grant[repo]; ok {
 		return access
 	}
-	if access, ok := grant["*"]; ok {
-		return access
+	var best *repoPattern
+	var bestAccess Access
+	for key, access := range grant {
+		before, after, found := strings.Cut(key, "*")
+		if !found {
+			continue
+		}
+		p := repoPattern{key: key, prefix: before, suffix: after}
+		if _, ok := p.match(repo); !ok {
+			continue
+		}
+		if best == nil || compareRepoPatterns(p, *best) < 0 {
+			best = &p
+			bestAccess = access
+		}
+	}
+	if best != nil {
+		return bestAccess
 	}
 	return AccessNone
 }
 
 func mergeGrantObject(grant capGrant, obj map[string]string) {
 	for repo, accessStr := range obj {
+		if strings.Count(repo, "*") > 1 {
+			slog.Debug("ignoring capability key with multiple wildcards", "repo", repo)
+			continue
+		}
 		access := ParseAccess(accessStr)
 		if access == AccessNone && accessStr != "" {
 			slog.Debug("ignoring unrecognized capability access token", "repo", repo, "access", accessStr)

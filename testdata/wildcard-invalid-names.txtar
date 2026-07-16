@@ -1,0 +1,44 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/config' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/default/config' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/*/?create=true' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/f%7Bo/?create=true' --output /dev/null
+stdout '404'
+
+grep 'msg=request method=GET path=/config status=404' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec curl --silent --write-out '%{http_code} %{redirect_url}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/valid?create=true' --output /dev/null
+stdout '301 http://localhost/valid/\?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/valid/?create=true' --output /dev/null
+stdout '200'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "*": {
+            "pools": {"$CEPH_POOL_SHARED/{repo}": ["*"]}
+        }
+    }
+}

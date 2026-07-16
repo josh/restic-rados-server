@@ -1,0 +1,95 @@
+! exec restic-rados-server --config wildcard-no-token.json
+stderr 'repo "\*": blob type "config": namespace or prefix must contain "\{repo\}" or "\{repo_match\}" so dynamic repos do not share storage'
+
+! exec restic-rados-server --config lower-missing-token.json
+stderr 'blob type "data": lower layer namespace or prefix must contain "\{repo\}" or "\{repo_match\}"'
+
+! exec restic-rados-server --config token-in-pool.json
+stderr 'blob type "config": pool name cannot contain "\{repo\}" or "\{repo_match\}" \(dynamic pool names are not supported\)'
+
+! exec restic-rados-server --config token-in-static.json
+stderr 'repo "default": blob type "config": "\{repo\}" and "\{repo_match\}" are only allowed in repo patterns'
+
+! exec restic-rados-server --config two-stars.json
+stderr 'invalid repo pattern "a\*b\*" \(may contain only one .\*.\)'
+
+! exec restic-rados-server --config equivalent-layers.json
+stderr 'blob type "data": lower layer must differ from upper layer for every dynamic repo'
+
+! exec restic-rados-server --config commuting-layers.json
+stderr 'blob type "data": lower layer must differ from upper layer for every dynamic repo'
+
+-- wildcard-no-token.json --
+{
+    "repos": {
+        "*": {
+            "pools": {"somepool": ["*"]}
+        }
+    }
+}
+-- lower-missing-token.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "new", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "new", "namespace": "{repo}"},
+                    "lower": {"pool": "old"}
+                }
+            }
+        }
+    }
+}
+-- token-in-pool.json --
+{
+    "repos": {
+        "*": {
+            "pools": {"pool-{repo}/{repo}": ["*"]}
+        }
+    }
+}
+-- token-in-static.json --
+{
+    "repos": {
+        "default": {
+            "pools": {"somepool/{repo}": ["*"]}
+        }
+    }
+}
+-- two-stars.json --
+{
+    "repos": {
+        "a*b*": {
+            "pools": {"somepool/{repo}": ["*"]}
+        }
+    }
+}
+-- equivalent-layers.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "{repo}"},
+                    "lower": {"pool": "p", "namespace": "{repo_match}"}
+                }
+            }
+        }
+    }
+}
+-- commuting-layers.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "xyz{repo_match}"},
+                    "lower": {"pool": "p", "namespace": "{repo_match}xyz"}
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,69 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/foo/?create=true' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/bar/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/foo/config --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-z 'http://localhost/foo/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/bar/config --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-x 'http://localhost/bar/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace foo ls
+stdout '^config$'
+stdout '^data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2$'
+! stdout 'b5bb9d80'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace bar ls
+stdout '^config$'
+stdout '^data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c$'
+! stdout 'f2ca1bb6'
+
+exec rados --pool $CEPH_POOL_SHARED ls
+! stdout 'config'
+! stdout 'data/'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/foo/data/'
+stdout 'f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+! stdout 'b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c'
+
+exec curl --silent --head --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/bar/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/foo/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace foo ls
+! stdout 'data/'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace bar ls
+stdout '^data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c$'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "*": {
+            "pools": {"$CEPH_POOL_SHARED/{repo}": ["*"]}
+        }
+    }
+}
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- blob-x --
+foo
+-- blob-z --
+test

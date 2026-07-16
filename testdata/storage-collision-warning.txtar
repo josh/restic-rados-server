@@ -1,0 +1,46 @@
+tail-logs
+create-pool shared
+
+envsubst disjoint.json.tmpl disjoint.json
+envsubst colliding.json.tmpl colliding.json
+envsubst static-colliding.json.tmpl static-colliding.json
+
+exec restic-rados-server --config disjoint.json --listen $WORK/restic1.sock &server1&
+wait4socket $WORK/restic1.sock
+kill server1
+
+! grep 'repos may share storage' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec restic-rados-server --config colliding.json --listen $WORK/restic2.sock &server2&
+wait4socket $WORK/restic2.sock
+kill server2
+
+grep 'msg="repos may share storage" repo=team-\* other_repo=user-\*' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec restic-rados-server --config static-colliding.json --listen $WORK/restic3.sock &server3&
+wait4socket $WORK/restic3.sock
+kill server3
+
+grep 'msg="repos may share storage" repo=default other_repo=other' $RESTIC_RADOS_SERVER_LOG_FILE
+
+-- disjoint.json.tmpl --
+{
+    "repos": {
+        "team-*": {"pools": {"$CEPH_POOL_SHARED/t-{repo_match}": ["*"]}},
+        "user-*": {"pools": {"$CEPH_POOL_SHARED/u-{repo_match}": ["*"]}}
+    }
+}
+-- colliding.json.tmpl --
+{
+    "repos": {
+        "team-*": {"pools": {"$CEPH_POOL_SHARED/{repo_match}": ["*"]}},
+        "user-*": {"pools": {"$CEPH_POOL_SHARED/{repo_match}": ["*"]}}
+    }
+}
+-- static-colliding.json.tmpl --
+{
+    "repos": {
+        "default": {"pools": {"$CEPH_POOL_SHARED/ns": ["*"]}},
+        "other": {"pools": {"$CEPH_POOL_SHARED/ns": ["*"]}}
+    }
+}
