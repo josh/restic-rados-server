@@ -40,6 +40,7 @@ type StatInfo struct {
 
 type radosIOContextWrapper struct {
 	ioctx      *rados.IOContext
+	prefix     string
 	radosCalls *uint64
 	readBuf    []byte
 	writeBuf   []byte
@@ -47,13 +48,14 @@ type radosIOContextWrapper struct {
 
 type striperIOContextWrapper struct {
 	ioctx      *rados.IOContext
+	prefix     string
 	objectSize uint64
 	radosCalls *uint64
 	readBuf    []byte
 	writeBuf   []byte
 }
 
-func NewRadosIO(ioctx *rados.IOContext, alignment uint64, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
+func NewRadosIO(ioctx *rados.IOContext, prefix string, alignment uint64, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
 	if alignment == 0 {
 		panic("alignment must be >= 1")
 	}
@@ -70,13 +72,14 @@ func NewRadosIO(ioctx *rados.IOContext, alignment uint64, readBuf, writeBuf []by
 
 	return &radosIOContextWrapper{
 		ioctx:      ioctx,
+		prefix:     prefix,
 		radosCalls: radosCalls,
 		readBuf:    readBuf,
 		writeBuf:   writeBuf,
 	}
 }
 
-func NewStripedIO(ioctx *rados.IOContext, objectSize uint64, alignment uint64, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
+func NewStripedIO(ioctx *rados.IOContext, prefix string, objectSize uint64, alignment uint64, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
 	if alignment == 0 {
 		panic("alignment must be >= 1")
 	}
@@ -98,6 +101,7 @@ func NewStripedIO(ioctx *rados.IOContext, objectSize uint64, alignment uint64, r
 
 	return &striperIOContextWrapper{
 		ioctx:      ioctx,
+		prefix:     prefix,
 		objectSize: objectSize,
 		radosCalls: radosCalls,
 		readBuf:    readBuf,
@@ -147,6 +151,7 @@ func (s *striperIOContextWrapper) stripeObjectSize(firstObjID string) (uint64, e
 }
 
 func (r *radosIOContextWrapper) Stat(object string) (StatInfo, error) {
+	object = r.prefix + object
 	slog.Debug("rados.Stat", "object", object)
 	atomic.AddUint64(r.radosCalls, 1)
 	stat, err := r.ioctx.Stat(object)
@@ -154,6 +159,7 @@ func (r *radosIOContextWrapper) Stat(object string) (StatInfo, error) {
 }
 
 func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
+	object = s.prefix + object
 	firstObjID := s.getObjectID(object, 0)
 
 	slog.Debug("rados.Stat", "object", firstObjID)
@@ -176,12 +182,14 @@ func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
 }
 
 func (r *radosIOContextWrapper) Remove(object string) error {
+	object = r.prefix + object
 	slog.Debug("rados.Remove", "object", object)
 	atomic.AddUint64(r.radosCalls, 1)
 	return r.ioctx.Delete(object)
 }
 
 func (s *striperIOContextWrapper) Remove(object string) error {
+	object = s.prefix + object
 	firstObjID := s.getObjectID(object, 0)
 
 	totalSize, err := s.getXattrUint(firstObjID, xattrSize)
@@ -237,6 +245,7 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 }
 
 func (r *radosIOContextWrapper) ReadObject(object string, offset, length int64, w io.Writer) (n int64, sum [32]byte, err error) {
+	object = r.prefix + object
 	buffer := r.readBuf
 
 	hasher := sha256.New()
@@ -281,6 +290,7 @@ func (r *radosIOContextWrapper) ReadObject(object string, offset, length int64, 
 }
 
 func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64, w io.Writer) (n int64, sum [32]byte, err error) {
+	object = s.prefix + object
 	firstObjID := s.getObjectID(object, 0)
 
 	slog.Debug("rados.Stat", "object", firstObjID)
@@ -379,6 +389,7 @@ func createExclusive(ioctx *rados.IOContext, object string, xattrs [][2]string, 
 }
 
 func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int64, sum [32]byte, err error) {
+	object = r.prefix + object
 	buffer := r.writeBuf
 
 	hasher := sha256.New()
@@ -433,6 +444,7 @@ func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int6
 }
 
 func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n int64, sum [32]byte, err error) {
+	object = s.prefix + object
 	buffer := s.writeBuf
 
 	hasher := sha256.New()

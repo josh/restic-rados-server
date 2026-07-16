@@ -1,0 +1,66 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/repob/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-x 'http://localhost/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-z 'http://localhost/repob/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace shared ls
+stdout '^a/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c$'
+stdout '^b/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2$'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/'
+stdout 'b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c'
+! stdout 'f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/repob/data/'
+stdout 'f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+! stdout 'b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c'
+
+exec curl --silent --head --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/repob/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c' --output /dev/null
+stdout '404'
+
+exec curl --silent --head --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '404'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "a/"},
+                "keys": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "a/"},
+                "locks": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "a/"},
+                "snapshots": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "a/"},
+                "data": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "a/"},
+                "index": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "a/"}
+            }
+        },
+        "repob": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "b/"},
+                "keys": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "b/"},
+                "locks": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "b/"},
+                "snapshots": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "b/"},
+                "data": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "b/"},
+                "index": {"pool": "$CEPH_POOL_SHARED", "namespace": "shared", "prefix": "b/"}
+            }
+        }
+    }
+}
+-- blob-x --
+foo
+-- blob-z --
+test

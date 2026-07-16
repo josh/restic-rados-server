@@ -376,10 +376,12 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 	type blobPoolKey struct {
 		pool               string
 		namespace          string
+		prefix             string
 		striped            bool
 		maxObjectSize      int64
 		lowerPool          string
 		lowerNS            string
+		lowerPrefix        string
 		lowerStriped       bool
 		lowerMaxObjectSize int64
 	}
@@ -428,7 +430,7 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 				}
 			}
 
-			key := blobPoolKey{pool: bpc.Pool, namespace: bpc.Namespace, striped: striped, maxObjectSize: maxObjSize}
+			key := blobPoolKey{pool: bpc.Pool, namespace: bpc.Namespace, prefix: bpc.Prefix, striped: striped, maxObjectSize: maxObjSize}
 			if bpc.Lower != nil {
 				lowerStriped := striped
 				if bpc.Lower.Striped != nil {
@@ -449,6 +451,7 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 				}
 				key.lowerPool = bpc.Lower.Pool
 				key.lowerNS = bpc.Lower.Namespace
+				key.lowerPrefix = bpc.Lower.Prefix
 				key.lowerStriped = lowerStriped
 				key.lowerMaxObjectSize = lowerMaxObjSize
 			}
@@ -457,6 +460,7 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 				bp = &BlobPool{
 					Pool:          bpc.Pool,
 					Namespace:     bpc.Namespace,
+					Prefix:        bpc.Prefix,
 					Striped:       striped,
 					Alignment:     poolAlignments[bpc.Pool],
 					MaxObjectSize: maxObjSize,
@@ -465,6 +469,7 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 					bp.Lower = &BlobPool{
 						Pool:          bpc.Lower.Pool,
 						Namespace:     bpc.Lower.Namespace,
+						Prefix:        bpc.Lower.Prefix,
 						Striped:       key.lowerStriped,
 						Alignment:     poolAlignments[bpc.Lower.Pool],
 						MaxObjectSize: key.lowerMaxObjectSize,
