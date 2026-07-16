@@ -1,0 +1,44 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock?trusted-caps-header=X-Restic-Capabilities &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"foo":"rw","*":"r"}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/foo/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"foo":"rw","*":"r"}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/foo/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"foo":"rw","*":"r"}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/bar/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"foo":"rw","*":"r"}' --unix-socket $WORK/restic.sock 'http://localhost/bar/data/' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"backups-*":"rw","*":"r"}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/backups-laptop/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"backups-*":"rw","*":"r"}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/other/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"backups-*":"rw","backups-prod-*":"r","*":"r"}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/backups-prod-db/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"backups-*-x-*":"rw","*":"r"}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/backups-a-x-b/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "*": {
+            "pools": {"$CEPH_POOL_SHARED/{repo}": ["*"]}
+        }
+    }
+}
+-- blob-data --
+test blob content

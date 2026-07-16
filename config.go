@@ -396,6 +396,189 @@ func isReservedRepoName(name string) bool {
 	}
 }
 
+const (
+	repoNameToken  = "{repo}"
+	repoMatchToken = "{repo_match}"
+)
+
+func containsRepoToken(s string) bool {
+	return strings.Contains(s, repoNameToken) || strings.Contains(s, repoMatchToken)
+}
+
+func isValidRepoName(name string) bool {
+	return name != "" && name != "." && name != ".." &&
+		!strings.ContainsAny(name, "/{}* ") &&
+		!strings.ContainsFunc(name, unicode.IsControl)
+}
+
+type repoPattern struct {
+	key    string
+	prefix string
+	suffix string
+}
+
+func (p repoPattern) match(name string) (string, bool) {
+	if len(name) <= len(p.prefix)+len(p.suffix) ||
+		!strings.HasPrefix(name, p.prefix) || !strings.HasSuffix(name, p.suffix) {
+		return "", false
+	}
+	return name[len(p.prefix) : len(name)-len(p.suffix)], true
+}
+
+func compareRepoPatterns(a, b repoPattern) int {
+	if d := (len(b.prefix) + len(b.suffix)) - (len(a.prefix) + len(a.suffix)); d != 0 {
+		return d
+	}
+	if d := len(b.prefix) - len(a.prefix); d != 0 {
+		return d
+	}
+	return strings.Compare(a.key, b.key)
+}
+
+func compileRepoPatterns(repos map[string]*RepoConfig) []repoPattern {
+	var patterns []repoPattern
+	for key := range repos {
+		if before, after, ok := strings.Cut(key, "*"); ok {
+			patterns = append(patterns, repoPattern{key: key, prefix: before, suffix: after})
+		}
+	}
+	slices.SortFunc(patterns, compareRepoPatterns)
+	return patterns
+}
+
+func expandRepoTokens(s, repo, match string) string {
+	s = strings.ReplaceAll(s, repoNameToken, repo)
+	return strings.ReplaceAll(s, repoMatchToken, match)
+}
+
+func repoTokenLiterals(s string) []string {
+	s = strings.ReplaceAll(s, repoNameToken, "\x00")
+	s = strings.ReplaceAll(s, repoMatchToken, "\x00")
+	var out []string
+	for _, part := range strings.Split(s, "\x00") {
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+type storageTemplate struct {
+	pool      string
+	namespace string
+	prefix    string
+	pattern   string
+}
+
+func blobStorageTemplates(pattern string, bpc BlobPoolConfig) []storageTemplate {
+	if bpc.Pool == "" {
+		return nil
+	}
+	templates := []storageTemplate{{pool: bpc.Pool, namespace: bpc.Namespace, prefix: bpc.Prefix, pattern: pattern}}
+	if bpc.Lower != nil {
+		templates = append(templates, storageTemplate{pool: bpc.Lower.Pool, namespace: bpc.Lower.Namespace, prefix: bpc.Lower.Prefix, pattern: pattern})
+	}
+	return templates
+}
+
+func storageFrame(s, pattern string) (head, tail string, hasVar bool) {
+	if prefix, suffix, ok := strings.Cut(pattern, "*"); ok {
+		s = strings.ReplaceAll(s, repoNameToken, prefix+"\x00"+suffix)
+		s = strings.ReplaceAll(s, repoMatchToken, "\x00")
+	}
+	i := strings.IndexByte(s, 0)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[strings.LastIndexByte(s, 0)+1:], true
+}
+
+func framesMayEqual(s1, p1, s2, p2 string) bool {
+	h1, t1, v1 := storageFrame(s1, p1)
+	h2, t2, v2 := storageFrame(s2, p2)
+	switch {
+	case !v1 && !v2:
+		return h1 == h2
+	case v1 && !v2:
+		return strings.HasPrefix(h2, h1) && strings.HasSuffix(h2, t1) && len(h2) >= len(h1)+len(t1)+1
+	case !v1 && v2:
+		return strings.HasPrefix(h1, h2) && strings.HasSuffix(h1, t2) && len(h1) >= len(h2)+len(t2)+1
+	default:
+		return (strings.HasPrefix(h1, h2) || strings.HasPrefix(h2, h1)) &&
+			(strings.HasSuffix(t1, t2) || strings.HasSuffix(t2, t1))
+	}
+}
+
+func framesMayNest(s1, p1, s2, p2 string) bool {
+	h1, _, v1 := storageFrame(s1, p1)
+	h2, _, v2 := storageFrame(s2, p2)
+	if !v1 && !v2 {
+		return strings.HasPrefix(s1, s2) || strings.HasPrefix(s2, s1)
+	}
+	return strings.HasPrefix(h1, h2) || strings.HasPrefix(h2, h1)
+}
+
+func storageTemplatesMayCollide(a, b storageTemplate) bool {
+	return a.pool == b.pool &&
+		framesMayEqual(a.namespace, a.pattern, b.namespace, b.pattern) &&
+		framesMayNest(a.prefix, a.pattern, b.prefix, b.pattern)
+}
+
+type storageCollision struct {
+	repo      string
+	otherRepo string
+	blobTypes []string
+}
+
+func storageCollisions(repos map[string]*RepoConfig) []storageCollision {
+	names := make([]string, 0, len(repos))
+	for name, repo := range repos {
+		if repo.BlobPools != nil {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+
+	var collisions []storageCollision
+	for i, a := range names {
+		for _, b := range names[i+1:] {
+			var blobTypes []string
+			for _, bt := range AllBlobTypes {
+				ta := blobStorageTemplates(a, repos[a].BlobPools.getPoolForType(bt))
+				tb := blobStorageTemplates(b, repos[b].BlobPools.getPoolForType(bt))
+				collides := false
+				for _, x := range ta {
+					for _, y := range tb {
+						if storageTemplatesMayCollide(x, y) {
+							collides = true
+						}
+					}
+				}
+				if collides {
+					blobTypes = append(blobTypes, string(bt))
+				}
+			}
+			if len(blobTypes) > 0 {
+				collisions = append(collisions, storageCollision{repo: a, otherRepo: b, blobTypes: blobTypes})
+			}
+		}
+	}
+	return collisions
+}
+
+func (bp *BlobPool) forRepo(repo, match string) *BlobPool {
+	out := *bp
+	out.Namespace = expandRepoTokens(out.Namespace, repo, match)
+	out.Prefix = expandRepoTokens(out.Prefix, repo, match)
+	if bp.Lower != nil {
+		lower := *bp.Lower
+		lower.Namespace = expandRepoTokens(lower.Namespace, repo, match)
+		lower.Prefix = expandRepoTokens(lower.Prefix, repo, match)
+		out.Lower = &lower
+	}
+	return &out
+}
+
 func (c *Config) normalizeRepos() error {
 	for name, repo := range c.Repos {
 		if name == "" || strings.ContainsAny(name, "/{} ") || strings.ContainsFunc(name, unicode.IsControl) {
@@ -406,6 +589,9 @@ func (c *Config) normalizeRepos() error {
 		}
 		if name != "default" && isReservedRepoName(name) {
 			return fmt.Errorf("reserved repo name %q (conflicts with server path)", name)
+		}
+		if strings.Count(name, "*") > 1 {
+			return fmt.Errorf("invalid repo pattern %q (may contain only one '*')", name)
 		}
 
 		if repo.Access == "" {
@@ -438,6 +624,12 @@ func (c *Config) normalizeRepos() error {
 			repo.BlobPools = &pools
 		} else if repo.BlobPools != nil {
 			if err := repo.BlobPools.normalizeLayers(); err != nil {
+				return fmt.Errorf("repo %q: %v", name, err)
+			}
+		}
+
+		if repo.BlobPools != nil {
+			if err := repo.BlobPools.validateRepoTokens(name); err != nil {
 				return fmt.Errorf("repo %q: %v", name, err)
 			}
 		}
@@ -558,6 +750,52 @@ func (p *ServerConfigPools) normalizeLayers() error {
 		}
 		if bpc.Lower != nil && bpc.Lower.MaxObjectSize != nil && *bpc.Lower.MaxObjectSize <= 0 {
 			return fmt.Errorf("blob type %q: lower layer max_object_size must be positive, got %d", bt, *bpc.Lower.MaxObjectSize)
+		}
+	}
+	return nil
+}
+
+func (p *ServerConfigPools) validateRepoTokens(name string) error {
+	patternPrefix, patternSuffix, dynamic := strings.Cut(name, "*")
+	fields := []*BlobPoolConfig{&p.Config, &p.Keys, &p.Locks, &p.Snapshots, &p.Data, &p.Index}
+	for i, bt := range AllBlobTypes {
+		bpc := fields[i]
+		if bpc.Pool == "" {
+			continue
+		}
+		if containsRepoToken(bpc.Pool) || (bpc.Lower != nil && containsRepoToken(bpc.Lower.Pool)) {
+			return fmt.Errorf("blob type %q: pool name cannot contain %q or %q (dynamic pool names are not supported)", bt, repoNameToken, repoMatchToken)
+		}
+		if !dynamic {
+			if containsRepoToken(bpc.Namespace) || containsRepoToken(bpc.Prefix) ||
+				(bpc.Lower != nil && (containsRepoToken(bpc.Lower.Namespace) || containsRepoToken(bpc.Lower.Prefix))) {
+				return fmt.Errorf("blob type %q: %q and %q are only allowed in repo patterns", bt, repoNameToken, repoMatchToken)
+			}
+			continue
+		}
+		if !containsRepoToken(bpc.Namespace) && !containsRepoToken(bpc.Prefix) {
+			return fmt.Errorf("blob type %q: namespace or prefix must contain %q or %q so dynamic repos do not share storage", bt, repoNameToken, repoMatchToken)
+		}
+		if bpc.Lower != nil {
+			if !containsRepoToken(bpc.Lower.Namespace) && !containsRepoToken(bpc.Lower.Prefix) {
+				return fmt.Errorf("blob type %q: lower layer namespace or prefix must contain %q or %q so dynamic repos do not share storage", bt, repoNameToken, repoMatchToken)
+			}
+			if bpc.Pool == bpc.Lower.Pool {
+				samples := []string{"a", "bb"}
+				for _, tmpl := range []string{bpc.Namespace, bpc.Prefix, bpc.Lower.Namespace, bpc.Lower.Prefix} {
+					samples = append(samples, repoTokenLiterals(tmpl)...)
+				}
+				for _, sample := range samples {
+					repo := patternPrefix + sample + patternSuffix
+					if !isValidRepoName(repo) {
+						continue
+					}
+					if expandRepoTokens(bpc.Namespace, repo, sample) == expandRepoTokens(bpc.Lower.Namespace, repo, sample) &&
+						expandRepoTokens(bpc.Prefix, repo, sample) == expandRepoTokens(bpc.Lower.Prefix, repo, sample) {
+						return fmt.Errorf("blob type %q: lower layer must differ from upper layer for every dynamic repo", bt)
+					}
+				}
+			}
 		}
 	}
 	return nil

@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,6 +67,7 @@ type ConnectionManager struct {
 	maxObjectSize     int64
 	maxWriteSize      int64
 	repoBlobPools     map[string]map[BlobType]*BlobPool
+	repoPatterns      []repoPattern
 }
 
 func NewConnectionManager(config CephConfig) *ConnectionManager {
@@ -289,13 +291,31 @@ func (cm *ConnectionManager) GetBlobPoolForRepo(repo string, bt BlobType) (*Blob
 	if cm.repoBlobPools == nil {
 		return nil, fmt.Errorf("%w: pool configs not initialized", errPoolNotConfigured)
 	}
+	if strings.Contains(repo, "*") {
+		return nil, fmt.Errorf("%w: repo %q not configured", errPoolNotConfigured, repo)
+	}
 	repoPools := cm.repoBlobPools[repo]
+	match := ""
+	dynamic := false
+	if repoPools == nil {
+		for _, p := range cm.repoPatterns {
+			if m, ok := p.match(repo); ok {
+				repoPools = cm.repoBlobPools[p.key]
+				match = m
+				dynamic = true
+				break
+			}
+		}
+	}
 	if repoPools == nil {
 		return nil, fmt.Errorf("%w: repo %q not configured", errPoolNotConfigured, repo)
 	}
 	bp := repoPools[bt]
 	if bp == nil {
 		return nil, fmt.Errorf("%w: %s", errPoolNotConfigured, bt)
+	}
+	if dynamic {
+		bp = bp.forRepo(repo, match)
 	}
 	return bp, nil
 }
@@ -497,6 +517,11 @@ func (cm *ConnectionManager) InitializeAllPoolConfigs(repos map[string]*RepoConf
 	}
 
 	cm.repoBlobPools = repoBlobPools
+	cm.repoPatterns = compileRepoPatterns(repos)
+
+	for _, c := range storageCollisions(repos) {
+		slog.Warn("repos may share storage", "repo", c.repo, "other_repo", c.otherRepo, "blob_types", c.blobTypes)
+	}
 
 	return nil
 }

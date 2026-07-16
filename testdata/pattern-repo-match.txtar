@@ -1,0 +1,65 @@
+tail-logs
+create-pool alpha
+create-pool beta
+create-pool gamma
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/backups-laptop/config --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/cache-web01/config --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/other/config --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/backups-/config --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_ALPHA --namespace laptop ls
+stdout '^config$'
+
+exec rados --pool $CEPH_POOL_BETA ls
+stdout '^web01/config$'
+
+exec rados --pool $CEPH_POOL_GAMMA --namespace other ls
+stdout '^config$'
+
+exec rados --pool $CEPH_POOL_GAMMA --namespace backups- ls
+stdout '^config$'
+
+exec rados --pool $CEPH_POOL_ALPHA ls
+! stdout 'config'
+
+exec rados --pool $CEPH_POOL_GAMMA --namespace backups-laptop ls
+! stdout 'config'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "backups-*": {
+            "pools": {"$CEPH_POOL_ALPHA/{repo_match}": ["*"]}
+        },
+        "cache-*": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
+                "keys": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
+                "locks": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
+                "snapshots": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
+                "data": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
+                "index": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"}
+            }
+        },
+        "*": {
+            "pools": {"$CEPH_POOL_GAMMA/{repo}": ["*"]}
+        }
+    }
+}
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}

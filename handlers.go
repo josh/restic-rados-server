@@ -11,6 +11,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,9 +41,25 @@ var (
 type Handler struct {
 	connMgr         *ConnectionManager
 	repo            string
+	dynamic         bool
 	access          Access
 	readBufferPool  *BufferPool
 	writeBufferPool *BufferPool
+}
+
+type repoNameContextKey struct{}
+
+func withRepoName(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, repoNameContextKey{}, name)
+}
+
+func (h *Handler) repoName(ctx context.Context) string {
+	if h.dynamic {
+		if name, ok := ctx.Value(repoNameContextKey{}).(string); ok {
+			return name
+		}
+	}
+	return h.repo
 }
 
 type HandlerContext struct {
@@ -181,7 +198,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-func (h *Handler) logRequest(method, path string, status int, duration time.Duration, reqBytes, respBytes int64, radosCalls uint64) {
+func logRequest(repo, method, path string, status int, duration time.Duration, reqBytes, respBytes int64, radosCalls uint64) {
 	attrs := []any{
 		"method", method,
 		"path", path,
@@ -191,8 +208,8 @@ func (h *Handler) logRequest(method, path string, status int, duration time.Dura
 		"resp_bytes", respBytes,
 		"rados_calls", radosCalls,
 	}
-	if h.repo != "default" {
-		attrs = append(attrs, "repo", h.repo)
+	if repo != "" && repo != "default" {
+		attrs = append(attrs, "repo", repo)
 	}
 	slog.Info("request", attrs...)
 }
@@ -214,14 +231,14 @@ func (h *Handler) logRequests(next http.Handler) http.Handler {
 		var radosCalls uint64
 		ctx := context.WithValue(r.Context(), radosCallsKey{}, &radosCalls)
 		defer func() {
-			h.logRequest(r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, atomic.LoadUint64(&radosCalls))
+			logRequest(h.repoName(r.Context()), r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, atomic.LoadUint64(&radosCalls))
 		}()
 		next.ServeHTTP(rw, r.WithContext(ctx))
 	})
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, lowerIoctx, conn, bp, err := h.connMgr.GetIOContextForRepo(h.repo, blobType)
+	ioctx, lowerIoctx, conn, bp, err := h.connMgr.GetIOContextForRepo(h.repoName(ctx), blobType)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +603,7 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
 	if blobType == "locks" {
 		minAccess = AccessReadAppend
 	}
-	if min(h.access, grantForRepo(r.Context(), h.repo)) < minAccess {
+	if min(h.access, grantForRepo(r.Context(), h.repoName(r.Context()))) < minAccess {
 		http.Error(w, "access denied", http.StatusForbidden)
 		return
 	}
@@ -634,7 +651,7 @@ func acceptsBlobListV2(r *http.Request) bool {
 
 func (h *Handler) requireAccess(minAccess Access, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if min(h.access, grantForRepo(r.Context(), h.repo)) < minAccess {
+		if min(h.access, grantForRepo(r.Context(), h.repoName(r.Context()))) < minAccess {
 			http.Error(w, "access denied", http.StatusForbidden)
 			return
 		}
@@ -657,22 +674,73 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /{$}", h.requireAccess(AccessReadAppend, h.createRepo))
 }
 
+type dynamicRepoDispatcher struct {
+	fallback http.Handler
+	patterns []repoPattern
+	handlers map[string]http.Handler
+	static   map[string]*RepoConfig
+}
+
+func (d *dynamicRepoDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	seg, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	_, static := d.static[seg]
+	if !static && seg != "default" && !isReservedRepoName(seg) && isValidRepoName(seg) {
+		for _, p := range d.patterns {
+			if _, ok := p.match(seg); ok {
+				if r.URL.Path == "/"+seg {
+					u := &url.URL{Path: r.URL.Path + "/", RawQuery: r.URL.RawQuery}
+					http.Redirect(w, r, u.String(), http.StatusMovedPermanently)
+					return
+				}
+				r = r.WithContext(withRepoName(r.Context(), seg))
+				http.StripPrefix("/"+seg, d.handlers[p.key]).ServeHTTP(w, r)
+				return
+			}
+		}
+	}
+	if d.fallback != nil {
+		d.fallback.ServeHTTP(w, r)
+		return
+	}
+	start := time.Now()
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	http.NotFound(rw, r)
+	logRequest("", r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, 0)
+}
+
 func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[string]*RepoConfig, readPool, writePool *BufferPool) {
+	var defaultHandler http.Handler
+	patternHandlers := make(map[string]http.Handler)
 	for name, repo := range repos {
 		h := &Handler{
 			connMgr:         connMgr,
 			repo:            name,
+			dynamic:         strings.Contains(name, "*"),
 			access:          ParseAccess(repo.Access),
 			readBufferPool:  readPool,
 			writeBufferPool: writePool,
 		}
 		repoMux := http.NewServeMux()
 		h.setupRoutes(repoMux)
-		if name == "default" {
-			mux.Handle("/", h.logRequests(repoMux))
-		} else {
+		switch {
+		case h.dynamic:
+			patternHandlers[name] = h.logRequests(repoMux)
+		case name == "default":
+			defaultHandler = h.logRequests(repoMux)
+		default:
 			mux.Handle("/"+name+"/", http.StripPrefix("/"+name, h.logRequests(repoMux)))
 		}
+	}
+	switch {
+	case len(patternHandlers) > 0:
+		mux.Handle("/", &dynamicRepoDispatcher{
+			fallback: defaultHandler,
+			patterns: compileRepoPatterns(repos),
+			handlers: patternHandlers,
+			static:   repos,
+		})
+	case defaultHandler != nil:
+		mux.Handle("/", defaultHandler)
 	}
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
