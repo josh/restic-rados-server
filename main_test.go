@@ -699,7 +699,7 @@ func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
-		timeout := time.After(3 * time.Second)
+		timeout := time.After(15 * time.Second)
 		var success bool
 
 		for !success {

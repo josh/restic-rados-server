@@ -80,37 +80,6 @@ func main() {
 		}
 	}
 
-	cephConfig := CephConfig{
-		KeyringPath: config.Keyring,
-		ClientID:    config.ClientID,
-		CephConf:    config.CephConf,
-	}
-
-	connMgr := NewConnectionManager(cephConfig)
-	defer connMgr.Shutdown()
-
-	if err := connMgr.InitializeAllPoolConfigs(config.Repos); err != nil {
-		slog.Error("failed to initialize pool configs", "error", err)
-		os.Exit(1)
-	}
-
-	maxWriteSize, err := connMgr.GetMaxWriteSize()
-	if err != nil {
-		slog.Warn("failed to get max write size for validation", "error", err)
-	} else if config.WriteBufferSize > maxWriteSize {
-		slog.Warn("write buffer size exceeds cluster max write size, writes may be chunked or fail",
-			"write_buffer_size", config.WriteBufferSize,
-			"cluster_max_write_size", maxWriteSize)
-	}
-
-	readPool := NewBufferPool(config.ReadBufferSize)
-	writePool := NewBufferPool(config.WriteBufferSize)
-
-	ctx := context.Background()
-
-	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	resolvedListeners, err := resolveSystemdListeners(config.Listeners)
 	if err != nil {
 		slog.Error("failed to resolve listeners", "error", err)
@@ -126,6 +95,39 @@ func main() {
 	if !config.Stdio && !hasConfiguredListeners {
 		config.Stdio = true
 	}
+
+	cephConfig := CephConfig{
+		KeyringPath:     config.Keyring,
+		ClientID:        config.ClientID,
+		CephConf:        config.CephConf,
+		WriteBufferSize: config.WriteBufferSize,
+	}
+
+	connMgr := NewConnectionManager(cephConfig)
+	defer connMgr.Shutdown()
+
+	if err := connMgr.InitializeAllPoolConfigs(config.Repos); err != nil {
+		slog.Error("failed to initialize pool configs", "error", err)
+		os.Exit(1)
+	}
+
+	if config.Stdio && !connMgr.Ready() {
+		slog.Error("failed to initialize pool configs", "error", errConnectionUnavailable)
+		os.Exit(1)
+	}
+
+	if config.Stdio && !connMgr.Ready() {
+		slog.Error("failed to initialize pool configs", "error", errConnectionUnavailable)
+		os.Exit(1)
+	}
+
+	readPool := NewBufferPool(config.ReadBufferSize)
+	writePool := NewBufferPool(config.WriteBufferSize)
+
+	ctx := context.Background()
+
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	mux := http.NewServeMux()
 	setupAllRoutes(mux, connMgr, config.Repos, readPool, writePool)
