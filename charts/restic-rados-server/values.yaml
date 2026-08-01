@@ -51,6 +51,10 @@ service:
   type: ClusterIP
   port: 8000
 
+networkPolicy:
+  enabled: true
+  ingress: []
+
 serviceAccount:
   create: true
   name: ""
