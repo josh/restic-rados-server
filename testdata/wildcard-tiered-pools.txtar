@@ -1,0 +1,89 @@
+tail-logs
+create-pool hot
+create-pool cold
+create-pool meta
+
+envsubst seed.json.tmpl seed.json
+envsubst tiered.json.tmpl tiered.json
+
+exec restic-rados-server --config seed.json --listen $WORK/seed.sock &seedserver&
+wait4socket $WORK/seed.sock
+
+exec curl --silent --unix-socket $WORK/seed.sock --request POST 'http://localhost/laptop/?create=true'
+exec curl --silent --unix-socket $WORK/seed.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @old-data 'http://localhost/laptop/data/d17be851ca90f3818f3bf5d72d6f097a4a09349e4ebed0d8a2a9fa9cec7dae1a'
+
+kill seedserver
+
+exec rados --pool $CEPH_POOL_COLD --namespace laptop ls
+stdout 'data/d17be851ca90f3818f3bf5d72d6f097a4a09349e4ebed0d8a2a9fa9cec7dae1a'
+
+exec restic-rados-server --config tiered.json --listen $WORK/tiered.sock &server&
+wait4socket $WORK/tiered.sock
+
+exec curl --silent --unix-socket $WORK/tiered.sock 'http://localhost/laptop/data/d17be851ca90f3818f3bf5d72d6f097a4a09349e4ebed0d8a2a9fa9cec7dae1a'
+cmp stdout old-data
+
+exec curl --silent --unix-socket $WORK/tiered.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @new-data 'http://localhost/laptop/data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
+
+exec rados --pool $CEPH_POOL_HOT --namespace laptop ls
+stdout 'data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
+
+exec rados --pool $CEPH_POOL_COLD --namespace laptop ls
+stdout 'data/d17be851ca90f3818f3bf5d72d6f097a4a09349e4ebed0d8a2a9fa9cec7dae1a'
+! stdout 'data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
+
+exec curl --silent --unix-socket $WORK/tiered.sock 'http://localhost/laptop/data/'
+stdout 'd17be851ca90f3818f3bf5d72d6f097a4a09349e4ebed0d8a2a9fa9cec7dae1a'
+stdout 'aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
+
+exec curl --silent --unix-socket $WORK/tiered.sock --request POST 'http://localhost/desktop/?create=true'
+exec curl --silent --unix-socket $WORK/tiered.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @other-data 'http://localhost/desktop/data/18e38ed9f5785a0a507a30eca1022bce5c7f381d831d78e481cd8bafdaff4aa9'
+
+exec rados --pool $CEPH_POOL_HOT --namespace desktop ls
+stdout 'data/18e38ed9f5785a0a507a30eca1022bce5c7f381d831d78e481cd8bafdaff4aa9'
+
+exec rados --pool $CEPH_POOL_HOT --namespace laptop ls
+stdout 'data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
+! stdout '18e38ed9f5785a0a507a30eca1022bce5c7f381d831d78e481cd8bafdaff4aa9'
+
+kill server
+
+-- seed.json.tmpl --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "keys": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "locks": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "snapshots": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "index": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "data": {"pool": "$CEPH_POOL_COLD", "namespace": "{repo}"}
+            }
+        }
+    }
+}
+-- tiered.json.tmpl --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "keys": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "locks": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "snapshots": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "index": {"pool": "$CEPH_POOL_META", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "$CEPH_POOL_HOT", "namespace": "{repo}"},
+                    "lower": {"pool": "$CEPH_POOL_COLD", "namespace": "{repo}"}
+                }
+            }
+        }
+    }
+}
+-- old-data --
+archived content
+-- new-data --
+fresh content
+-- other-data --
+other repo content
