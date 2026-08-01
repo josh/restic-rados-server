@@ -1,0 +1,34 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen 127.0.0.1:$PORT --max-object-size 1048576 &server&
+wait4socket 127.0.0.1:$PORT
+
+exec curl --silent --request POST 'http://127.0.0.1:'$PORT'/?create=true'
+
+exec curl --silent --write-out '\n%{http_code}\n' --request POST --header 'Content-Type: application/octet-stream' --data-binary @small-payload 'http://127.0.0.1:'$PORT'/data/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+stdout 'hash mismatch'
+stdout '400'
+
+exec curl --silent --write-out '%{http_code}' --output /dev/null 'http://127.0.0.1:'$PORT'/data/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+stdout '404'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'data/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+
+bin-file rand striped-payload 2097152
+exec curl --silent --write-out '\n%{http_code}\n' --request POST --header 'Content-Type: application/octet-stream' --data-binary @striped-payload 'http://127.0.0.1:'$PORT'/data/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+stdout 'hash mismatch'
+stdout '400'
+
+exec curl --silent --write-out '%{http_code}' --output /dev/null 'http://127.0.0.1:'$PORT'/data/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+stdout '404'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'data/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+! stdout 'data/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+
+kill server
+
+-- small-payload --
+content whose hash does not match the requested blob ID
