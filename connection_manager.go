@@ -284,6 +284,17 @@ func (cm *ConnectionManager) getIOContextsForBlobPool(bp *BlobPool, radosCalls *
 	return nil, nil, nil, errConnectionUnavailable
 }
 
+func (cm *ConnectionManager) OpenNamespaceContext(pool, namespace string, radosCalls *uint64) (*rados.IOContext, *connHandle, error) {
+	ioctx, _, handle, err := cm.getIOContextsForBlobPool(&BlobPool{Pool: pool}, radosCalls)
+	if err != nil {
+		return nil, nil, err
+	}
+	if namespace != "" {
+		ioctx.SetNamespace(namespace)
+	}
+	return ioctx, handle, nil
+}
+
 func (cm *ConnectionManager) GetBlobPoolForRepo(repo string, bt BlobType) (*BlobPool, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()

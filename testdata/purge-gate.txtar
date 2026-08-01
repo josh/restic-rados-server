@@ -1,0 +1,76 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-x 'http://localhost/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-k 'http://localhost/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true'
+stdout 'repository contains snapshot objects'
+stdout '409'
+
+rados-object-count data/
+cmp stdout one.txt
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-z 'http://localhost/locks/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true'
+stdout '409'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true'
+stdout 'repository is locked'
+stdout '409'
+
+rados-object-count data/
+cmp stdout one.txt
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/locks/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put snapshots/garbage blob-x
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true'
+stdout 'repository contains snapshot objects'
+stdout '409'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL rm snapshots/garbage
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put locks/garbage blob-x
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true'
+stdout 'repository is locked'
+stdout '409'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL rm locks/garbage
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true' --output /dev/null
+stdout '200'
+
+rados-object-count ''
+cmp stdout zero.txt
+
+kill server
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- blob-x --
+foo
+-- blob-z --
+test
+-- blob-k --
+test blob content
+-- one.txt --
+1
+-- zero.txt --
+0

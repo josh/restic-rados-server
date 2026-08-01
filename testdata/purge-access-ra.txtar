@@ -1,0 +1,47 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --access ra --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-x 'http://localhost/data/b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-k 'http://localhost/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true'
+stdout 'access denied'
+stdout '403'
+
+! grep 'purging object' $RESTIC_RADOS_SERVER_LOG_FILE
+! grep 'purged repository' $RESTIC_RADOS_SERVER_LOG_FILE
+
+rados-object-count ''
+cmp stdout three.txt
+
+kill server
+
+exec restic-rados-server --access r --listen $WORK/restic2.sock &server2&
+wait4socket $WORK/restic2.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic2.sock --request DELETE 'http://localhost/?purge=true'
+stdout 'access denied'
+stdout '403'
+
+rados-object-count ''
+cmp stdout three.txt
+
+kill server2
+
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- blob-x --
+foo
+-- blob-k --
+test blob content
+-- three.txt --
+3

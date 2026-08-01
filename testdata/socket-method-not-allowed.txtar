@@ -27,9 +27,9 @@ stdout 'HTTP/.* 405'
 exec curl --silent --include --unix-socket $WORK/restic.sock --request OPTIONS http://localhost/locks/0000000000000000000000000000000000000000000000000000000000000001
 stdout 'HTTP/.* 405'
 
-exec curl --silent --include --unix-socket $WORK/restic.sock --request DELETE http://localhost/
+exec curl --silent --include --unix-socket $WORK/restic.sock --request PUT http://localhost/
 stdout 'HTTP/.* 405'
-stdout 'Allow: POST'
+stdout 'Allow: DELETE, POST'
 
 exec curl --silent --include --unix-socket $WORK/restic.sock --request DELETE http://localhost/data/
 stdout 'HTTP/.* 405'

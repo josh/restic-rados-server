@@ -1,0 +1,66 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/open.sock --listen $WORK/trusted.sock?trusted-caps-header=X-Restic-Capabilities &server&
+wait4socket $WORK/open.sock
+wait4socket $WORK/trusted.sock
+
+exec curl --silent --unix-socket $WORK/open.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/repoa/config
+exec curl --silent --unix-socket $WORK/open.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/repob/config
+exec curl --silent --unix-socket $WORK/open.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/backups-x/config
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/open.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-z 'http://localhost/repob/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"repoa":"rw"}' --unix-socket $WORK/trusted.sock --request DELETE 'http://localhost/repob/?purge=true'
+stdout 'access denied'
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"backups-*":"rw"}' --unix-socket $WORK/trusted.sock --request DELETE 'http://localhost/repob/?purge=true'
+stdout 'access denied'
+stdout '403'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace nsb ls
+stdout '^config$'
+stdout '^data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2$'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"backups-*":"rw"}' --unix-socket $WORK/trusted.sock --request DELETE 'http://localhost/backups-x/?purge=true' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace bk-x ls
+! stdout '.'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"repoa":"rw"}' --unix-socket $WORK/trusted.sock --request DELETE 'http://localhost/repoa/?purge=true' --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace nsa ls
+! stdout '.'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace nsb ls
+stdout '^config$'
+
+exec curl --silent --unix-socket $WORK/open.sock 'http://localhost/repob/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+cmp stdout blob-z
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "repoa": {
+            "pools": {"$CEPH_POOL_SHARED/nsa": ["*"]}
+        },
+        "repob": {
+            "pools": {"$CEPH_POOL_SHARED/nsb": ["*"]}
+        },
+        "backups-*": {
+            "pools": {"$CEPH_POOL_SHARED/bk-{repo_match}": ["*"]}
+        }
+    }
+}
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- blob-z --
+test
