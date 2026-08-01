@@ -180,24 +180,37 @@ func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 	if err != nil {
 		ts.Fatalf("failed to open log file for reading: %v", err)
 	}
+
+	pipeReader, detach := cephDaemonLogs.AttachPipe()
+	serverReader := bufio.NewReader(f)
+	cephReader := bufio.NewReader(pipeReader)
+	tailCtx, cancel := context.WithCancel(ctx)
+
+	var output bytes.Buffer
+	tailOutput := &LogDemux{}
+	detachOutput := tailOutput.Attach(&output)
+
+	var tailers sync.WaitGroup
+	tailers.Add(2)
 	ts.Defer(func() {
-		if err := f.Close(); err != nil {
-			ts.Logf("failed to close log file: %v", err)
+		cancel()
+		_ = f.Close()
+		_ = pipeReader.Close()
+		detach()
+		tailers.Wait()
+		detachOutput()
+		if output.Len() > 0 {
+			ts.Logf("%s", strings.TrimSuffix(output.String(), "\n"))
 		}
 	})
 
-	pipeReader, detach := cephDaemonLogs.AttachPipe()
-	ts.Defer(detach)
-
-	serverReader := bufio.NewReader(f)
-	cephReader := bufio.NewReader(pipeReader)
-
 	go func() {
+		defer tailers.Done()
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-tailCtx.Done():
 				return
 			case <-ticker.C:
 				line, err := serverReader.ReadString('\n')
@@ -205,20 +218,21 @@ func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 					if err == io.EOF {
 						continue
 					}
-					ts.Logf("tail-server-log: error: %v", err)
+					_, _ = fmt.Fprintf(tailOutput, "tail-server-log: error: %v\n", err)
 					return
 				}
-				ts.Logf("[restic-rados-server] %s", strings.TrimRight(line, "\n"))
+				_, _ = fmt.Fprintf(tailOutput, "[restic-rados-server] %s\n", strings.TrimRight(line, "\n"))
 			}
 		}
 	}()
 
 	go func() {
+		defer tailers.Done()
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-tailCtx.Done():
 				return
 			case <-ticker.C:
 				line, err := cephReader.ReadString('\n')
@@ -226,10 +240,12 @@ func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 					if err == io.EOF {
 						continue
 					}
-					ts.Logf("tail-ceph-log: error: %v", err)
+					if !errors.Is(err, io.ErrClosedPipe) {
+						_, _ = fmt.Fprintf(tailOutput, "tail-ceph-log: error: %v\n", err)
+					}
 					return
 				}
-				ts.Logf("[ceph] %s", strings.TrimRight(line, "\n"))
+				_, _ = fmt.Fprintf(tailOutput, "[ceph] %s\n", strings.TrimRight(line, "\n"))
 			}
 		}
 	}()
@@ -554,44 +570,97 @@ func checkCephStatus(ctx context.Context, confPath string) (cephStatus, error) {
 }
 
 type LogDemux struct {
-	outs sync.Map
+	mu   sync.Mutex
+	outs map[io.Writer]struct{}
 }
 
 func (ld *LogDemux) Write(p []byte) (n int, err error) {
-	var writeErr error
-	ld.outs.Range(func(key, _ interface{}) bool {
-		if writer, ok := key.(io.Writer); ok {
-			if written, err := writer.Write(p); err != nil {
-				writeErr = err
-				return false
-			} else if written != len(p) {
-				writeErr = fmt.Errorf("short write: expected %d, got %d", len(p), written)
-				return false
-			}
-		}
-		return true
-	})
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
 
-	if writeErr != nil {
-		return 0, writeErr
+	for writer := range ld.outs {
+		written, err := writer.Write(p)
+		if err != nil {
+			return 0, err
+		}
+		if written != len(p) {
+			return 0, fmt.Errorf("short write: expected %d, got %d", len(p), written)
+		}
 	}
+
 	return len(p), nil
 }
 
 func (ld *LogDemux) Attach(writer io.Writer) func() {
-	ld.outs.Store(writer, struct{}{})
+	ld.mu.Lock()
+	if ld.outs == nil {
+		ld.outs = make(map[io.Writer]struct{})
+	}
+	ld.outs[writer] = struct{}{}
+	ld.mu.Unlock()
+
 	return func() {
-		ld.outs.Delete(writer)
+		ld.mu.Lock()
+		delete(ld.outs, writer)
+		ld.mu.Unlock()
 	}
 }
 
 func (ld *LogDemux) AttachPipe() (*io.PipeReader, func()) {
 	pr, pw := io.Pipe()
-	detach := ld.Attach(pw)
+	ld.mu.Lock()
+	if ld.outs == nil {
+		ld.outs = make(map[io.Writer]struct{})
+	}
+	ld.outs[pw] = struct{}{}
+	ld.mu.Unlock()
 
 	return pr, func() {
-		detach()
+		ld.mu.Lock()
+		defer ld.mu.Unlock()
+		delete(ld.outs, pw)
 		_ = pw.Close()
+	}
+}
+
+func TestLogDemuxConcurrentWrites(t *testing.T) {
+	var output bytes.Buffer
+	logs := &LogDemux{}
+	detach := logs.Attach(&output)
+
+	const writerCount = 32
+	const writesPerWriter = 100
+	payload := []byte("ceph daemon log line\n")
+
+	start := make(chan struct{})
+	errs := make(chan error, writerCount)
+	var writers sync.WaitGroup
+	for range writerCount {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			<-start
+			for range writesPerWriter {
+				if _, err := logs.Write(payload); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	writers.Wait()
+	close(errs)
+	detach()
+
+	for err := range errs {
+		t.Errorf("write failed: %v", err)
+	}
+
+	want := writerCount * writesPerWriter * len(payload)
+	if output.Len() != want {
+		t.Fatalf("unexpected output length: got %d, want %d", output.Len(), want)
 	}
 }
 
