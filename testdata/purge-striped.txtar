@@ -1,0 +1,32 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --max-object-size 4194304 --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+bin-file rand blob 8388608
+sha256 blob HASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob 'http://localhost/data/'$HASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout '^data/'$HASH'\.0000000000000000$'
+stdout '^data/'$HASH'\.0000000000000001$'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put data/$HASH.0000000000000005 orphan-data
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true' --output /dev/null
+stdout '200'
+
+rados-object-count ''
+cmp stdout zero.txt
+
+kill server
+
+-- orphan-data --
+orphan stripe
+-- zero.txt --
+0

@@ -1,0 +1,35 @@
+tail-logs
+create-pool
+
+env TZ=UTC
+exec restic-rados-server --listen 127.0.0.1:$PORT &server&
+wait4socket 127.0.0.1:$PORT
+
+exec restic init --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+mkdir data
+exec touch data/foo.txt
+
+exec restic backup --time '2025-01-01 10:00:00' --host testhost data --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+exec curl --silent --write-out '%{http_code}' --request DELETE http://127.0.0.1:$PORT/?purge=true
+stdout 'repository contains snapshot objects'
+stdout '409'
+
+exec restic forget --host testhost --unsafe-allow-remove-all --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+exec restic unlock --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+exec curl --silent --write-out '%{http_code}' --request DELETE http://127.0.0.1:$PORT/?purge=true --output /dev/null
+stdout '200'
+
+rados-object-count ''
+cmp stdout zero.txt
+
+exec restic init --repo rest:http://127.0.0.1:$PORT/ --password-file password.txt
+
+kill server
+
+-- password.txt --
+secret
+-- zero.txt --
+0

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -8,13 +9,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -273,18 +277,22 @@ func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*Handle
 	return hctx, nil
 }
 
+func writeInfraError(w http.ResponseWriter, err error, logMsg string) {
+	switch {
+	case errors.Is(err, errConnectionUnavailable):
+		http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+	case errors.Is(err, errPoolNotConfigured):
+		http.Error(w, "pool not configured", http.StatusServiceUnavailable)
+	default:
+		slog.Error(logMsg, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
 func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request, blobType BlobType) (*HandlerContext, bool) {
 	hctx, err := h.openIOContext(r.Context(), blobType)
 	if err != nil {
-		switch {
-		case errors.Is(err, errConnectionUnavailable):
-			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
-		case errors.Is(err, errPoolNotConfigured):
-			http.Error(w, "pool not configured", http.StatusServiceUnavailable)
-		default:
-			slog.Error("failed to open IO context", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-		}
+		writeInfraError(w, err, "failed to open IO context")
 		return nil, false
 	}
 	return hctx, true
@@ -402,6 +410,256 @@ func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.WriteHeader(http.StatusOK)
+}
+
+type purgeTarget struct {
+	pool         string
+	namespace    string
+	layer        string
+	layerRank    int
+	prefixes     []string
+	exact        []string
+	snapPrefixes []string
+	lockPrefixes []string
+}
+
+var (
+	errRepoHasSnapshots = errors.New("repository contains snapshot objects")
+	errRepoLocked       = errors.New("repository is locked")
+)
+
+const purgeDeleteWorkers = 8
+
+func hasAnyPrefix(name string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) purgeTargets(repo string) ([]*purgeTarget, error) {
+	type targetKey struct {
+		layer     string
+		pool      string
+		namespace string
+	}
+	targets := make(map[targetKey]*purgeTarget)
+	add := func(layer string, rank int, bp *BlobPool, bt BlobType) {
+		key := targetKey{layer, bp.Pool, bp.Namespace}
+		t := targets[key]
+		if t == nil {
+			t = &purgeTarget{pool: bp.Pool, namespace: bp.Namespace, layer: layer, layerRank: rank}
+			targets[key] = t
+		}
+		if bt == BlobTypeConfig {
+			t.exact = append(t.exact, bp.Prefix+configObjectName)
+			return
+		}
+		prefix := bp.Prefix + string(bt) + "/"
+		t.prefixes = append(t.prefixes, prefix)
+		if bt == BlobTypeSnapshots {
+			t.snapPrefixes = append(t.snapPrefixes, prefix)
+		}
+		if bt == BlobTypeLocks {
+			t.lockPrefixes = append(t.lockPrefixes, prefix)
+		}
+	}
+	var missingErr error
+	for _, bt := range AllBlobTypes {
+		bp, err := h.connMgr.GetBlobPoolForRepo(repo, bt)
+		if err != nil {
+			if errors.Is(err, errPoolNotConfigured) {
+				if missingErr == nil {
+					missingErr = err
+				}
+				continue
+			}
+			return nil, err
+		}
+		add("upper", 1, bp, bt)
+		if bp.Lower != nil {
+			add("lower", 0, bp.Lower, bt)
+		}
+	}
+	if len(targets) == 0 {
+		return nil, missingErr
+	}
+	ordered := slices.SortedFunc(maps.Values(targets), func(a, b *purgeTarget) int {
+		if c := cmp.Compare(a.layerRank, b.layerRank); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.pool, b.pool); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.namespace, b.namespace)
+	})
+	for _, t := range ordered {
+		slices.Sort(t.prefixes)
+		slices.Sort(t.exact)
+	}
+	return ordered, nil
+}
+
+func (h *Handler) withPurgeTarget(t *purgeTarget, radosCalls *uint64, fn func(*rados.IOContext) error) error {
+	ioctx, conn, err := h.connMgr.OpenNamespaceContext(t.pool, t.namespace, radosCalls)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		ioctx.Destroy()
+		conn.release()
+	}()
+	return fn(ioctx)
+}
+
+func iterateNamespace(ioctx *rados.IOContext, radosCalls *uint64, fn func(string) error) error {
+	slog.Debug("rados.Iter")
+	atomic.AddUint64(radosCalls, 1)
+	iter, err := ioctx.Iter()
+	if err != nil {
+		return fmt.Errorf("create iterator: %w", err)
+	}
+	defer iter.Close()
+	for iter.Next() {
+		name := iter.Value()
+		if name == "" {
+			continue
+		}
+		if err := fn(name); err != nil {
+			return err
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("iterate objects: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) checkPurgeGate(targets []*purgeTarget, radosCalls *uint64) error {
+	for _, t := range targets {
+		if len(t.snapPrefixes) == 0 && len(t.lockPrefixes) == 0 {
+			continue
+		}
+		err := h.withPurgeTarget(t, radosCalls, func(ioctx *rados.IOContext) error {
+			return iterateNamespace(ioctx, radosCalls, func(name string) error {
+				if hasAnyPrefix(name, t.snapPrefixes) {
+					return errRepoHasSnapshots
+				}
+				if hasAnyPrefix(name, t.lockPrefixes) {
+					return errRepoLocked
+				}
+				return nil
+			})
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Handler) purgeTargetObjects(ctx context.Context, t *purgeTarget, radosCalls *uint64) (int, error) {
+	var deleted atomic.Uint64
+	foreign := 0
+	err := h.withPurgeTarget(t, radosCalls, func(ioctx *rados.IOContext) error {
+		names := make(chan string, purgeDeleteWorkers)
+		errs := make(chan error, purgeDeleteWorkers)
+		var stop atomic.Bool
+		var wg sync.WaitGroup
+		for range purgeDeleteWorkers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for name := range names {
+					if stop.Load() {
+						continue
+					}
+					slog.Debug("purging object", "object", name, "pool", t.pool, "namespace", t.namespace, "layer", t.layer)
+					atomic.AddUint64(radosCalls, 1)
+					if err := ioctx.Delete(name); err != nil && !errors.Is(err, rados.ErrNotFound) {
+						stop.Store(true)
+						select {
+						case errs <- fmt.Errorf("delete object %s: %w", name, err):
+						default:
+						}
+						continue
+					}
+					deleted.Add(1)
+				}
+			}()
+		}
+		iterErr := iterateNamespace(ioctx, radosCalls, func(name string) error {
+			if stop.Load() {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if hasAnyPrefix(name, t.prefixes) || slices.Contains(t.exact, name) {
+				names <- name
+			} else {
+				foreign++
+			}
+			return nil
+		})
+		close(names)
+		wg.Wait()
+		select {
+		case err := <-errs:
+			return err
+		default:
+		}
+		return iterErr
+	})
+	if foreign > 0 {
+		slog.Debug("leaving foreign objects", "pool", t.pool, "namespace", t.namespace, "count", foreign)
+	}
+	return int(deleted.Load()), err
+}
+
+func (h *Handler) purgeRepo(w http.ResponseWriter, r *http.Request) {
+	purgeParam := r.URL.Query().Get("purge")
+	if purgeParam == "" {
+		http.Error(w, "missing required query parameter: purge", http.StatusBadRequest)
+		return
+	}
+	if purgeParam != "true" {
+		http.Error(w, "invalid value for purge parameter: must be 'true'", http.StatusBadRequest)
+		return
+	}
+
+	repo := h.repoName(r.Context())
+	radosCalls := radosCallCounter(r.Context())
+
+	targets, err := h.purgeTargets(repo)
+	if err != nil {
+		writeInfraError(w, err, "failed to purge repository")
+		return
+	}
+
+	if err := h.checkPurgeGate(targets, radosCalls); err != nil {
+		if errors.Is(err, errRepoHasSnapshots) || errors.Is(err, errRepoLocked) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeInfraError(w, err, "failed to purge repository")
+		return
+	}
+
+	total := 0
+	for _, t := range targets {
+		deleted, err := h.purgeTargetObjects(r.Context(), t, radosCalls)
+		if err != nil {
+			writeInfraError(w, err, "failed to purge repository")
+			return
+		}
+		total += deleted
+	}
+
+	slog.Info("purged repository", "repo", repo, "objects", total)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -672,6 +930,7 @@ func (h *Handler) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /{type}/{id}", h.deleteBlob)
 
 	mux.HandleFunc("POST /{$}", h.requireAccess(AccessReadAppend, h.createRepo))
+	mux.HandleFunc("DELETE /{$}", h.requireAccess(AccessReadWrite, h.purgeRepo))
 }
 
 type dynamicRepoDispatcher struct {
