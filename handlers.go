@@ -33,6 +33,7 @@ var (
 	errObjectExists        = errors.New("object exists")
 	errHashMismatch        = errors.New("hash mismatch")
 	errClientAborted       = errors.New("client aborted request")
+	errLengthRequired      = errors.New("content length required")
 	errRangeNotSatisfiable = errors.New("requested range not satisfiable")
 )
 
@@ -354,6 +355,8 @@ func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, objec
 		http.Error(w, "hash mismatch", http.StatusBadRequest)
 	case errors.Is(err, errClientAborted):
 		http.Error(w, "client aborted request", http.StatusBadRequest)
+	case errors.Is(err, errLengthRequired):
+		http.Error(w, "content length required", http.StatusLengthRequired)
 	default:
 		slog.Error("failed to serve object", "object", object, "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -1170,6 +1173,9 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Request, object string, hashID string, canStripe bool) error {
 	size := r.ContentLength
+	if size < 0 && canStripe && hctx.stripedWrites {
+		return errLengthRequired
+	}
 	useStriper := canStripe && hctx.stripedWrites && size > hctx.maxObjectSize
 
 	expected, err := parseExpectedHash(hashID)
