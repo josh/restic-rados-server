@@ -1,0 +1,29 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen 127.0.0.1:$PORT --max-object-size 1000000 --write-buffer-size 262144 &server&
+wait4socket 127.0.0.1:$PORT
+
+exec curl --silent --request POST 'http://127.0.0.1:'$PORT'/?create=true'
+
+bin-file rand chunked-blob 2500000
+sha256 chunked-blob HASH
+
+exec curl --http1.1 --silent --write-out '%{http_code}' --request POST --header 'Content-Type: application/octet-stream' --header 'Transfer-Encoding: chunked' --data-binary @chunked-blob 'http://127.0.0.1:'$PORT'/data/'$HASH
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout 'data/'$HASH'\.0000000000000000'
+stdout 'data/'$HASH'\.0000000000000001'
+stdout 'data/'$HASH'\.0000000000000002'
+
+exec curl --silent 'http://127.0.0.1:'$PORT'/data/'$HASH --output downloaded-blob
+bin-cmp downloaded-blob chunked-blob
+
+exec curl --silent --write-out '%{http_code}' --request DELETE 'http://127.0.0.1:'$PORT'/data/'$HASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'data/'
+
+kill server

@@ -1170,7 +1170,7 @@ func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Requ
 
 func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Request, object string, hashID string, canStripe bool) error {
 	size := r.ContentLength
-	useStriper := canStripe && hctx.stripedWrites && size > hctx.maxObjectSize
+	useStriper := canStripe && hctx.stripedWrites && (size == -1 || size > hctx.maxObjectSize)
 
 	expected, err := parseExpectedHash(hashID)
 	if err != nil {
