@@ -23,8 +23,30 @@ stdout '"size":17'
 
 exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: text/html, application/vnd.x.restic.rest.v2, */*' --include 'http://localhost/data/'
 stdout 'Content-Type: application/vnd.x.restic.rest.v2'
-stdout '"name":'
-stdout '"size":'
+stdout '"name":"f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"'
+stdout '"size":5'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: application/vnd.x.restic.rest.v2;q=0' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v1'
+stdout '\["40b89de5ed0336c2ce8958fa5eb483bd74c9757643bab14451b8d6fa064f4702","f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"\]'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: application/vnd.x.restic.rest.v2;q=0, application/json' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v1'
+stdout '\["40b89de5ed0336c2ce8958fa5eb483bd74c9757643bab14451b8d6fa064f4702","f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"\]'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: application/vnd.x.restic.rest.v2;q=0' --header 'Accept: application/vnd.x.restic.rest.v2' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v2'
+stdout '"name":"f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"'
+stdout '"size":5'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: application/vnd.x.restic.rest.v2;q=0;broken, application/vnd.x.restic.rest.v2;=broken' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v1'
+stdout '\["40b89de5ed0336c2ce8958fa5eb483bd74c9757643bab14451b8d6fa064f4702","f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"\]'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: Application/Vnd.X.Restic.Rest.V2' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v2'
+stdout '"name":"40b89de5ed0336c2ce8958fa5eb483bd74c9757643bab14451b8d6fa064f4702"'
+stdout '"size":17'
 
 kill server
 
