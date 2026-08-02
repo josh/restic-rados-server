@@ -13,11 +13,53 @@ stderr 'repo "default": blob type "config": "\{repo\}" and "\{repo_match\}" are 
 ! exec restic-rados-server --config two-stars.json
 stderr 'invalid repo pattern "a\*b\*" \(may contain only one .\*.\)'
 
-! exec restic-rados-server --config equivalent-layers.json
-stderr 'blob type "data": lower layer must differ from upper layer for every dynamic repo'
+! exec restic-rados-server --config unanchored-namespace.json
+stderr 'blob type "data": namespace "x\{repo\}" must be exactly "\{repo\}" or "\{repo_match\}" when both layers share a pool'
 
-! exec restic-rados-server --config commuting-layers.json
-stderr 'blob type "data": lower layer must differ from upper layer for every dynamic repo'
+! exec restic-rados-server --config unanchored-prefix.json
+stderr 'blob type "data": prefix "\{repo\}a" must start with "\{repo\}" or "\{repo_match\}" followed by "/" when both layers share a pool'
+
+! exec restic-rados-server --config bare-repo-prefix.json
+stderr 'blob type "data": prefix "\{repo\}" must start with "\{repo\}" or "\{repo_match\}" followed by "/" when both layers share a pool'
+
+! exec restic-rados-server --config mixed-token-layers.json
+stderr 'blob type "data": upper and lower layers must both use "\{repo\}" or both use "\{repo_match\}"'
+
+! exec restic-rados-server --config shorthand-shared-pool-layers.json
+stderr 'blob type "config": namespace "hot-\{repo\}" must be exactly "\{repo\}" or "\{repo_match\}" when both layers share a pool'
+
+! exec restic-rados-server --config identical-layers.json
+stderr 'blob type "data": lower layer must differ from upper layer'
+
+! exec restic-rados-server --config fixed-namespace-colliding-prefixes.json
+stderr 'blob type "data": lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config independent-repo-collision.json
+stderr 'blob type "data": lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config unshadowed-pattern-witness.json
+stderr 'blob type "data": lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config nested-prefixes.json
+! stderr 'lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config distinct-length-prefixes.json
+! stderr 'lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config shared-pool-layer-prefixes.json
+! stderr 'lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config shadowed-static-witness.json
+! stderr 'lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config shadowed-pattern-witness.json
+! stderr 'lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config cross-pool-layers.json
+! stderr 'lower layer may overlap upper layer across dynamic repos'
+
+! exec restic-rados-server --config repo-match-layers.json
+! stderr 'lower layer may overlap upper layer across dynamic repos'
 
 -- wildcard-no-token.json --
 {
@@ -65,7 +107,49 @@ stderr 'blob type "data": lower layer must differ from upper layer for every dyn
         }
     }
 }
--- equivalent-layers.json --
+-- unanchored-namespace.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "{repo}"},
+                    "lower": {"pool": "p", "namespace": "x{repo}"}
+                }
+            }
+        }
+    }
+}
+-- unanchored-prefix.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "{repo}", "prefix": "{repo}a"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "b/"}
+                }
+            }
+        }
+    }
+}
+-- bare-repo-prefix.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "n", "prefix": "{repo}"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "b/"}
+                }
+            }
+        }
+    }
+}
+-- mixed-token-layers.json --
 {
     "repos": {
         "*": {
@@ -79,15 +163,169 @@ stderr 'blob type "data": lower layer must differ from upper layer for every dyn
         }
     }
 }
--- commuting-layers.json --
+-- shorthand-shared-pool-layers.json --
+{
+    "repos": {
+        "*": {
+            "pools": {"p/hot-{repo}//p/cold-{repo}": ["*"]}
+        }
+    }
+}
+-- identical-layers.json --
 {
     "repos": {
         "*": {
             "blob_pools": {
                 "config": {"pool": "p", "namespace": "{repo}"},
                 "data": {
-                    "upper": {"pool": "p", "namespace": "xyz{repo_match}"},
-                    "lower": {"pool": "p", "namespace": "{repo_match}xyz"}
+                    "upper": {"pool": "p", "namespace": "{repo}"},
+                    "lower": {"pool": "p", "namespace": "{repo}"}
+                }
+            }
+        }
+    }
+}
+-- fixed-namespace-colliding-prefixes.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "a", "prefix": "{repo}/"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "{repo}/"}
+                }
+            }
+        }
+    }
+}
+-- independent-repo-collision.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "a", "prefix": "{repo}/"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "b/"}
+                }
+            }
+        }
+    }
+}
+-- unshadowed-pattern-witness.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "ax", "prefix": "{repo}/"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "ax/"}
+                }
+            }
+        }
+    }
+}
+-- nested-prefixes.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "{repo}", "prefix": "{repo}/"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "{repo}/archive/"}
+                }
+            }
+        }
+    }
+}
+-- distinct-length-prefixes.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "{repo}", "prefix": "{repo}/new/"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "{repo}/archive/"}
+                }
+            }
+        }
+    }
+}
+-- shared-pool-layer-prefixes.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "{repo}", "prefix": "hot/"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "cold/"}
+                }
+            }
+        }
+    }
+}
+-- shadowed-static-witness.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "a", "prefix": "{repo}/"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "{repo}/"}
+                }
+            }
+        },
+        "a": {
+            "pools": {"static": ["*"]}
+        }
+    }
+}
+-- shadowed-pattern-witness.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "ax", "prefix": "{repo}/"},
+                    "lower": {"pool": "p", "namespace": "{repo}", "prefix": "ax/"}
+                }
+            }
+        },
+        "a*": {
+            "pools": {"q/{repo}": ["*"]}
+        }
+    }
+}
+-- cross-pool-layers.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "{repo}"},
+                    "lower": {"pool": "other", "namespace": "{repo}"}
+                }
+            }
+        }
+    }
+}
+-- repo-match-layers.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "config": {"pool": "p", "namespace": "{repo_match}"},
+                "data": {
+                    "upper": {"pool": "p", "namespace": "{repo_match}", "prefix": "hot/"},
+                    "lower": {"pool": "p", "namespace": "{repo_match}", "prefix": "cold/"}
                 }
             }
         }
