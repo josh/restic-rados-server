@@ -116,11 +116,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if config.Stdio && !connMgr.Ready() {
-		slog.Error("failed to initialize pool configs", "error", errConnectionUnavailable)
-		os.Exit(1)
-	}
-
 	readPool := NewBufferPool(config.ReadBufferSize)
 	writePool := NewBufferPool(config.WriteBufferSize)
 
