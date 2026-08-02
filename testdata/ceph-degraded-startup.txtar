@@ -16,7 +16,7 @@ stdout '503'
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/degraded.sock 'http://localhost/config' --output /dev/null
 stdout '503'
 
-exec restic-rados-server --ceph-conf active.conf --listen $WORK/shutdown.sock &shutdownserver&
+exec restic-rados-server --ceph-conf quick.conf --listen $WORK/shutdown.sock &shutdownserver&
 wait4socket $WORK/shutdown.sock
 kill -INT shutdownserver
 ! wait4socket $WORK/shutdown.sock
@@ -60,6 +60,16 @@ stderr 'configured ceph pool missing'
 ! wait4socket $WORK/missing-pool.sock
 
 -- active.conf --
+[global]
+mon_host = v1:127.0.0.1:1/0
+auth_cluster_required = none
+auth_service_required = none
+auth_client_required = none
+keyring = /dev/null
+client_mount_timeout = 60
+mon_client_hunt_interval = 0.1
+
+-- quick.conf --
 [global]
 mon_host = v1:127.0.0.1:1/0
 auth_cluster_required = none
