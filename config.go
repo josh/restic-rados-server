@@ -669,9 +669,10 @@ type ServerConfigPools struct {
 }
 
 type CephConfig struct {
-	KeyringPath string
-	ClientID    string
-	CephConf    string
+	KeyringPath     string
+	ClientID        string
+	CephConf        string
+	WriteBufferSize int64
 }
 
 type BlobPool struct {

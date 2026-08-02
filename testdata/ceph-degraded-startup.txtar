@@ -1,0 +1,74 @@
+tail-logs
+create-pool
+
+cp $CEPH_CONF reachable.conf
+
+exec restic-rados-server --ceph-conf active.conf --listen $WORK/degraded.sock &server&
+wait4socket $WORK/degraded.sock
+wait4log 'initial ceph connection failed, starting unready' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/degraded.sock 'http://localhost/healthz' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/degraded.sock 'http://localhost/readyz' --output /dev/null
+stdout '503'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/degraded.sock 'http://localhost/config' --output /dev/null
+stdout '503'
+
+exec restic-rados-server --ceph-conf active.conf --listen $WORK/shutdown.sock &shutdownserver&
+wait4socket $WORK/shutdown.sock
+kill -INT shutdownserver
+! wait4socket $WORK/shutdown.sock
+
+cp reachable.conf replacement.conf
+mv replacement.conf active.conf
+wait4http 200 $WORK/degraded.sock /readyz
+wait4log 'successfully reconnected to ceph' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/degraded.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+bin-file rand recovered-blob 300000
+sha256 recovered-blob RECOVEREDHASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/degraded.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @recovered-blob 'http://localhost/data/'$RECOVEREDHASH --output /dev/null
+stdout '200'
+
+exec curl --silent --unix-socket $WORK/degraded.sock 'http://localhost/data/'$RECOVEREDHASH --output downloaded-blob
+bin-cmp downloaded-blob recovered-blob
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout 'data/'$RECOVEREDHASH
+
+kill -INT server
+
+env RESTIC_RADOS_SERVER_LOG_FILE=
+env CEPH_RESTIC_SERVER_LOG_FILE=
+
+! exec restic-rados-server --ceph-conf missing.conf --listen $WORK/invalid.sock
+stderr 'invalid ceph configuration'
+! wait4socket $WORK/invalid.sock
+
+! exec restic-rados-server --ceph-conf malformed.conf --listen $WORK/malformed.sock
+stderr 'invalid ceph configuration'
+! wait4socket $WORK/malformed.sock
+
+env RESTIC_RADOS_SERVER_POOL=missing-pool
+! exec restic-rados-server --ceph-conf $CEPH_CONF --listen $WORK/missing-pool.sock
+stderr 'configured ceph pool missing'
+! wait4socket $WORK/missing-pool.sock
+
+-- active.conf --
+[global]
+mon_host = v1:127.0.0.1:1/0
+auth_cluster_required = none
+auth_service_required = none
+auth_client_required = none
+keyring = /dev/null
+client_mount_timeout = 1
+mon_client_hunt_interval = 0.1
+
+-- malformed.conf --
+[global
+mon_host = v1:127.0.0.1:1/0
