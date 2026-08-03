@@ -1,0 +1,42 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --striper=false --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @payload 'http://localhost/keys/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --output keys-response
+stdout '400'
+grep 'hash mismatch' keys-response
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/keys/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @payload 'http://localhost/locks/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --output locks-response
+stdout '400'
+grep 'hash mismatch' locks-response
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/locks/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @payload 'http://localhost/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --output snapshots-response
+stdout '400'
+grep 'hash mismatch' snapshots-response
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @payload 'http://localhost/index/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --output index-response
+stdout '400'
+grep 'hash mismatch' index-response
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/index/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' --output /dev/null
+stdout '404'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'keys/'
+! stdout 'locks/'
+! stdout 'snapshots/'
+! stdout 'index/'
+
+kill server
+
+-- payload --
+metadata whose hash does not match the requested object ID
