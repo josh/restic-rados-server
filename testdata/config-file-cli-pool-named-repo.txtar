@@ -1,0 +1,43 @@
+tail-logs
+create-pool cli
+create-pool named
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --pool $CEPH_POOL_CLI --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @default-config http://localhost/config --output /dev/null
+stdout '200'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/backup/?create=true'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @backup-config http://localhost/backup/config --output /dev/null
+stdout '200'
+
+exec curl --silent --unix-socket $WORK/restic.sock http://localhost/config --output downloaded-default
+cmp downloaded-default default-config
+
+exec curl --silent --unix-socket $WORK/restic.sock http://localhost/backup/config --output downloaded-backup
+cmp downloaded-backup backup-config
+
+exec rados --pool $CEPH_POOL_CLI get config cli-pool-config
+cmp cli-pool-config default-config
+
+exec rados --pool $CEPH_POOL_NAMED get config named-pool-config
+cmp named-pool-config backup-config
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "backup": {
+            "pools": {"$CEPH_POOL_NAMED": ["*"]}
+        }
+    }
+}
+-- default-config --
+{"version":2,"id":"default","chunker_polynomial":"25b468838dcb75ea"}
+-- backup-config --
+{"version":2,"id":"backup","chunker_polynomial":"25b468838dcb75ea"}
