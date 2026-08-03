@@ -142,7 +142,28 @@ func (c *Config) defaultRepo() *RepoConfig {
 	return c.Repos["default"]
 }
 
-func (c *Config) loadFromArgs(args []string) (configFile string, showVersion bool, err error) {
+type commandLineConfig struct {
+	showVersion     bool
+	configFile      string
+	verbose         bool
+	listeners       listenerFlags
+	useStdio        bool
+	shutdownTimeout time.Duration
+	access          string
+	maxIdleTime     time.Duration
+	logFile         string
+	keyringPath     string
+	clientID        string
+	poolSpecs       poolFlags
+	cephConf        string
+	striper         bool
+	readBufferSize  int64
+	writeBufferSize int64
+	maxObjectSize   int64
+	set             map[string]bool
+}
+
+func parseCommandLine(args []string) (commandLineConfig, error) {
 	fs := flag.NewFlagSet("restic-rados-server", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -151,107 +172,93 @@ func (c *Config) loadFromArgs(args []string) (configFile string, showVersion boo
 		fs.PrintDefaults()
 	}
 
-	var verbose bool
-	var listeners listenerFlags
-	var useStdio bool
-	var shutdownTimeout time.Duration
-	var access string
-	var maxIdleTime time.Duration
-	var logFile string
-	var keyringPath string
-	var clientID string
-	var poolSpecs poolFlags
-	var cephConf string
-	var striper bool
-	var readBufferSize int64
-	var writeBufferSize int64
-	var maxObjectSize int64
-
-	fs.BoolVar(&showVersion, "version", false, "print version and exit")
-	fs.StringVar(&configFile, "config", "", "path to JSON configuration file")
-	fs.BoolVar(&verbose, "v", false, "enable verbose logging")
-	fs.BoolVar(&verbose, "verbose", false, "enable verbose logging")
-	fs.Var(&listeners, "listen", "Address or Unix socket path to listen on, repeatable")
-	fs.BoolVar(&useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
-	fs.DurationVar(&shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
-	fs.StringVar(&access, "access", "", "access level: r/read-only, ra/read-append, rw/read-write")
-	fs.DurationVar(&maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
-	fs.StringVar(&logFile, "log-file", "", "path to log file (default: stderr)")
-	fs.StringVar(&keyringPath, "keyring", "", "path to Ceph keyring file")
-	fs.StringVar(&clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
-	fs.Var(&poolSpecs, "pool", "Pool specification: 'pool[/namespace][//lowerpool[/namespace]][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
-	fs.StringVar(&cephConf, "ceph-conf", "", "path to ceph.conf file")
-	fs.BoolVar(&striper, "striper", true, "enable librados striper for large objects")
-	fs.Int64Var(&readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
-	fs.Int64Var(&writeBufferSize, "write-buffer-size", defaultWriteBufferSize, "buffer size for writing objects in bytes")
-	fs.Int64Var(&maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
+	var parsed commandLineConfig
+	fs.BoolVar(&parsed.showVersion, "version", false, "print version and exit")
+	fs.StringVar(&parsed.configFile, "config", "", "path to JSON configuration file")
+	fs.BoolVar(&parsed.verbose, "v", false, "enable verbose logging")
+	fs.BoolVar(&parsed.verbose, "verbose", false, "enable verbose logging")
+	fs.Var(&parsed.listeners, "listen", "Address or Unix socket path to listen on, repeatable")
+	fs.BoolVar(&parsed.useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
+	fs.DurationVar(&parsed.shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
+	fs.StringVar(&parsed.access, "access", "", "access level: r/read-only, ra/read-append, rw/read-write")
+	fs.DurationVar(&parsed.maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
+	fs.StringVar(&parsed.logFile, "log-file", "", "path to log file (default: stderr)")
+	fs.StringVar(&parsed.keyringPath, "keyring", "", "path to Ceph keyring file")
+	fs.StringVar(&parsed.clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
+	fs.Var(&parsed.poolSpecs, "pool", "Pool specification: 'pool[/namespace][//lowerpool[/namespace]][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
+	fs.StringVar(&parsed.cephConf, "ceph-conf", "", "path to ceph.conf file")
+	fs.BoolVar(&parsed.striper, "striper", true, "enable librados striper for large objects")
+	fs.Int64Var(&parsed.readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
+	fs.Int64Var(&parsed.writeBufferSize, "write-buffer-size", defaultWriteBufferSize, "buffer size for writing objects in bytes")
+	fs.Int64Var(&parsed.maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(os.Stderr)
 			fs.Usage()
 		}
-		return "", false, err
+		return commandLineConfig{}, err
 	}
 
-	set := make(map[string]bool)
+	parsed.set = make(map[string]bool)
 	fs.Visit(func(f *flag.Flag) {
-		set[f.Name] = true
+		parsed.set[f.Name] = true
 	})
+	return parsed, nil
+}
 
-	if set["verbose"] || set["v"] {
-		c.Verbose = verbose
+func (c *Config) applyCommandLine(parsed commandLineConfig) {
+	if parsed.set["verbose"] || parsed.set["v"] {
+		c.Verbose = parsed.verbose
 	}
-	if set["listen"] {
-		c.Listeners = listeners
+	if parsed.set["listen"] {
+		c.Listeners = parsed.listeners
 	}
-	if set["stdio"] {
-		c.Stdio = useStdio
+	if parsed.set["stdio"] {
+		c.Stdio = parsed.useStdio
 	}
-	if set["shutdown-timeout"] {
-		c.ShutdownTimeout = Duration(shutdownTimeout)
+	if parsed.set["shutdown-timeout"] {
+		c.ShutdownTimeout = Duration(parsed.shutdownTimeout)
 	}
-	if set["max-idle-time"] {
-		c.MaxIdleTime = Duration(maxIdleTime)
+	if parsed.set["max-idle-time"] {
+		c.MaxIdleTime = Duration(parsed.maxIdleTime)
 	}
-	if set["log-file"] {
-		c.LogFile = logFile
+	if parsed.set["log-file"] {
+		c.LogFile = parsed.logFile
 	}
-	if set["keyring"] {
-		c.Keyring = keyringPath
+	if parsed.set["keyring"] {
+		c.Keyring = parsed.keyringPath
 	}
-	if set["id"] {
-		c.ClientID = clientID
+	if parsed.set["id"] {
+		c.ClientID = parsed.clientID
 	}
-	if set["ceph-conf"] {
-		c.CephConf = cephConf
+	if parsed.set["ceph-conf"] {
+		c.CephConf = parsed.cephConf
 	}
-	if set["read-buffer-size"] {
-		c.ReadBufferSize = readBufferSize
+	if parsed.set["read-buffer-size"] {
+		c.ReadBufferSize = parsed.readBufferSize
 	}
-	if set["write-buffer-size"] {
-		c.WriteBufferSize = writeBufferSize
+	if parsed.set["write-buffer-size"] {
+		c.WriteBufferSize = parsed.writeBufferSize
 	}
 
-	if set["pool"] || set["access"] || set["striper"] || set["max-object-size"] {
+	if parsed.set["pool"] || parsed.set["access"] || parsed.set["striper"] || parsed.set["max-object-size"] {
 		def := c.defaultRepo()
-		if set["pool"] {
-			def.poolSpecs = poolSpecs
+		if parsed.set["pool"] {
+			def.poolSpecs = parsed.poolSpecs
 			def.Pools = nil
 			def.BlobPools = nil
 		}
-		if set["access"] {
-			def.Access = access
+		if parsed.set["access"] {
+			def.Access = parsed.access
 		}
-		if set["striper"] {
-			def.Striper = &striper
+		if parsed.set["striper"] {
+			def.Striper = &parsed.striper
 		}
-		if set["max-object-size"] {
-			def.MaxObjectSize = maxObjectSize
+		if parsed.set["max-object-size"] {
+			def.MaxObjectSize = parsed.maxObjectSize
 		}
 	}
-
-	return configFile, showVersion, nil
 }
 
 var envPrefixes = []string{"RESTIC_RADOS_SERVER_", "RESTIC_CEPH_SERVER_", "CEPH_RESTIC_SERVER_", "RADOS_RESTIC_SERVER_"}
@@ -361,15 +368,16 @@ func loadConfig(args []string) (Config, bool, error) {
 		WriteBufferSize: defaultWriteBufferSize,
 	}
 
-	configFile, showVersion, err := config.loadFromArgs(args)
+	commandLine, err := parseCommandLine(args)
 	if err != nil {
 		return Config{}, false, err
 	}
 
-	if showVersion {
+	if commandLine.showVersion {
 		return Config{}, true, nil
 	}
 
+	configFile := commandLine.configFile
 	if configFile == "" {
 		configFile = getEnv("CONFIG")
 	}
@@ -383,7 +391,7 @@ func loadConfig(args []string) (Config, bool, error) {
 	if err := config.loadFromEnv(); err != nil {
 		return Config{}, false, err
 	}
-	_, _, _ = config.loadFromArgs(args)
+	config.applyCommandLine(commandLine)
 
 	if config.ReadBufferSize <= 0 {
 		return Config{}, false, fmt.Errorf("read-buffer-size must be positive, got %d", config.ReadBufferSize)
