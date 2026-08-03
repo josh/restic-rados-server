@@ -4,6 +4,7 @@ create-pool shared
 envsubst disjoint.json.tmpl disjoint.json
 envsubst colliding.json.tmpl colliding.json
 envsubst static-colliding.json.tmpl static-colliding.json
+envsubst derived-colliding.json.tmpl derived-colliding.json
 
 exec restic-rados-server --config disjoint.json --listen $WORK/restic1.sock &server1&
 wait4socket $WORK/restic1.sock
@@ -22,6 +23,12 @@ wait4socket $WORK/restic3.sock
 kill server3
 
 grep 'msg="repos may share storage" repo=default other_repo=other' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec restic-rados-server --config derived-colliding.json --listen $WORK/restic4.sock &server4&
+wait4socket $WORK/restic4.sock
+kill server4
+
+grep 'msg="repos may share storage" repo=b\* other_repo=foo blob_types=data' $RESTIC_RADOS_SERVER_LOG_FILE
 
 -- disjoint.json.tmpl --
 {
@@ -42,5 +49,36 @@ grep 'msg="repos may share storage" repo=default other_repo=other' $RESTIC_RADOS
     "repos": {
         "default": {"pools": {"$CEPH_POOL_SHARED/ns": ["*"]}},
         "other": {"pools": {"$CEPH_POOL_SHARED/ns": ["*"]}}
+    }
+}
+-- derived-colliding.json.tmpl --
+{
+    "repos": {
+        "foo": {
+            "blob_pools": {
+                "config": {
+                    "pool": "$CEPH_POOL_SHARED",
+                    "namespace": "foo-config"
+                },
+                "data": {
+                    "pool": "$CEPH_POOL_SHARED",
+                    "namespace": "foo",
+                    "prefix": "prefoopost/"
+                }
+            }
+        },
+        "b*": {
+            "blob_pools": {
+                "config": {
+                    "pool": "$CEPH_POOL_SHARED",
+                    "namespace": "{repo}"
+                },
+                "data": {
+                    "pool": "$CEPH_POOL_SHARED",
+                    "namespace": "foo",
+                    "prefix": "{repo_match}/"
+                }
+            }
+        }
     }
 }

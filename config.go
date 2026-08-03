@@ -265,12 +265,18 @@ func getEnv(suffix string) string {
 	return ""
 }
 
-func parseBoolEnv(suffix string) (bool, bool) {
+func parseBoolEnv(suffix string) (bool, bool, error) {
 	val := getEnv(suffix)
 	if val == "" {
-		return false, false
+		return false, false, nil
 	}
-	return val == "true" || val == "1" || val == "yes", true
+	switch strings.ToLower(val) {
+	case "true", "1", "yes", "on":
+		return true, true, nil
+	case "false", "0", "no", "off":
+		return false, true, nil
+	}
+	return false, false, fmt.Errorf("invalid %s value %q", suffix, val)
 }
 
 func parseInt64Env(suffix string) (int64, bool) {
@@ -285,9 +291,13 @@ func parseInt64Env(suffix string) (int64, bool) {
 	return parsed, true
 }
 
-func (c *Config) loadFromEnv() {
-	if v, ok := parseBoolEnv("VERBOSE"); ok {
-		c.Verbose = v
+func (c *Config) loadFromEnv() error {
+	verbose, hasVerbose, err := parseBoolEnv("VERBOSE")
+	if err != nil {
+		return err
+	}
+	if hasVerbose {
+		c.Verbose = verbose
 	}
 	if v := getEnv("LOG_FILE"); v != "" {
 		c.LogFile = v
@@ -309,7 +319,10 @@ func (c *Config) loadFromEnv() {
 	}
 
 	envAccess := getEnv("ACCESS")
-	striper, hasStriper := parseBoolEnv("STRIPER")
+	striper, hasStriper, err := parseBoolEnv("STRIPER")
+	if err != nil {
+		return err
+	}
 	maxObjectSize, hasMaxObjectSize := parseInt64Env("MAX_OBJECT_SIZE")
 	envPool := getEnv("POOL")
 
@@ -337,6 +350,8 @@ func (c *Config) loadFromEnv() {
 			def.MaxObjectSize = maxObjectSize
 		}
 	}
+
+	return nil
 }
 
 func loadConfig(args []string) (Config, bool, error) {
@@ -365,7 +380,9 @@ func loadConfig(args []string) (Config, bool, error) {
 		}
 	}
 
-	config.loadFromEnv()
+	if err := config.loadFromEnv(); err != nil {
+		return Config{}, false, err
+	}
 	_, _, _ = config.loadFromArgs(args)
 
 	if config.ReadBufferSize <= 0 {
@@ -838,6 +855,13 @@ func (c *Config) normalizeRepos() error {
 		}
 		if strings.Count(name, "*") > 1 {
 			return fmt.Errorf("invalid repo pattern %q (may contain only one '*')", name)
+		}
+		if repo == nil {
+			return fmt.Errorf("repo %q: configuration cannot be null", name)
+		}
+
+		if repo.BlobPools != nil && len(repo.Pools) > 0 {
+			return fmt.Errorf("repo %q: cannot combine pools with blob_pools", name)
 		}
 
 		if repo.Access == "" {

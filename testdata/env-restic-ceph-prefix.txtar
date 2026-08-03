@@ -1,0 +1,26 @@
+tail-logs
+create-pool
+
+env RESTIC_CEPH_SERVER_POOL=$RESTIC_RADOS_SERVER_POOL
+env RESTIC_CEPH_SERVER_ACCESS=ra
+env RESTIC_RADOS_SERVER_POOL=
+env RESTIC_RADOS_SERVER_ACCESS=
+env CEPH_RESTIC_SERVER_POOL=
+env CEPH_RESTIC_SERVER_ACCESS=
+env RADOS_RESTIC_SERVER_POOL=
+env RADOS_RESTIC_SERVER_ACCESS=
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+sha256 blob-data HASH
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/data/'$HASH --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/'$HASH --output /dev/null
+stdout '403'
+
+kill server
+
+-- blob-data --
+legacy prefix blob

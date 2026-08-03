@@ -1,0 +1,18 @@
+! exec restic-rados-server --config conflicting.json
+stderr 'repo "default": cannot combine pools with blob_pools'
+
+-- conflicting.json --
+{
+    "repos": {
+        "default": {
+            "pools": {
+                "legacy": ["*"]
+            },
+            "blob_pools": {
+                "data": {
+                    "pool": "structured"
+                }
+            }
+        }
+    }
+}
