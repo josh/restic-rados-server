@@ -24,7 +24,10 @@ const (
 	firstStripeSuffix  = ".0000000000000000"
 )
 
-var errUnsupportedStriperLayout = errors.New("unsupported striper layout")
+var (
+	errObjectExists             = errors.New("object exists")
+	errUnsupportedStriperLayout = errors.New("unsupported striper layout")
+)
 
 type RadosIOContext interface {
 	Stat(object string) (StatInfo, error)

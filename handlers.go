@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -9,13 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"math"
 	"mime"
 	"net/http"
 	"net/url"
-	"regexp"
-	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,64 +23,29 @@ import (
 	"github.com/ceph/go-ceph/rados"
 )
 
-const configObjectName = "config"
+const (
+	mimeTypeAPIV1 = "application/vnd.x.restic.rest.v1"
+	mimeTypeAPIV2 = "application/vnd.x.restic.rest.v2"
 
-var (
-	errObjectNotFound      = errors.New("object not found")
-	errObjectExists        = errors.New("object exists")
-	errHashMismatch        = errors.New("hash mismatch")
-	errClientAborted       = errors.New("client aborted request")
-	errLengthRequired      = errors.New("content length required")
-	errRangeNotSatisfiable = errors.New("requested range not satisfiable")
+	purgeDeleteWorkers = 8
 )
 
 var (
-	hexBlobIDRegex          = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	stripedBlobIDRegex      = regexp.MustCompile(`^[0-9a-f]{64}\.[0-9a-f]{16}$`)
-	firstStripedBlobIDRegex = regexp.MustCompile(`^[0-9a-f]{64}\.0000000000000000$`)
+	errClientAborted     = errors.New("client aborted request")
+	errHashMismatch      = errors.New("hash mismatch")
+	errContentTooLarge   = errors.New("content too large")
+	errLengthRequired    = errors.New("content length required")
+	errInvalidRange      = errors.New("invalid range")
+	errRepositoryLocked  = errors.New("repository is locked")
+	errRepositoryHasSnap = errors.New("repository contains snapshot objects")
 )
 
 type Handler struct {
-	connMgr         *ConnectionManager
-	repo            string
-	dynamic         bool
-	access          Access
-	readBufferPool  *BufferPool
-	writeBufferPool *BufferPool
-}
-
-type repoNameContextKey struct{}
-
-func withRepoName(ctx context.Context, name string) context.Context {
-	return context.WithValue(ctx, repoNameContextKey{}, name)
-}
-
-func (h *Handler) repoName(ctx context.Context) string {
-	if h.dynamic {
-		if name, ok := ctx.Value(repoNameContextKey{}).(string); ok {
-			return name
-		}
-	}
-	return h.repo
-}
-
-type HandlerContext struct {
-	conn            *connHandle
-	ioctx           *rados.IOContext
-	prefix          string
-	radosIO         RadosIOContext
-	striperIO       RadosIOContext
-	lowerIoctx      *rados.IOContext
-	lowerPrefix     string
-	lowerRadosIO    RadosIOContext
-	lowerStriperIO  RadosIOContext
-	stripedWrites   bool
-	maxObjectSize   int64
-	radosCalls      *uint64
-	readBufferPool  *BufferPool
-	readBufPtr      *[]byte
-	writeBufferPool *BufferPool
-	writeBufPtr     *[]byte
+	connections *ConnectionManager
+	repos       map[string]*RepoConfig
+	patterns    []repoPattern
+	readPool    *BufferPool
+	writePool   *BufferPool
 }
 
 type responseWriter struct {
@@ -93,124 +55,199 @@ type responseWriter struct {
 	headerWritten bool
 }
 
-type errorCoder interface {
-	ErrorCode() int
+func (w *responseWriter) WriteHeader(code int) {
+	if w.headerWritten {
+		return
+	}
+	w.statusCode = code
+	w.headerWritten = true
+	w.ResponseWriter.WriteHeader(code)
 }
 
-type blobInfo struct {
+func (w *responseWriter) Write(data []byte) (int, error) {
+	if !w.headerWritten {
+		w.statusCode = http.StatusOK
+		w.headerWritten = true
+	}
+	n, err := w.ResponseWriter.Write(data)
+	w.bytesWritten += int64(n)
+	return n, err
+}
+
+func (w *responseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *responseWriter) FlushError() error {
+	if !w.headerWritten {
+		w.WriteHeader(http.StatusOK)
+	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+type repositoryRoute struct {
+	name         string
+	config       *RepoConfig
+	resourcePath string
+	patternMatch bool
+}
+
+type HandlerContext struct {
+	layers []storageLayer
+	handle *connHandle
+}
+
+type storageLayer struct {
+	name   string
+	ioctx  *rados.IOContext
+	config *BlobPool
+}
+
+type storedObject struct {
+	backend RadosIOContext
+	stat    StatInfo
+	striped bool
+}
+
+type byteRange struct {
+	start   int64
+	length  int64
+	partial bool
+}
+
+type blobRouteKind uint8
+
+const (
+	invalidBlobRoute blobRouteKind = iota
+	blobRouteRedirect
+	blobRouteList
+	blobRouteObject
+)
+
+type blobRoute struct {
+	kind     blobRouteKind
+	blobType BlobType
+	objectID string
+}
+
+type physicalBlobKind uint8
+
+const (
+	invalidPhysicalBlob physicalBlobKind = iota
+	plainBlob
+	firstStripe
+	continuationStripe
+)
+
+type blobRepresentations struct {
+	plain   bool
+	striped bool
+}
+
+type listedBlob struct {
 	Name string `json:"name"`
 	Size uint64 `json:"size"`
 }
 
-type httpRange struct {
-	start  int64
-	end    int64
-	status int
+type purgeScope struct {
+	layer     string
+	pool      string
+	namespace string
+	prefix    string
+	types     map[BlobType]bool
 }
 
-func (hctx *HandlerContext) Destroy() {
-	hctx.ioctx.Destroy()
-	if hctx.lowerIoctx != nil {
-		hctx.lowerIoctx.Destroy()
-	}
-	if hctx.conn != nil {
-		hctx.conn.release()
-	}
-	if hctx.readBufPtr != nil {
-		hctx.readBufferPool.Put(hctx.readBufPtr)
-	}
-	if hctx.writeBufPtr != nil {
-		hctx.writeBufferPool.Put(hctx.writeBufPtr)
-	}
+type purgeTarget struct {
+	pool      string
+	namespace string
+	scopes    []*purgeScope
 }
 
-func statInLayer(plainIO, striperIO RadosIOContext, object string) (RadosIOContext, StatInfo, error) {
-	if striperIO != nil {
-		stat, err := plainIO.Stat(object)
-		if !errors.Is(err, rados.ErrNotFound) {
-			return plainIO, stat, err
-		}
-		_, stripeErr := plainIO.Stat(object + firstStripeSuffix)
-		if stripeErr == nil {
-			stat, err = striperIO.Stat(object)
-			return striperIO, stat, err
-		}
-		if !errors.Is(stripeErr, rados.ErrNotFound) {
-			return plainIO, StatInfo{}, stripeErr
-		}
-		return plainIO, StatInfo{}, err
-	}
-	stat, err := plainIO.Stat(object)
-	return plainIO, stat, err
+type purgeScopeKey struct {
+	layer     string
+	pool      string
+	namespace string
+	prefix    string
 }
 
-func (hctx *HandlerContext) statRadosObject(object string) (RadosIOContext, StatInfo, error) {
-	rioctx, stat, err := statInLayer(hctx.radosIO, hctx.striperIO, object)
-	if errors.Is(err, rados.ErrNotFound) && hctx.lowerRadosIO != nil {
-		return statInLayer(hctx.lowerRadosIO, hctx.lowerStriperIO, object)
-	}
-	return rioctx, stat, err
+type purgeTargetKey struct {
+	pool      string
+	namespace string
 }
 
-func (hctx *HandlerContext) removeRadosObject(object string, canStripe bool) error {
-	type layer struct {
-		name      string
-		plainIO   RadosIOContext
-		striperIO RadosIOContext
-	}
-	var layers []layer
-	if hctx.lowerRadosIO != nil {
-		layers = append(layers, layer{"lower", hctx.lowerRadosIO, hctx.lowerStriperIO})
-	}
-	layers = append(layers, layer{"upper", hctx.radosIO, hctx.striperIO})
-
-	for _, l := range layers {
-		striperIO := l.striperIO
-		if !canStripe {
-			striperIO = nil
-		}
-		rioctx, _, err := statInLayer(l.plainIO, striperIO, object)
-		if errors.Is(err, rados.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("stat object %s: %w", object, err)
-		}
-		slog.Debug("removing object from layer", "object", object, "layer", l.name)
-		if err := rioctx.Remove(object); err != nil && !errors.Is(err, rados.ErrNotFound) {
-			return fmt.Errorf("delete object %s: %w", object, err)
-		}
-	}
-	return nil
+func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos map[string]*RepoConfig, readPool, writePool *BufferPool) {
+	mux.Handle("/", &Handler{
+		connections: connections,
+		repos:       repos,
+		patterns:    compileRepoPatterns(repos),
+		readPool:    readPool,
+		writePool:   writePool,
+	})
 }
 
-func (rw *responseWriter) WriteHeader(code int) {
-	if rw.headerWritten {
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path, ok := requestRoutePath(r)
+	if !ok {
+		http.NotFound(w, r)
 		return
 	}
-	rw.statusCode = code
-	rw.headerWritten = true
-	rw.ResponseWriter.WriteHeader(code)
-}
 
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	if !rw.headerWritten {
-		rw.statusCode = http.StatusOK
-		rw.headerWritten = true
+	switch path {
+	case "/healthz":
+		h.serveHealth(w, r)
+		return
+	case "/readyz":
+		h.serveReady(w, r)
+		return
 	}
-	n, err := rw.ResponseWriter.Write(b)
-	rw.bytesWritten += int64(n)
-	return n, err
+
+	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	var radosCalls uint64
+	h.serveRequest(rw, r, path, &radosCalls)
 }
 
-func logRequest(repo, method, path string, status int, duration time.Duration, reqBytes, respBytes int64, radosCalls uint64) {
+func (h *Handler) serveRequest(w *responseWriter, r *http.Request, path string, radosCalls *uint64) {
+	started := time.Now()
+	repoName := ""
+	logPath := r.URL.Path
+
+	repo, ok := h.resolveRepository(path)
+	if ok {
+		repoName = repo.name
+		logPath = repo.resourcePath
+		if logPath == "" {
+			logPath = "/"
+		}
+	}
+
+	slog.Debug("request-start", "method", r.Method, "path", logPath)
+	defer func() {
+		logRequest(repoName, r.Method, logPath, w.statusCode, time.Since(started), r.ContentLength, w.bytesWritten, atomic.LoadUint64(radosCalls))
+	}()
+
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if repo.resourcePath == "" {
+		status := http.StatusTemporaryRedirect
+		if repo.patternMatch {
+			status = http.StatusMovedPermanently
+		}
+		redirectWithTrailingSlash(w, r, status)
+		return
+	}
+	h.serveRepository(w, r, repo, radosCalls)
+}
+
+func logRequest(repo, method, path string, status int, duration time.Duration, requestBytes, responseBytes int64, radosCalls uint64) {
 	attrs := []any{
 		"method", method,
 		"path", path,
 		"status", status,
 		"duration", duration.Round(time.Millisecond).String(),
-		"req_bytes", reqBytes,
-		"resp_bytes", respBytes,
+		"req_bytes", requestBytes,
+		"resp_bytes", responseBytes,
 		"rados_calls", radosCalls,
 	}
 	if repo != "" && repo != "default" {
@@ -219,714 +256,293 @@ func logRequest(repo, method, path string, status int, duration time.Duration, r
 	slog.Info("request", attrs...)
 }
 
-type radosCallsKey struct{}
-
-func radosCallCounter(ctx context.Context) *uint64 {
-	if counter, ok := ctx.Value(radosCallsKey{}).(*uint64); ok {
-		return counter
-	}
-	return new(uint64)
-}
-
-func (h *Handler) logRequests(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		slog.Debug("request-start", "method", r.Method, "path", r.URL.Path)
-		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		var radosCalls uint64
-		ctx := context.WithValue(r.Context(), radosCallsKey{}, &radosCalls)
-		defer func() {
-			logRequest(h.repoName(r.Context()), r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, atomic.LoadUint64(&radosCalls))
-		}()
-		next.ServeHTTP(rw, r.WithContext(ctx))
-	})
-}
-
-func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	radosCalls := radosCallCounter(ctx)
-	ioctx, lowerIoctx, conn, bp, err := h.connMgr.GetIOContextForRepo(h.repoName(ctx), blobType, radosCalls)
-	if err != nil {
-		return nil, err
-	}
-
-	readBufPtr := h.readBufferPool.Get()
-	writeBufPtr := h.writeBufferPool.Get()
-
-	hctx := &HandlerContext{
-		conn:            conn,
-		ioctx:           ioctx,
-		prefix:          bp.Prefix,
-		lowerIoctx:      lowerIoctx,
-		stripedWrites:   bp.Striped,
-		maxObjectSize:   bp.MaxObjectSize,
-		radosCalls:      radosCalls,
-		readBufferPool:  h.readBufferPool,
-		readBufPtr:      readBufPtr,
-		writeBufferPool: h.writeBufferPool,
-		writeBufPtr:     writeBufPtr,
-	}
-
-	hctx.radosIO = NewRadosIO(ioctx, bp.Prefix, bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-	hctx.striperIO = NewStripedIO(ioctx, bp.Prefix, uint64(bp.MaxObjectSize), bp.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-
-	if lowerIoctx != nil {
-		hctx.lowerPrefix = bp.Lower.Prefix
-		hctx.lowerRadosIO = NewRadosIO(lowerIoctx, bp.Lower.Prefix, bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-		hctx.lowerStriperIO = NewStripedIO(lowerIoctx, bp.Lower.Prefix, uint64(bp.Lower.MaxObjectSize), bp.Lower.Alignment, *readBufPtr, *writeBufPtr, radosCalls)
-	}
-
-	return hctx, nil
-}
-
-func writeInfraError(w http.ResponseWriter, err error, logMsg string) {
-	switch {
-	case errors.Is(err, errConnectionUnavailable):
-		http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
-	case errors.Is(err, errPoolNotConfigured):
-		http.Error(w, "pool not configured", http.StatusServiceUnavailable)
-	default:
-		slog.Error(logMsg, "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-	}
-}
-
-func (h *Handler) openHTTPIOContext(w http.ResponseWriter, r *http.Request, blobType BlobType) (*HandlerContext, bool) {
-	hctx, err := h.openIOContext(r.Context(), blobType)
-	if err != nil {
-		writeInfraError(w, err, "failed to open IO context")
-		return nil, false
-	}
-	return hctx, true
-}
-
-func isValidBlobType(blobType string) bool {
-	switch blobType {
-	case "keys", "locks", "snapshots", "data", "index":
-		return true
-	default:
-		return false
-	}
-}
-
-func canStripeBlobType(blobType string) bool {
-	switch blobType {
-	case "snapshots", "data", "index":
-		return true
-	default:
-		return false
-	}
-}
-
-func (h *Handler) handleRadosError(w http.ResponseWriter, r *http.Request, object string, err error) {
-	var ec errorCoder
-	if errors.As(err, &ec) {
-		switch ec.ErrorCode() {
-		case -int(syscall.EFBIG):
-			http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
-			return
-		case -int(syscall.EMSGSIZE):
-			http.Error(w, "write chunk exceeds message limit", http.StatusRequestEntityTooLarge)
-			return
-		case -int(syscall.EOPNOTSUPP):
-			slog.Error("operation not supported", "object", object, "error", err)
-			http.Error(w, "operation not supported", http.StatusInternalServerError)
-			return
-		case -int(syscall.ENOSPC):
-			slog.Error("insufficient storage", "object", object, "error", err)
-			http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
-			return
-		case -int(syscall.EDQUOT):
-			slog.Error("disk quota exceeded", "object", object, "error", err)
-			http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
-			return
+func requestRoutePath(r *http.Request) (string, bool) {
+	escaped := r.URL.EscapedPath()
+	for i := 0; i+2 < len(escaped); i++ {
+		if escaped[i] == '%' && escaped[i+1] == '2' && (escaped[i+2] == 'f' || escaped[i+2] == 'F') {
+			return "", false
 		}
 	}
-
-	switch {
-	case errors.Is(err, errConnectionUnavailable):
-		http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
-	case errors.Is(err, errObjectNotFound):
-		http.NotFound(w, r)
-	case errors.Is(err, errRangeNotSatisfiable):
-		http.Error(w, "requested range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
-	case errors.Is(err, errObjectExists):
-		http.Error(w, "object already exists", http.StatusForbidden)
-	case errors.Is(err, errHashMismatch):
-		http.Error(w, "hash mismatch", http.StatusBadRequest)
-	case errors.Is(err, errClientAborted):
-		http.Error(w, "client aborted request", http.StatusBadRequest)
-	case errors.Is(err, errLengthRequired):
-		http.Error(w, "content length required", http.StatusLengthRequired)
-	default:
-		slog.Error("failed to serve object", "object", object, "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-	}
+	return r.URL.Path, true
 }
 
-func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
-	hctx, ok := h.openHTTPIOContext(w, r, BlobTypeConfig)
-	if !ok {
-		return
-	}
-	defer hctx.Destroy()
-
-	if err := hctx.serveRadosObject(w, r, configObjectName); err != nil {
-		h.handleRadosError(w, r, configObjectName, err)
-	}
+func redirectWithTrailingSlash(w http.ResponseWriter, r *http.Request, status int) {
+	target := (&url.URL{Path: r.URL.Path + "/", RawQuery: r.URL.RawQuery}).String()
+	http.Redirect(w, r, target, status)
 }
 
-func (h *Handler) createConfig(w http.ResponseWriter, r *http.Request) {
-	hctx, ok := h.openHTTPIOContext(w, r, BlobTypeConfig)
-	if !ok {
-		return
+func (h *Handler) resolveRepository(path string) (repositoryRoute, bool) {
+	defaultConfig := h.repos["default"]
+	if defaultConfig != nil && (path == "/" || isDefaultRepositoryPath(path)) {
+		return repositoryRoute{name: "default", config: defaultConfig, resourcePath: path}, true
 	}
-	defer hctx.Destroy()
 
-	if err := hctx.createRadosObject(w, r, configObjectName, configObjectName, false); err != nil {
-		h.handleRadosError(w, r, configObjectName, err)
+	trimmed := strings.TrimPrefix(path, "/")
+	name, remainder, hasSlash := strings.Cut(trimmed, "/")
+	if name != "" && name != "default" && !isReservedRepoName(name) && isValidRepoName(name) {
+		if config, patternMatch := h.resolveNamedRepository(name); config != nil {
+			if !hasSlash {
+				return repositoryRoute{name: name, config: config, patternMatch: patternMatch}, true
+			}
+			return repositoryRoute{name: name, config: config, resourcePath: "/" + remainder, patternMatch: patternMatch}, true
+		}
 	}
+	if defaultConfig != nil {
+		return repositoryRoute{name: "default", config: defaultConfig, resourcePath: path}, true
+	}
+	return repositoryRoute{}, false
 }
 
-func (h *Handler) deleteConfig(w http.ResponseWriter, r *http.Request) {
-	hctx, ok := h.openHTTPIOContext(w, r, BlobTypeConfig)
-	if !ok {
-		return
+func isDefaultRepositoryPath(path string) bool {
+	if path == "/config" || path == "/config/" {
+		return true
 	}
-	defer hctx.Destroy()
-
-	if err := hctx.removeRadosObject(configObjectName, false); err != nil {
-		h.handleRadosError(w, r, configObjectName, err)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-func (h *Handler) createRepo(w http.ResponseWriter, r *http.Request) {
-	createParam := r.URL.Query().Get("create")
-	if createParam == "" {
-		http.Error(w, "missing required query parameter: create", http.StatusBadRequest)
-		return
-	}
-	if createParam != "true" {
-		http.Error(w, "invalid value for create parameter: must be 'true'", http.StatusBadRequest)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-type purgeTarget struct {
-	pool         string
-	namespace    string
-	layer        string
-	layerRank    int
-	prefixes     []string
-	exact        []string
-	snapPrefixes []string
-	lockPrefixes []string
-}
-
-var (
-	errRepoHasSnapshots = errors.New("repository contains snapshot objects")
-	errRepoLocked       = errors.New("repository is locked")
-)
-
-const purgeDeleteWorkers = 8
-
-func hasAnyPrefix(name string, prefixes []string) bool {
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(name, prefix) {
+	for _, blobType := range AllBlobTypes {
+		if blobType == BlobTypeConfig {
+			continue
+		}
+		prefix := "/" + string(blobType)
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
 			return true
 		}
 	}
 	return false
 }
 
-func matchesExactOrStripedObject(name string, exact []string) bool {
-	for _, object := range exact {
-		if name == object {
-			return true
+func (h *Handler) resolveNamedRepository(name string) (*RepoConfig, bool) {
+	if config := h.repos[name]; config != nil && !strings.Contains(name, "*") {
+		return config, false
+	}
+	for _, pattern := range h.patterns {
+		if _, ok := pattern.match(name); ok {
+			return h.repos[pattern.key], true
 		}
-		if len(name) != len(object)+stripeSuffixLen || !strings.HasPrefix(name, object) {
-			continue
+	}
+	return nil, false
+}
+
+func (h *Handler) serveHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	writeHealthBody(w)
+}
+
+func writeHealthBody(w http.ResponseWriter) {
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+func (h *Handler) serveReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	if !h.connections.Ready() {
+		http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeHealthBody(w)
+}
+
+func (h *Handler) serveRepository(w *responseWriter, r *http.Request, repo repositoryRoute, radosCalls *uint64) {
+	access := ParseAccess(repo.config.Access)
+	if granted := grantForRepo(r.Context(), repo.name); granted < access {
+		access = granted
+	}
+
+	if repo.resourcePath == "/" {
+		h.serveRepositoryRoot(w, r, repo.name, access, radosCalls)
+		return
+	}
+	if repo.resourcePath == "/config" {
+		h.serveConfig(w, r, repo.name, access, radosCalls)
+		return
+	}
+	route, ok := parseBlobRoute(repo.resourcePath)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	switch route.kind {
+	case blobRouteRedirect:
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			methodNotAllowed(w, http.MethodGet, http.MethodHead)
+			return
 		}
-		suffix := name[len(object):]
-		if suffix[0] != '.' {
-			continue
-		}
-		valid := true
-		for _, c := range suffix[1:] {
-			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-				valid = false
-				break
-			}
-		}
-		if valid {
+		redirectWithTrailingSlash(w, r, http.StatusTemporaryRedirect)
+	case blobRouteList:
+		h.serveList(w, r, repo.name, route.blobType, access, radosCalls)
+	case blobRouteObject:
+		h.serveObject(w, r, repo.name, route.blobType, route.objectID, access, radosCalls)
+	}
+}
+
+func parseBlobRoute(path string) (blobRoute, bool) {
+	trimmed := strings.TrimPrefix(path, "/")
+	typeName, remainder, hasSlash := strings.Cut(trimmed, "/")
+	blobType := BlobType(typeName)
+	if !hasSlash {
+		return blobRoute{kind: blobRouteRedirect, blobType: blobType}, true
+	}
+	if remainder == "" {
+		return blobRoute{kind: blobRouteList, blobType: blobType}, true
+	}
+	if strings.Contains(remainder, "/") {
+		return blobRoute{}, false
+	}
+	return blobRoute{kind: blobRouteObject, blobType: blobType, objectID: remainder}, true
+}
+
+func canStripeBlobType(blobType BlobType) bool {
+	switch blobType {
+	case BlobTypeSnapshots, BlobTypeData, BlobTypeIndex:
+		return true
+	default:
+		return false
+	}
+}
+
+func isBlobType(blobType BlobType) bool {
+	for _, candidate := range AllBlobTypes {
+		if candidate == blobType {
 			return true
 		}
 	}
 	return false
 }
 
-func (h *Handler) purgeTargets(repo string) ([]*purgeTarget, error) {
-	type targetKey struct {
-		layer     string
-		pool      string
-		namespace string
+func isObjectID(id string) bool {
+	if len(id) != 64 {
+		return false
 	}
-	targets := make(map[targetKey]*purgeTarget)
-	add := func(layer string, rank int, bp *BlobPool, bt BlobType) {
-		key := targetKey{layer, bp.Pool, bp.Namespace}
-		t := targets[key]
-		if t == nil {
-			t = &purgeTarget{pool: bp.Pool, namespace: bp.Namespace, layer: layer, layerRank: rank}
-			targets[key] = t
+	for _, c := range id {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
 		}
-		if bt == BlobTypeConfig {
-			t.exact = append(t.exact, bp.Prefix+configObjectName)
+	}
+	return true
+}
+
+func (h *Handler) serveRepositoryRoot(w *responseWriter, r *http.Request, repo string, access Access, radosCalls *uint64) {
+	switch r.Method {
+	case http.MethodPost:
+		if access < AccessReadAppend {
+			accessDenied(w)
 			return
 		}
-		prefix := bp.Prefix + string(bt) + "/"
-		t.prefixes = append(t.prefixes, prefix)
-		if bt == BlobTypeSnapshots {
-			t.snapPrefixes = append(t.snapPrefixes, prefix)
-		}
-		if bt == BlobTypeLocks {
-			t.lockPrefixes = append(t.lockPrefixes, prefix)
-		}
-	}
-	var missingErr error
-	for _, bt := range AllBlobTypes {
-		bp, err := h.connMgr.GetBlobPoolForRepo(repo, bt)
-		if err != nil {
-			if errors.Is(err, errPoolNotConfigured) {
-				if missingErr == nil {
-					missingErr = err
-				}
-				continue
-			}
-			return nil, err
-		}
-		add("upper", 1, bp, bt)
-		if bp.Lower != nil {
-			add("lower", 0, bp.Lower, bt)
-		}
-	}
-	if len(targets) == 0 {
-		return nil, missingErr
-	}
-	ordered := slices.SortedFunc(maps.Values(targets), func(a, b *purgeTarget) int {
-		if c := cmp.Compare(a.layerRank, b.layerRank); c != 0 {
-			return c
-		}
-		if c := cmp.Compare(a.pool, b.pool); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.namespace, b.namespace)
-	})
-	for _, t := range ordered {
-		slices.Sort(t.prefixes)
-		slices.Sort(t.exact)
-	}
-	return ordered, nil
-}
-
-func (h *Handler) withPurgeTarget(t *purgeTarget, radosCalls *uint64, fn func(*rados.IOContext) error) error {
-	ioctx, conn, err := h.connMgr.OpenNamespaceContext(t.pool, t.namespace, radosCalls)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		ioctx.Destroy()
-		conn.release()
-	}()
-	return fn(ioctx)
-}
-
-func iterateNamespace(ioctx *rados.IOContext, radosCalls *uint64, fn func(string) error) error {
-	slog.Debug("rados.Iter")
-	atomic.AddUint64(radosCalls, 1)
-	iter, err := ioctx.Iter()
-	if err != nil {
-		return fmt.Errorf("create iterator: %w", err)
-	}
-	defer iter.Close()
-	for iter.Next() {
-		name := iter.Value()
-		if name == "" {
-			continue
-		}
-		if err := fn(name); err != nil {
-			return err
-		}
-	}
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("iterate objects: %w", err)
-	}
-	return nil
-}
-
-func (h *Handler) checkPurgeGate(targets []*purgeTarget, radosCalls *uint64) error {
-	for _, t := range targets {
-		if len(t.snapPrefixes) == 0 && len(t.lockPrefixes) == 0 {
-			continue
-		}
-		err := h.withPurgeTarget(t, radosCalls, func(ioctx *rados.IOContext) error {
-			return iterateNamespace(ioctx, radosCalls, func(name string) error {
-				if hasAnyPrefix(name, t.snapPrefixes) {
-					return errRepoHasSnapshots
-				}
-				if hasAnyPrefix(name, t.lockPrefixes) {
-					return errRepoLocked
-				}
-				return nil
-			})
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (h *Handler) purgeTargetObjects(ctx context.Context, t *purgeTarget, radosCalls *uint64) (int, error) {
-	var deleted atomic.Uint64
-	foreign := 0
-	err := h.withPurgeTarget(t, radosCalls, func(ioctx *rados.IOContext) error {
-		names := make(chan string, purgeDeleteWorkers)
-		errs := make(chan error, purgeDeleteWorkers)
-		var stop atomic.Bool
-		var wg sync.WaitGroup
-		for range purgeDeleteWorkers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for name := range names {
-					if stop.Load() {
-						continue
-					}
-					slog.Debug("purging object", "object", name, "pool", t.pool, "namespace", t.namespace, "layer", t.layer)
-					atomic.AddUint64(radosCalls, 1)
-					if err := ioctx.Delete(name); err != nil && !errors.Is(err, rados.ErrNotFound) {
-						stop.Store(true)
-						select {
-						case errs <- fmt.Errorf("delete object %s: %w", name, err):
-						default:
-						}
-						continue
-					}
-					deleted.Add(1)
-				}
-			}()
-		}
-		iterErr := iterateNamespace(ioctx, radosCalls, func(name string) error {
-			if stop.Load() {
-				return nil
-			}
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if hasAnyPrefix(name, t.prefixes) || matchesExactOrStripedObject(name, t.exact) {
-				names <- name
-			} else {
-				foreign++
-			}
-			return nil
-		})
-		close(names)
-		wg.Wait()
-		select {
-		case err := <-errs:
-			return err
-		default:
-		}
-		return iterErr
-	})
-	if foreign > 0 {
-		slog.Debug("leaving foreign objects", "pool", t.pool, "namespace", t.namespace, "count", foreign)
-	}
-	return int(deleted.Load()), err
-}
-
-func (h *Handler) purgeRepo(w http.ResponseWriter, r *http.Request) {
-	purgeParam := r.URL.Query().Get("purge")
-	if purgeParam == "" {
-		http.Error(w, "missing required query parameter: purge", http.StatusBadRequest)
-		return
-	}
-	if purgeParam != "true" {
-		http.Error(w, "invalid value for purge parameter: must be 'true'", http.StatusBadRequest)
-		return
-	}
-
-	repo := h.repoName(r.Context())
-	radosCalls := radosCallCounter(r.Context())
-
-	targets, err := h.purgeTargets(repo)
-	if err != nil {
-		writeInfraError(w, err, "failed to purge repository")
-		return
-	}
-
-	if err := h.checkPurgeGate(targets, radosCalls); err != nil {
-		if errors.Is(err, errRepoHasSnapshots) || errors.Is(err, errRepoLocked) {
-			http.Error(w, err.Error(), http.StatusConflict)
+		if !requireQueryValue(w, r, "create") {
 			return
 		}
-		writeInfraError(w, err, "failed to purge repository")
-		return
-	}
-
-	total := 0
-	for _, t := range targets {
-		deleted, err := h.purgeTargetObjects(r.Context(), t, radosCalls)
-		if err != nil {
-			writeInfraError(w, err, "failed to purge repository")
+		w.WriteHeader(http.StatusOK)
+	case http.MethodDelete:
+		if access < AccessReadWrite {
+			accessDenied(w)
 			return
 		}
-		total += deleted
+		if !requireQueryValue(w, r, "purge") {
+			return
+		}
+		if err := h.purgeRepository(r.Context(), repo, radosCalls); err != nil {
+			h.respondError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	default:
+		methodNotAllowed(w, http.MethodDelete, http.MethodPost)
 	}
+}
 
-	slog.Info("purged repository", "repo", repo, "objects", total)
+func requireQueryValue(w http.ResponseWriter, r *http.Request, name string) bool {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		http.Error(w, "missing required query parameter: "+name, http.StatusBadRequest)
+		return false
+	}
+	if value != "true" {
+		http.Error(w, "invalid value for "+name+" parameter: must be 'true'", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) serveConfig(w *responseWriter, r *http.Request, repo string, access Access, radosCalls *uint64) {
+	switch r.Method {
+	case http.MethodHead, http.MethodGet:
+		if access < AccessRead {
+			accessDenied(w)
+			return
+		}
+		if err := h.readObject(w, r, repo, BlobTypeConfig, "", radosCalls); err != nil {
+			h.respondError(w, r, err)
+		}
+	case http.MethodPost:
+		if access < AccessReadAppend {
+			accessDenied(w)
+			return
+		}
+		if err := h.writeObject(r, repo, BlobTypeConfig, "", radosCalls); err != nil {
+			h.respondError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	case http.MethodDelete:
+		if access < AccessReadWrite {
+			accessDenied(w)
+			return
+		}
+		if err := h.deleteObject(repo, BlobTypeConfig, "", radosCalls); err != nil {
+			h.respondError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	default:
+		methodNotAllowed(w, http.MethodDelete, http.MethodGet, http.MethodHead, http.MethodPost)
+	}
+}
+
+func (h *Handler) serveList(w *responseWriter, r *http.Request, repo string, blobType BlobType, access Access, radosCalls *uint64) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	if access < AccessRead {
+		accessDenied(w)
+		return
+	}
+	if blobType == BlobTypeConfig || !isBlobType(blobType) {
+		http.NotFound(w, r)
+		return
+	}
+	v2 := acceptsV2(r.Header)
+	data, err := h.listObjects(repo, blobType, v2, radosCalls)
+	if err != nil {
+		h.respondError(w, r, err)
+		return
+	}
+	contentType := mimeTypeAPIV1
+	if v2 {
+		contentType = mimeTypeAPIV2
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
-}
-
-func (h *Handler) listBlobs(w http.ResponseWriter, r *http.Request) {
-	blobType := r.PathValue("type")
-	if !isValidBlobType(blobType) || r.URL.Path != "/"+blobType+"/" {
-		http.NotFound(w, r)
-		return
-	}
-
-	hctx, ok := h.openHTTPIOContext(w, r, BlobType(blobType))
-	if !ok {
-		return
-	}
-	defer hctx.Destroy()
-
-	useV2 := acceptsBlobListV2(r)
-	logicalPrefix := blobType + "/"
-
-	blobNames := []string{}
-	blobInfos := []blobInfo{}
-
-	type listSource struct {
-		ioctx  *rados.IOContext
-		prefix string
-	}
-	sources := []listSource{{hctx.ioctx, hctx.prefix}}
-	var seen map[string]struct{}
-	if hctx.lowerIoctx != nil {
-		sources = append(sources, listSource{hctx.lowerIoctx, hctx.lowerPrefix})
-		seen = make(map[string]struct{})
-	}
-
-	for _, src := range sources {
-		err := hctx.collectBlobs(src.ioctx, src.prefix+logicalPrefix, logicalPrefix, useV2, seen, &blobNames, &blobInfos)
-		if err != nil {
-			slog.Error("failed to list blobs", "type", blobType, "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
+	if r.Method == http.MethodGet {
+		if _, err := w.Write(data); err != nil {
+			slog.Warn("failed to list blobs", "repo", repo, "blob_type", blobType, "error", err)
 		}
-	}
-
-	var data []byte
-	var err error
-	if useV2 {
-		data, err = json.Marshal(blobInfos)
-		if err != nil {
-			slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("marshal JSON: %w", err))
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/vnd.x.restic.rest.v2")
-	} else {
-		data, err = json.Marshal(blobNames)
-		if err != nil {
-			slog.Error("failed to list blobs", "type", blobType, "error", fmt.Errorf("marshal JSON: %w", err))
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/vnd.x.restic.rest.v1")
-	}
-
-	w.WriteHeader(http.StatusOK)
-	if _, err = w.Write(data); err != nil {
-		slog.Warn("failed to list blobs", "type", blobType, "error", err)
 	}
 }
 
-func (hctx *HandlerContext) collectBlobs(src *rados.IOContext, storagePrefix, logicalPrefix string, useV2 bool, seen map[string]struct{}, blobNames *[]string, blobInfos *[]blobInfo) error {
-	slog.Debug("rados.Iter")
-	atomic.AddUint64(hctx.radosCalls, 1)
-	iter, err := src.Iter()
-	if err != nil {
-		return fmt.Errorf("create iterator: %w", err)
-	}
-	defer iter.Close()
-
-	for iter.Next() {
-		objectName := iter.Value()
-		if objectName == "" || !strings.HasPrefix(objectName, storagePrefix) {
-			continue
-		}
-
-		blobID := strings.TrimPrefix(objectName, storagePrefix)
-
-		if stripedBlobIDRegex.MatchString(blobID) && !firstStripedBlobIDRegex.MatchString(blobID) {
-			continue
-		}
-
-		if firstStripedBlobIDRegex.MatchString(blobID) {
-			blobID = blobID[:len(blobID)-stripeSuffixLen]
-		}
-
-		if !hexBlobIDRegex.MatchString(blobID) {
-			slog.Warn("skipping unknown object", "object", objectName)
-			continue
-		}
-
-		if seen != nil {
-			if _, ok := seen[blobID]; ok {
+func acceptsV2(header http.Header) bool {
+	for _, value := range header.Values("Accept") {
+		for _, item := range strings.Split(value, ",") {
+			mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(item))
+			if err != nil || !strings.EqualFold(mediaType, mimeTypeAPIV2) {
 				continue
 			}
-			seen[blobID] = struct{}{}
-		}
-
-		baseObjectName := logicalPrefix + blobID
-
-		if useV2 {
-			_, stat, err := hctx.statRadosObject(baseObjectName)
-			if errors.Is(err, errUnsupportedStriperLayout) {
-				slog.Warn("skipping striped object with unsupported layout", "object", baseObjectName, "error", err)
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("stat %s: %w", baseObjectName, err)
-			}
-			*blobInfos = append(*blobInfos, blobInfo{
-				Name: blobID,
-				Size: stat.Size,
-			})
-		} else {
-			*blobNames = append(*blobNames, blobID)
-		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("iterate objects: %w", err)
-	}
-
-	return nil
-}
-
-func (h *Handler) getBlob(w http.ResponseWriter, r *http.Request) {
-	blobType := r.PathValue("type")
-	if !isValidBlobType(blobType) {
-		http.NotFound(w, r)
-		return
-	}
-
-	blobID := r.PathValue("id")
-	if !hexBlobIDRegex.MatchString(blobID) {
-		http.NotFound(w, r)
-		return
-	}
-
-	hctx, ok := h.openHTTPIOContext(w, r, BlobType(blobType))
-	if !ok {
-		return
-	}
-	defer hctx.Destroy()
-
-	objectName := blobType + "/" + blobID
-
-	if err := hctx.serveRadosObject(w, r, objectName); err != nil {
-		h.handleRadosError(w, r, blobID, err)
-	}
-}
-
-func (h *Handler) createBlob(w http.ResponseWriter, r *http.Request) {
-	blobType := r.PathValue("type")
-	if !isValidBlobType(blobType) {
-		http.NotFound(w, r)
-		return
-	}
-
-	blobID := r.PathValue("id")
-	if !hexBlobIDRegex.MatchString(blobID) {
-		http.NotFound(w, r)
-		return
-	}
-
-	hctx, ok := h.openHTTPIOContext(w, r, BlobType(blobType))
-	if !ok {
-		return
-	}
-	defer hctx.Destroy()
-
-	objectName := blobType + "/" + blobID
-
-	if err := hctx.createRadosObject(w, r, objectName, blobID, canStripeBlobType(blobType)); err != nil {
-		h.handleRadosError(w, r, blobID, err)
-	}
-}
-
-func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request) {
-	blobType := r.PathValue("type")
-	if !isValidBlobType(blobType) {
-		http.NotFound(w, r)
-		return
-	}
-
-	blobID := r.PathValue("id")
-	if !hexBlobIDRegex.MatchString(blobID) {
-		http.NotFound(w, r)
-		return
-	}
-
-	minAccess := AccessReadWrite
-	if blobType == "locks" {
-		minAccess = AccessReadAppend
-	}
-	if min(h.access, grantForRepo(r.Context(), h.repoName(r.Context()))) < minAccess {
-		http.Error(w, "access denied", http.StatusForbidden)
-		return
-	}
-
-	hctx, ok := h.openHTTPIOContext(w, r, BlobType(blobType))
-	if !ok {
-		return
-	}
-	defer hctx.Destroy()
-
-	objectName := blobType + "/" + blobID
-
-	if err := hctx.removeRadosObject(objectName, true); err != nil {
-		h.handleRadosError(w, r, blobID, err)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-}
-
-func acceptsBlobListV2(r *http.Request) bool {
-	for _, value := range r.Header.Values("Accept") {
-		for _, mediaRange := range strings.Split(value, ",") {
-			mediaRange = strings.TrimSpace(mediaRange)
-			if mediaRange == "" {
-				continue
-			}
-			mediaType, params, err := mime.ParseMediaType(mediaRange)
-			if err != nil {
-				continue
-			}
-			if mediaType != "application/vnd.x.restic.rest.v2" {
-				continue
-			}
-			if qValue, ok := params["q"]; ok {
-				q, err := strconv.ParseFloat(qValue, 64)
-				if err == nil && q == 0 {
+			if raw, ok := params["q"]; ok {
+				if quality, err := strconv.ParseFloat(raw, 64); err == nil && quality <= 0 {
 					continue
 				}
 			}
@@ -936,335 +552,836 @@ func acceptsBlobListV2(r *http.Request) bool {
 	return false
 }
 
-func (h *Handler) requireAccess(minAccess Access, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if min(h.access, grantForRepo(r.Context(), h.repoName(r.Context()))) < minAccess {
-			http.Error(w, "access denied", http.StatusForbidden)
+func (h *Handler) serveObject(w *responseWriter, r *http.Request, repo string, blobType BlobType, objectID string, access Access, radosCalls *uint64) {
+	validObject := blobType != BlobTypeConfig && isBlobType(blobType) && isObjectID(objectID)
+	switch r.Method {
+	case http.MethodHead, http.MethodGet:
+		if access < AccessRead {
+			accessDenied(w)
 			return
 		}
-		next(w, r)
-	}
-}
-
-func (h *Handler) setupRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("HEAD /config", h.requireAccess(AccessRead, h.getConfig))
-	mux.HandleFunc("GET /config", h.requireAccess(AccessRead, h.getConfig))
-	mux.HandleFunc("POST /config", h.requireAccess(AccessReadAppend, h.createConfig))
-	mux.HandleFunc("DELETE /config", h.requireAccess(AccessReadWrite, h.deleteConfig))
-
-	mux.HandleFunc("GET /{type}/", h.requireAccess(AccessRead, h.listBlobs))
-	mux.HandleFunc("HEAD /{type}/{id}", h.requireAccess(AccessRead, h.getBlob))
-	mux.HandleFunc("GET /{type}/{id}", h.requireAccess(AccessRead, h.getBlob))
-	mux.HandleFunc("POST /{type}/{id}", h.requireAccess(AccessReadAppend, h.createBlob))
-	mux.HandleFunc("DELETE /{type}/{id}", h.deleteBlob)
-
-	mux.HandleFunc("POST /{$}", h.requireAccess(AccessReadAppend, h.createRepo))
-	mux.HandleFunc("DELETE /{$}", h.requireAccess(AccessReadWrite, h.purgeRepo))
-}
-
-type dynamicRepoDispatcher struct {
-	fallback http.Handler
-	patterns []repoPattern
-	handlers map[string]http.Handler
-	static   map[string]*RepoConfig
-}
-
-func rejectEncodedPathSeparators(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		escaped := r.URL.EscapedPath()
-		for i := 0; i+2 < len(escaped); i++ {
-			if escaped[i] == '%' && escaped[i+1] == '2' && (escaped[i+2] == 'f' || escaped[i+2] == 'F') {
-				http.NotFound(w, r)
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (d *dynamicRepoDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	seg, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	_, static := d.static[seg]
-	if !static && seg != "default" && !isReservedRepoName(seg) && isValidRepoName(seg) {
-		for _, p := range d.patterns {
-			if _, ok := p.match(seg); ok {
-				if r.URL.Path == "/"+seg {
-					u := &url.URL{Path: r.URL.Path + "/", RawQuery: r.URL.RawQuery}
-					http.Redirect(w, r, u.String(), http.StatusMovedPermanently)
-					return
-				}
-				r = r.WithContext(withRepoName(r.Context(), seg))
-				http.StripPrefix("/"+seg, d.handlers[p.key]).ServeHTTP(w, r)
-				return
-			}
-		}
-	}
-	if d.fallback != nil {
-		d.fallback.ServeHTTP(w, r)
-		return
-	}
-	start := time.Now()
-	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-	http.NotFound(rw, r)
-	logRequest("", r.Method, r.URL.Path, rw.statusCode, time.Since(start), r.ContentLength, rw.bytesWritten, 0)
-}
-
-func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[string]*RepoConfig, readPool, writePool *BufferPool) {
-	routes := http.NewServeMux()
-	var defaultHandler http.Handler
-	patternHandlers := make(map[string]http.Handler)
-	for name, repo := range repos {
-		h := &Handler{
-			connMgr:         connMgr,
-			repo:            name,
-			dynamic:         strings.Contains(name, "*"),
-			access:          ParseAccess(repo.Access),
-			readBufferPool:  readPool,
-			writeBufferPool: writePool,
-		}
-		repoMux := http.NewServeMux()
-		h.setupRoutes(repoMux)
-		switch {
-		case h.dynamic:
-			patternHandlers[name] = h.logRequests(repoMux)
-		case name == "default":
-			defaultHandler = h.logRequests(repoMux)
-		default:
-			routes.Handle("/"+name+"/", http.StripPrefix("/"+name, h.logRequests(repoMux)))
-		}
-	}
-	switch {
-	case len(patternHandlers) > 0:
-		routes.Handle("/", &dynamicRepoDispatcher{
-			fallback: defaultHandler,
-			patterns: compileRepoPatterns(repos),
-			handlers: patternHandlers,
-			static:   repos,
-		})
-	case defaultHandler != nil:
-		routes.Handle("/", defaultHandler)
-	}
-
-	routes.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	routes.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if !connMgr.Ready() {
-			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+		if !validObject {
+			http.NotFound(w, r)
 			return
 		}
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	mux.Handle("/", rejectEncodedPathSeparators(routes))
+		if err := h.readObject(w, r, repo, blobType, objectID, radosCalls); err != nil {
+			h.respondError(w, r, err)
+		}
+	case http.MethodPost:
+		if access < AccessReadAppend {
+			accessDenied(w)
+			return
+		}
+		if !validObject {
+			http.NotFound(w, r)
+			return
+		}
+		if err := h.writeObject(r, repo, blobType, objectID, radosCalls); err != nil {
+			h.respondError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	case http.MethodDelete:
+		if !validObject {
+			http.NotFound(w, r)
+			return
+		}
+		required := AccessReadWrite
+		if blobType == BlobTypeLocks {
+			required = AccessReadAppend
+		}
+		if access < required {
+			accessDenied(w)
+			return
+		}
+		if err := h.deleteObject(repo, blobType, objectID, radosCalls); err != nil {
+			h.respondError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	default:
+		methodNotAllowed(w, http.MethodDelete, http.MethodGet, http.MethodHead, http.MethodPost)
+	}
 }
 
-func parseExpectedHash(object string) ([32]byte, error) {
-	if object == configObjectName {
-		return [32]byte{}, nil
-	}
-
-	hashBytes, err := hex.DecodeString(object)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("invalid hash format: %w", err)
-	}
-	if len(hashBytes) != 32 {
-		return [32]byte{}, fmt.Errorf("invalid hash length: expected 32 bytes, got %d", len(hashBytes))
-	}
-
-	return [32]byte(hashBytes), nil
+func methodNotAllowed(w http.ResponseWriter, methods ...string) {
+	w.Header().Set("Allow", strings.Join(methods, ", "))
+	http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 }
 
-func parseRange(r *http.Request, size int64) (*httpRange, error) {
-	if size == 0 {
-		return &httpRange{start: 0, end: -1, status: http.StatusOK}, nil
-	}
-
-	if r == nil {
-		return &httpRange{start: 0, end: size - 1, status: http.StatusOK}, nil
-	}
-
-	rangeHeader := r.Header.Get("Range")
-	if rangeHeader == "" {
-		return &httpRange{start: 0, end: size - 1, status: http.StatusOK}, nil
-	}
-
-	if !strings.HasPrefix(rangeHeader, "bytes=") {
-		return nil, fmt.Errorf("unsupported range unit in: %s", rangeHeader)
-	}
-
-	rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
-
-	if strings.Contains(rangeSpec, ",") {
-		return nil, fmt.Errorf("multiple ranges not supported: %s", rangeHeader)
-	}
-
-	parts := strings.Split(rangeSpec, "-")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid range format: %s", rangeHeader)
-	}
-
-	if parts[0] == "" && parts[1] == "" {
-		return nil, fmt.Errorf("empty range spec: %s", rangeHeader)
-	}
-
-	var start, end int64
-
-	if parts[0] == "" {
-		suffixLength, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil || suffixLength < 0 {
-			return nil, fmt.Errorf("invalid suffix length in range: %s", rangeHeader)
-		}
-		if suffixLength == 0 {
-			return nil, fmt.Errorf("zero-length suffix range: %s", rangeHeader)
-		}
-		if suffixLength >= size {
-			start = 0
-		} else {
-			start = size - suffixLength
-		}
-		end = size - 1
-	} else {
-		rangeStart, err := strconv.ParseInt(parts[0], 10, 64)
-		if err != nil || rangeStart < 0 {
-			return nil, fmt.Errorf("invalid range start: %w", err)
-		}
-
-		if rangeStart >= size {
-			return nil, fmt.Errorf("range start %d out of bounds for size %d", rangeStart, size)
-		}
-
-		start = rangeStart
-
-		if parts[1] != "" {
-			rangeEnd, err := strconv.ParseInt(parts[1], 10, 64)
-			if err != nil || rangeEnd < 0 {
-				return nil, fmt.Errorf("invalid range end: %w", err)
-			}
-			if rangeEnd >= size {
-				rangeEnd = size - 1
-			}
-			end = rangeEnd
-		} else {
-			end = size - 1
-		}
-
-		if start > end {
-			return nil, fmt.Errorf("range start %d greater than end %d", start, end)
-		}
-	}
-
-	return &httpRange{start: start, end: end, status: http.StatusPartialContent}, nil
+func accessDenied(w http.ResponseWriter) {
+	http.Error(w, "access denied", http.StatusForbidden)
 }
 
-func (hctx *HandlerContext) serveRadosObject(w http.ResponseWriter, r *http.Request, object string) error {
-	rioctx, stat, err := hctx.statRadosObject(object)
-	if err != nil {
-		if errors.Is(err, rados.ErrNotFound) {
-			return errObjectNotFound
-		}
-		return fmt.Errorf("stat %s: %w", object, err)
+func objectName(blobType BlobType, objectID string) string {
+	if blobType == BlobTypeConfig {
+		return "config"
 	}
-
-	striped := (hctx.striperIO != nil && rioctx == hctx.striperIO) ||
-		(hctx.lowerStriperIO != nil && rioctx == hctx.lowerStriperIO)
-	slog.Debug("reading blob", "object", object, "size", stat.Size, "striped", striped)
-
-	if stat.Size > uint64(math.MaxInt64) {
-		return fmt.Errorf("object %s size exceeds max int64: %d", object, stat.Size)
-	}
-
-	rng, err := parseRange(r, int64(stat.Size))
-	if err != nil {
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", stat.Size))
-		return fmt.Errorf("%w: %v", errRangeNotSatisfiable, err)
-	}
-
-	if rng.status == http.StatusPartialContent {
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.start, rng.end, stat.Size))
-	}
-
-	contentLength := rng.end - rng.start + 1
-	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
-	w.WriteHeader(rng.status)
-
-	if r.Method == "HEAD" || contentLength == 0 {
-		return nil
-	}
-
-	_, sum, err := rioctx.ReadObject(object, rng.start, contentLength, w)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", object, err)
-	}
-
-	if rng.start == 0 && contentLength == int64(stat.Size) {
-		hashID := object[strings.LastIndex(object, "/")+1:]
-		expected, parseErr := parseExpectedHash(hashID)
-		if parseErr == nil && expected != [32]byte{} && sum != expected {
-			slog.Warn("hash mismatch on read",
-				"object", object,
-				"expected", hex.EncodeToString(expected[:]),
-				"actual", hex.EncodeToString(sum[:]))
-		}
-	}
-
-	return nil
+	return string(blobType) + "/" + objectID
 }
 
-func (hctx *HandlerContext) createRadosObject(w http.ResponseWriter, r *http.Request, object string, hashID string, canStripe bool) error {
-	size := r.ContentLength
-	if size < 0 && canStripe && hctx.stripedWrites {
-		return errLengthRequired
+func (h *Handler) openHandlerContext(repo string, blobType BlobType, radosCalls *uint64) (*HandlerContext, error) {
+	upper, lower, handle, config, err := h.connections.GetIOContextForRepo(repo, blobType, radosCalls)
+	if err != nil {
+		return nil, err
 	}
-	useStriper := canStripe && hctx.stripedWrites && size > hctx.maxObjectSize
+	hctx := &HandlerContext{handle: handle}
+	hctx.layers = append(hctx.layers, storageLayer{name: "upper", ioctx: upper, config: config})
+	if lower != nil {
+		hctx.layers = append(hctx.layers, storageLayer{name: "lower", ioctx: lower, config: config.Lower})
+	}
+	return hctx, nil
+}
 
-	expected, err := parseExpectedHash(hashID)
+func (hctx *HandlerContext) Destroy() {
+	for _, layer := range hctx.layers {
+		layer.ioctx.Destroy()
+	}
+	hctx.handle.release()
+}
+
+func (hctx *HandlerContext) reportError(err error) {
+	if hctx.handle != nil && err != nil {
+		hctx.handle.manager.reconnectAfterError(hctx.handle.connection, err)
+	}
+}
+
+func plainBackend(layer storageLayer, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
+	return NewRadosIO(layer.ioctx, layer.config.Prefix, layer.config.Alignment, readBuf, writeBuf, radosCalls)
+}
+
+func stripedBackend(layer storageLayer, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
+	return NewStripedIO(layer.ioctx, layer.config.Prefix, uint64(layer.config.MaxObjectSize), layer.config.Alignment, readBuf, writeBuf, radosCalls)
+}
+
+func probeLayer(layer storageLayer, name string, readBuf, writeBuf []byte, radosCalls *uint64) (storedObject, bool, error) {
+	plain := plainBackend(layer, readBuf, writeBuf, radosCalls)
+	stat, err := plain.Stat(name)
+	if err == nil {
+		return storedObject{backend: plain, stat: stat}, true, nil
+	}
+	if !errors.Is(err, rados.ErrNotFound) {
+		return storedObject{}, false, err
+	}
+
+	striped := stripedBackend(layer, readBuf, writeBuf, radosCalls)
+	stat, err = striped.Stat(name)
+	if err == nil {
+		return storedObject{backend: striped, stat: stat, striped: true}, true, nil
+	}
+	if errors.Is(err, rados.ErrNotFound) {
+		return storedObject{}, false, nil
+	}
+	return storedObject{}, false, err
+}
+
+func (h *Handler) readObject(w *responseWriter, r *http.Request, repo string, blobType BlobType, objectID string, radosCalls *uint64) error {
+	readBufPtr := h.readPool.Get()
+	defer h.readPool.Put(readBufPtr)
+
+	hctx, err := h.openHandlerContext(repo, blobType, radosCalls)
 	if err != nil {
 		return err
 	}
+	defer hctx.Destroy()
 
-	_, _, err = hctx.statRadosObject(object)
-	if err == nil {
-		return errObjectExists
+	name := objectName(blobType, objectID)
+	var object storedObject
+	found := false
+	for _, layer := range hctx.layers {
+		object, found, err = probeLayer(layer, name, *readBufPtr, nil, radosCalls)
+		if err != nil {
+			hctx.reportError(err)
+			return fmt.Errorf("stat object %s in %s layer: %w", name, layer.name, err)
+		}
+		if found {
+			break
+		}
 	}
-	if !errors.Is(err, rados.ErrNotFound) {
-		return fmt.Errorf("stat object %s: %w", object, err)
+	if !found {
+		return rados.ErrNotFound
+	}
+	slog.Debug("reading blob", "object", name, "size", object.stat.Size, "striped", object.striped)
+	if object.stat.Size > math.MaxInt64 {
+		return fmt.Errorf("object %s size exceeds supported range: %d", name, object.stat.Size)
 	}
 
-	var rioctx RadosIOContext
-	if useStriper {
-		rioctx = hctx.striperIO
-	} else {
-		rioctx = hctx.radosIO
-	}
-
-	_, sum, err := rioctx.WriteObject(object, r.Body)
+	requested, err := parseRange(r.Header.Values("Range"), int64(object.stat.Size))
 	if err != nil {
-		if errors.Is(err, errObjectExists) {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", object.stat.Size))
+		http.Error(w, "requested range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+		return nil
+	}
+
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(requested.length, 10))
+	status := http.StatusOK
+	if requested.partial {
+		status = http.StatusPartialContent
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", requested.start, requested.start+requested.length-1, object.stat.Size))
+	}
+	w.WriteHeader(status)
+	if r.Method == http.MethodHead || requested.length == 0 {
+		return nil
+	}
+	n, sum, err := object.backend.ReadObject(name, requested.start, requested.length, w)
+	if err != nil {
+		hctx.reportError(err)
+		return fmt.Errorf("read object %s: %w", name, err)
+	}
+	if n != requested.length {
+		return fmt.Errorf("read object %s: %w", name, io.ErrUnexpectedEOF)
+	}
+	if requested.start == 0 && requested.length == int64(object.stat.Size) {
+		warnOnHashMismatch(name, objectID, sum)
+	}
+	return nil
+}
+
+func warnOnHashMismatch(name, objectID string, sum [32]byte) {
+	if objectID == "" {
+		return
+	}
+	actual := hex.EncodeToString(sum[:])
+	if actual == objectID {
+		return
+	}
+	slog.Warn("hash mismatch on read", "object", name, "expected", objectID, "actual", actual)
+}
+
+func parseRange(values []string, size int64) (byteRange, error) {
+	if len(values) == 0 || size == 0 {
+		return byteRange{length: size}, nil
+	}
+	raw := values[0]
+	if !strings.HasPrefix(raw, "bytes=") || strings.Contains(strings.TrimPrefix(raw, "bytes="), ",") {
+		return byteRange{}, errInvalidRange
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(raw, "bytes="))
+	startText, endText, ok := strings.Cut(spec, "-")
+	if !ok || strings.Contains(endText, "-") {
+		return byteRange{}, errInvalidRange
+	}
+	if startText == "" {
+		suffix, err := strconv.ParseInt(endText, 10, 64)
+		if err != nil || suffix <= 0 || size == 0 {
+			return byteRange{}, errInvalidRange
+		}
+		if suffix > size {
+			suffix = size
+		}
+		return byteRange{start: size - suffix, length: suffix, partial: true}, nil
+	}
+	start, err := strconv.ParseInt(startText, 10, 64)
+	if err != nil || start < 0 || start >= size {
+		return byteRange{}, errInvalidRange
+	}
+	end := size - 1
+	if endText != "" {
+		end, err = strconv.ParseInt(endText, 10, 64)
+		if err != nil || end < start {
+			return byteRange{}, errInvalidRange
+		}
+		if end >= size {
+			end = size - 1
+		}
+	}
+	return byteRange{start: start, length: end - start + 1, partial: true}, nil
+}
+
+func (h *Handler) writeObject(r *http.Request, repo string, blobType BlobType, objectID string, radosCalls *uint64) error {
+	writeBufPtr := h.writePool.Get()
+	defer h.writePool.Put(writeBufPtr)
+
+	hctx, err := h.openHandlerContext(repo, blobType, radosCalls)
+	if err != nil {
+		return err
+	}
+	defer hctx.Destroy()
+
+	name := objectName(blobType, objectID)
+	for _, layer := range hctx.layers {
+		_, found, err := probeLayer(layer, name, nil, *writeBufPtr, radosCalls)
+		if err != nil {
+			hctx.reportError(err)
+			return fmt.Errorf("stat object %s in %s layer: %w", name, layer.name, err)
+		}
+		if found {
 			return errObjectExists
 		}
-		if rmErr := rioctx.Remove(object); rmErr != nil && !errors.Is(rmErr, rados.ErrNotFound) {
-			slog.Error("failed to clean up object after write error; a truncated object may remain",
-				"object", object, "write_error", err, "cleanup_error", rmErr)
+	}
+
+	upper := hctx.layers[0]
+	stripingAllowed := upper.config.Striped && canStripeBlobType(blobType)
+	maxObjectSize := upper.config.MaxObjectSize
+	if !stripingAllowed {
+		maxObjectSize = defaultMaxObjectSize
+		if configured, err := hctx.handle.connection.conn.GetConfigOption("osd_max_object_size"); err == nil {
+			maxObjectSize = parseClusterMaxObjectSize(configured)
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, io.ErrUnexpectedEOF) || r.Context().Err() != nil {
+	}
+	if maxObjectSize <= 0 {
+		return fmt.Errorf("invalid maximum object size %d", maxObjectSize)
+	}
+	striped := false
+	if r.ContentLength > maxObjectSize {
+		if !stripingAllowed {
+			return errContentTooLarge
+		}
+		striped = true
+	}
+	if r.ContentLength < 0 && stripingAllowed {
+		return errLengthRequired
+	}
+
+	reader := io.Reader(r.Body)
+	if !striped && r.ContentLength < 0 {
+		reader = io.LimitReader(reader, maxObjectSize+1)
+	}
+	backend := plainBackend(upper, nil, *writeBufPtr, radosCalls)
+	if striped {
+		backend = stripedBackend(upper, nil, *writeBufPtr, radosCalls)
+	}
+
+	n, sum, err := backend.WriteObject(name, reader)
+	if err != nil {
+		hctx.reportError(err)
+		if !errors.Is(err, errObjectExists) {
+			h.cleanupWrite(hctx, backend, name, repo, blobType, err)
+		}
+		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
 			return errClientAborted
 		}
-		return fmt.Errorf("write object %s: %w", object, err)
+		return fmt.Errorf("write object %s: %w", name, err)
 	}
-
-	slog.Debug("created blob", "object", object, "size", size, "striped", useStriper)
-
-	if expected != [32]byte{} && sum != expected {
-		slog.Warn("input hash mismatch", "object", object, "expected", fmt.Sprintf("%x", expected), "got", fmt.Sprintf("%x", sum))
-		if rmErr := rioctx.Remove(object); rmErr != nil && !errors.Is(rmErr, rados.ErrNotFound) {
-			slog.Error("failed to clean up object after hash mismatch; a corrupt object may remain",
-				"object", object, "cleanup_error", rmErr)
-		}
+	if r.ContentLength >= 0 && n != r.ContentLength {
+		h.cleanupWrite(hctx, backend, name, repo, blobType, io.ErrUnexpectedEOF)
+		return fmt.Errorf("write object %s: %w", name, io.ErrUnexpectedEOF)
+	}
+	if !striped && n > maxObjectSize {
+		h.cleanupWrite(hctx, backend, name, repo, blobType, errContentTooLarge)
+		return fmt.Errorf("write object %s: %w", name, errContentTooLarge)
+	}
+	if blobType != BlobTypeConfig && hex.EncodeToString(sum[:]) != objectID {
+		h.cleanupWrite(hctx, backend, name, repo, blobType, errHashMismatch)
 		return errHashMismatch
 	}
-
-	w.WriteHeader(http.StatusOK)
+	slog.Debug("created blob", "object", name, "size", n, "striped", striped)
 	return nil
+}
+
+func (h *Handler) cleanupWrite(hctx *HandlerContext, backend RadosIOContext, name, repo string, blobType BlobType, cause error) {
+	if err := backend.Remove(name); err != nil && !errors.Is(err, rados.ErrNotFound) {
+		hctx.reportError(err)
+		slog.Error("failed to clean up incomplete object", "repo", repo, "blob_type", blobType, "object", name, "cause", cause, "cleanup_error", err)
+	}
+}
+
+func (h *Handler) deleteObject(repo string, blobType BlobType, objectID string, radosCalls *uint64) error {
+	hctx, err := h.openHandlerContext(repo, blobType, radosCalls)
+	if err != nil {
+		return err
+	}
+	defer hctx.Destroy()
+
+	name := objectName(blobType, objectID)
+	var unsupportedStripedErr error
+	removedSupportedRepresentation := false
+	for i := len(hctx.layers) - 1; i >= 0; i-- {
+		layer := hctx.layers[i]
+		representations := []struct {
+			name    string
+			backend RadosIOContext
+		}{
+			{name: "plain", backend: plainBackend(layer, nil, nil, radosCalls)},
+			{name: "striped", backend: stripedBackend(layer, nil, nil, radosCalls)},
+		}
+		for _, representation := range representations {
+			if _, err := representation.backend.Stat(name); errors.Is(err, rados.ErrNotFound) {
+				continue
+			} else if err != nil {
+				if errors.Is(err, errUnsupportedStriperLayout) {
+					if unsupportedStripedErr == nil {
+						unsupportedStripedErr = fmt.Errorf("stat %s %s representation in %s layer: %w", name, representation.name, layer.name, err)
+					}
+					continue
+				}
+				hctx.reportError(err)
+				return fmt.Errorf("stat %s %s representation in %s layer: %w", name, representation.name, layer.name, err)
+			}
+
+			slog.Debug("removing object from layer", "repo", repo, "blob_type", blobType, "object", name, "layer", layer.name, "representation", representation.name)
+			if err := representation.backend.Remove(name); err != nil && !errors.Is(err, rados.ErrNotFound) {
+				if errors.Is(err, errUnsupportedStriperLayout) {
+					if unsupportedStripedErr == nil {
+						unsupportedStripedErr = fmt.Errorf("delete %s %s representation from %s layer: %w", name, representation.name, layer.name, err)
+					}
+					continue
+				}
+				hctx.reportError(err)
+				return fmt.Errorf("delete %s %s representation from %s layer: %w", name, representation.name, layer.name, err)
+			}
+			removedSupportedRepresentation = true
+		}
+	}
+	if unsupportedStripedErr != nil {
+		if removedSupportedRepresentation {
+			slog.Warn("leaving striped object with unsupported layout", "repo", repo, "blob_type", blobType, "object", name, "error", unsupportedStripedErr)
+		}
+		return unsupportedStripedErr
+	}
+	return nil
+}
+
+func (h *Handler) listObjects(repo string, blobType BlobType, v2 bool, radosCalls *uint64) ([]byte, error) {
+	hctx, err := h.openHandlerContext(repo, blobType, radosCalls)
+	if err != nil {
+		return nil, err
+	}
+	defer hctx.Destroy()
+
+	seen := make(map[string]struct{})
+	blobs := make([]listedBlob, 0)
+	for _, layer := range hctx.layers {
+		candidates := make(map[string]blobRepresentations)
+		prefix := layer.config.Prefix + string(blobType) + "/"
+		err := visitPhysicalObjects(layer.ioctx, layer.config.Pool, layer.config.Namespace, radosCalls, func(object string) error {
+			if !strings.HasPrefix(object, prefix) {
+				return nil
+			}
+			id, kind, recognized := classifyPhysicalBlob(strings.TrimPrefix(object, prefix))
+			if !recognized {
+				slog.Warn("skipping unknown object", "repo", repo, "blob_type", blobType, "object", object)
+				return nil
+			}
+			if kind == continuationStripe {
+				return nil
+			}
+			representations := candidates[id]
+			switch kind {
+			case plainBlob:
+				representations.plain = true
+			case firstStripe:
+				representations.striped = true
+			}
+			candidates[id] = representations
+			return nil
+		})
+		if err != nil {
+			hctx.reportError(err)
+			return nil, fmt.Errorf("list %s objects in %s layer: %w", blobType, layer.name, err)
+		}
+
+		plain := plainBackend(layer, nil, nil, radosCalls)
+		striped := stripedBackend(layer, nil, nil, radosCalls)
+		for id, representations := range candidates {
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			blob := listedBlob{Name: id}
+			if !v2 {
+				seen[id] = struct{}{}
+				blobs = append(blobs, blob)
+				continue
+			}
+
+			name := objectName(blobType, id)
+			if representations.plain {
+				stat, err := plain.Stat(name)
+				if err == nil {
+					seen[id] = struct{}{}
+					blob.Size = stat.Size
+					blobs = append(blobs, blob)
+					continue
+				}
+				if !errors.Is(err, rados.ErrNotFound) {
+					hctx.reportError(err)
+					return nil, fmt.Errorf("stat plain object %s in %s layer: %w", name, layer.name, err)
+				}
+			}
+			if representations.striped {
+				stat, err := striped.Stat(name)
+				if err != nil {
+					if errors.Is(err, errUnsupportedStriperLayout) {
+						seen[id] = struct{}{}
+						slog.Warn("skipping striped object with unsupported layout", "repo", repo, "blob_type", blobType, "object", name, "error", err)
+						continue
+					}
+					if errors.Is(err, rados.ErrNotFound) {
+						continue
+					}
+					hctx.reportError(err)
+					return nil, fmt.Errorf("stat striped object %s in %s layer: %w", name, layer.name, err)
+				}
+				seen[id] = struct{}{}
+				blob.Size = stat.Size
+				blobs = append(blobs, blob)
+			}
+		}
+	}
+
+	sort.Slice(blobs, func(i, j int) bool {
+		return blobs[i].Name < blobs[j].Name
+	})
+	if v2 {
+		return json.Marshal(blobs)
+	}
+	names := make([]string, len(blobs))
+	for i, blob := range blobs {
+		names[i] = blob.Name
+	}
+	return json.Marshal(names)
+}
+
+func classifyPhysicalBlob(name string) (string, physicalBlobKind, bool) {
+	if isObjectID(name) {
+		return name, plainBlob, true
+	}
+	if len(name) != 64+stripeSuffixLen || !isObjectID(name[:64]) || !isStripeSuffix(name[64:]) {
+		return "", invalidPhysicalBlob, false
+	}
+	if name[64:] == firstStripeSuffix {
+		return name[:64], firstStripe, true
+	}
+	return name[:64], continuationStripe, true
+}
+
+func isStripeSuffix(suffix string) bool {
+	if len(suffix) != stripeSuffixLen || suffix[0] != '.' {
+		return false
+	}
+	for _, c := range suffix[1:] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func visitPhysicalObjects(ioctx *rados.IOContext, pool, namespace string, radosCalls *uint64, visit func(string) error) error {
+	slog.Debug("rados.Iter", "pool", pool, "namespace", namespace)
+	atomic.AddUint64(radosCalls, 1)
+	iter, err := ioctx.Iter()
+	if err != nil {
+		return fmt.Errorf("list objects: %w", err)
+	}
+	defer iter.Close()
+	for iter.Next() {
+		if err := visit(iter.Value()); err != nil {
+			return err
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("iterate objects: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) purgeRepository(ctx context.Context, repo string, radosCalls *uint64) error {
+	scopes, err := h.purgeScopes(repo)
+	if err != nil {
+		return err
+	}
+	targets := collectPurgeTargets(scopes)
+
+	for _, target := range targets {
+		if err := h.checkPurgeGate(target, radosCalls); err != nil {
+			return err
+		}
+	}
+
+	deletedCount := 0
+	foreignCount := 0
+	for _, target := range targets {
+		deleted, foreign, err := h.purgeTargetObjects(ctx, repo, target, radosCalls)
+		deletedCount += deleted
+		foreignCount += foreign
+		if err != nil {
+			return err
+		}
+	}
+	if foreignCount > 0 {
+		slog.Info("leaving foreign objects", "repo", repo, "count", foreignCount)
+	}
+	slog.Info("purged repository", "repo", repo, "objects", deletedCount)
+	return nil
+}
+
+func (h *Handler) checkPurgeGate(target *purgeTarget, radosCalls *uint64) error {
+	guarded := false
+	for _, scope := range target.scopes {
+		if scope.types[BlobTypeSnapshots] || scope.types[BlobTypeLocks] {
+			guarded = true
+		}
+	}
+	if !guarded {
+		return nil
+	}
+	return h.visitPurgeTarget(target, radosCalls, func(object string) error {
+		for _, scope := range target.scopes {
+			if scope.types[BlobTypeSnapshots] && purgeTypeOwns(scope.prefix, BlobTypeSnapshots, object) {
+				return errRepositoryHasSnap
+			}
+			if scope.types[BlobTypeLocks] && purgeTypeOwns(scope.prefix, BlobTypeLocks, object) {
+				return errRepositoryLocked
+			}
+		}
+		return nil
+	})
+}
+
+func (h *Handler) purgeTargetObjects(ctx context.Context, repo string, target *purgeTarget, radosCalls *uint64) (int, int, error) {
+	var deleted atomic.Uint64
+	foreign := 0
+
+	err := h.withPurgeTarget(target, radosCalls, func(ioctx *rados.IOContext) error {
+		names := make(chan string, purgeDeleteWorkers)
+		failures := make(chan error, 1)
+		var stopped atomic.Bool
+		var workers sync.WaitGroup
+		for range purgeDeleteWorkers {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				for object := range names {
+					if stopped.Load() {
+						continue
+					}
+					slog.Debug("rados.Delete", "object", object)
+					atomic.AddUint64(radosCalls, 1)
+					if err := ioctx.Delete(object); err != nil && !errors.Is(err, rados.ErrNotFound) {
+						stopped.Store(true)
+						select {
+						case failures <- fmt.Errorf("delete object %s: %w", object, err):
+						default:
+						}
+						continue
+					}
+					deleted.Add(1)
+				}
+			}()
+		}
+
+		visitErr := visitPhysicalObjects(ioctx, target.pool, target.namespace, radosCalls, func(object string) error {
+			if stopped.Load() {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			owner := purgeTargetOwner(target, object)
+			if owner == nil {
+				foreign++
+				return nil
+			}
+			slog.Debug("purging object", "repo", repo, "object", object, "layer", owner.layer)
+			names <- object
+			return nil
+		})
+		close(names)
+		workers.Wait()
+
+		select {
+		case failure := <-failures:
+			return failure
+		default:
+			return visitErr
+		}
+	})
+	return int(deleted.Load()), foreign, err
+}
+
+func purgeTargetOwner(target *purgeTarget, object string) *purgeScope {
+	for _, scope := range target.scopes {
+		if purgeScopeOwns(scope, object) {
+			return scope
+		}
+	}
+	return nil
+}
+
+func (h *Handler) purgeScopes(repo string) ([]*purgeScope, error) {
+	byKey := make(map[purgeScopeKey]*purgeScope)
+	var missingPool error
+	add := func(layer string, config *BlobPool, blobType BlobType) {
+		key := purgeScopeKey{layer: layer, pool: config.Pool, namespace: config.Namespace, prefix: config.Prefix}
+		scope := byKey[key]
+		if scope == nil {
+			scope = &purgeScope{
+				layer:     layer,
+				pool:      config.Pool,
+				namespace: config.Namespace,
+				prefix:    config.Prefix,
+				types:     make(map[BlobType]bool),
+			}
+			byKey[key] = scope
+		}
+		scope.types[blobType] = true
+	}
+
+	for _, blobType := range AllBlobTypes {
+		config, err := h.connections.GetBlobPoolForRepo(repo, blobType)
+		if err != nil {
+			if errors.Is(err, errPoolNotConfigured) {
+				if missingPool == nil {
+					missingPool = err
+				}
+				continue
+			}
+			return nil, err
+		}
+		if config.Lower != nil {
+			add("lower", config.Lower, blobType)
+		}
+		add("upper", config, blobType)
+	}
+	if len(byKey) == 0 && missingPool != nil {
+		return nil, missingPool
+	}
+
+	scopes := make([]*purgeScope, 0, len(byKey))
+	for _, scope := range byKey {
+		scopes = append(scopes, scope)
+	}
+	sort.Slice(scopes, func(i, j int) bool {
+		if scopes[i].layer != scopes[j].layer {
+			return scopes[i].layer == "lower"
+		}
+		if scopes[i].pool != scopes[j].pool {
+			return scopes[i].pool < scopes[j].pool
+		}
+		if scopes[i].namespace != scopes[j].namespace {
+			return scopes[i].namespace < scopes[j].namespace
+		}
+		return scopes[i].prefix < scopes[j].prefix
+	})
+	return scopes, nil
+}
+
+func collectPurgeTargets(scopes []*purgeScope) []*purgeTarget {
+	byKey := make(map[purgeTargetKey]*purgeTarget)
+	var targets []*purgeTarget
+	for _, scope := range scopes {
+		key := purgeTargetKey{pool: scope.pool, namespace: scope.namespace}
+		target := byKey[key]
+		if target == nil {
+			target = &purgeTarget{pool: scope.pool, namespace: scope.namespace}
+			byKey[key] = target
+			targets = append(targets, target)
+		}
+		target.scopes = append(target.scopes, scope)
+	}
+	return targets
+}
+
+func (h *Handler) withPurgeTarget(target *purgeTarget, radosCalls *uint64, fn func(*rados.IOContext) error) error {
+	ioctx, handle, err := h.connections.OpenNamespaceContext(target.pool, target.namespace, radosCalls)
+	if err != nil {
+		return err
+	}
+	defer handle.release()
+	defer ioctx.Destroy()
+
+	err = fn(ioctx)
+	if err != nil {
+		handle.manager.reconnectAfterError(handle.connection, err)
+	}
+	return err
+}
+
+func (h *Handler) visitPurgeTarget(target *purgeTarget, radosCalls *uint64, visit func(string) error) error {
+	return h.withPurgeTarget(target, radosCalls, func(ioctx *rados.IOContext) error {
+		return visitPhysicalObjects(ioctx, target.pool, target.namespace, radosCalls, visit)
+	})
+}
+
+func purgeScopeOwns(scope *purgeScope, object string) bool {
+	for blobType := range scope.types {
+		if purgeTypeOwns(scope.prefix, blobType, object) {
+			return true
+		}
+	}
+	return false
+}
+
+func purgeTypeOwns(prefix string, blobType BlobType, object string) bool {
+	if blobType == BlobTypeConfig {
+		name := prefix + "config"
+		return object == name || strings.HasPrefix(object, name) && isStripeSuffix(object[len(name):])
+	}
+	return strings.HasPrefix(object, prefix+string(blobType)+"/")
+}
+
+func (h *Handler) respondError(w *responseWriter, r *http.Request, err error) {
+	if w.headerWritten {
+		h.logRequestError("request failed after response started", r, err)
+		return
+	}
+	switch {
+	case errors.Is(err, errHashMismatch):
+		http.Error(w, "hash mismatch", http.StatusBadRequest)
+	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, errClientAborted):
+		http.Error(w, "client aborted request", http.StatusBadRequest)
+	case errors.Is(err, errContentTooLarge), hasRadosErrorCode(err, syscall.EFBIG):
+		http.Error(w, "object size exceeds cluster limit", http.StatusRequestEntityTooLarge)
+	case hasRadosErrorCode(err, syscall.EMSGSIZE):
+		http.Error(w, "write chunk exceeds message limit", http.StatusRequestEntityTooLarge)
+	case hasRadosErrorCode(err, syscall.EOPNOTSUPP):
+		h.logRequestError("operation not supported", r, err)
+		http.Error(w, "operation not supported", http.StatusInternalServerError)
+	case hasRadosErrorCode(err, syscall.ENOSPC):
+		h.logRequestError("insufficient storage", r, err)
+		http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
+	case hasRadosErrorCode(err, syscall.EDQUOT):
+		h.logRequestError("disk quota exceeded", r, err)
+		http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
+	case errors.Is(err, errLengthRequired):
+		http.Error(w, "content length required", http.StatusLengthRequired)
+	case errors.Is(err, errObjectExists):
+		http.Error(w, "object already exists", http.StatusForbidden)
+	case errors.Is(err, errRepositoryHasSnap):
+		http.Error(w, errRepositoryHasSnap.Error(), http.StatusConflict)
+	case errors.Is(err, errRepositoryLocked):
+		http.Error(w, errRepositoryLocked.Error(), http.StatusConflict)
+	case errors.Is(err, errPoolNotConfigured):
+		http.Error(w, errPoolNotConfigured.Error(), http.StatusServiceUnavailable)
+	case errors.Is(err, errConnectionUnavailable):
+		http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
+	case errors.Is(err, rados.ErrNotFound):
+		http.NotFound(w, r)
+	default:
+		h.logRequestError("request failed", r, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+func (h *Handler) logRequestError(message string, r *http.Request, err error) {
+	repoName := ""
+	path := r.URL.Path
+	if repo, ok := h.resolveRepository(path); ok {
+		repoName = repo.name
+		path = repo.resourcePath
+		if path == "" {
+			path = "/"
+		}
+	}
+	attrs := []any{"method", r.Method, "path", path, "error", err}
+	if repoName != "" && repoName != "default" {
+		attrs = append(attrs, "repo", repoName)
+	}
+	slog.Error(message, attrs...)
+}
+
+func hasRadosErrorCode(err error, codes ...syscall.Errno) bool {
+	var coded interface{ ErrorCode() int }
+	if !errors.As(err, &coded) {
+		return false
+	}
+	for _, code := range codes {
+		if coded.ErrorCode() == -int(code) {
+			return true
+		}
+	}
+	return false
 }
