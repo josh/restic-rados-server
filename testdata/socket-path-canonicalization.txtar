@@ -8,6 +8,16 @@ exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localh
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @config-data http://localhost/config
 
+sha256 config-data DATAHASH
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @config-data 'http://localhost/data/'$DATAHASH --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --path-as-is --unix-socket $WORK/restic.sock 'http://localhost/data%2F'$DATAHASH --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --path-as-is --unix-socket $WORK/restic.sock 'http://localhost/data/'$DATAHASH --output /dev/null
+stdout '200'
+
 exec curl --silent --include --path-as-is --unix-socket $WORK/restic.sock http://localhost//config
 stdout 'HTTP/.* 307'
 stdout 'Location: /config'

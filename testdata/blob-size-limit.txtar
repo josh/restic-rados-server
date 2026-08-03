@@ -14,4 +14,7 @@ stdout '40000000'
 ! exec curl --fail --show-error --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000000'
 stderr '413'
 
+exec curl --http1.1 --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --header 'Transfer-Encoding: chunked' --data-binary @large-blob 'http://localhost/keys/0000000000000000000000000000000000000000000000000000000000000000' --output /dev/null
+stdout '413'
+
 kill server

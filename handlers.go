@@ -443,6 +443,32 @@ func hasAnyPrefix(name string, prefixes []string) bool {
 	return false
 }
 
+func matchesExactOrStripedObject(name string, exact []string) bool {
+	for _, object := range exact {
+		if name == object {
+			return true
+		}
+		if len(name) != len(object)+stripeSuffixLen || !strings.HasPrefix(name, object) {
+			continue
+		}
+		suffix := name[len(object):]
+		if suffix[0] != '.' {
+			continue
+		}
+		valid := true
+		for _, c := range suffix[1:] {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) purgeTargets(repo string) ([]*purgeTarget, error) {
 	type targetKey struct {
 		layer     string
@@ -601,7 +627,7 @@ func (h *Handler) purgeTargetObjects(ctx context.Context, t *purgeTarget, radosC
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if hasAnyPrefix(name, t.prefixes) || slices.Contains(t.exact, name) {
+			if hasAnyPrefix(name, t.prefixes) || matchesExactOrStripedObject(name, t.exact) {
 				names <- name
 			} else {
 				foreign++
@@ -943,6 +969,19 @@ type dynamicRepoDispatcher struct {
 	static   map[string]*RepoConfig
 }
 
+func rejectEncodedPathSeparators(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		escaped := r.URL.EscapedPath()
+		for i := 0; i+2 < len(escaped); i++ {
+			if escaped[i] == '%' && escaped[i+1] == '2' && (escaped[i+2] == 'f' || escaped[i+2] == 'F') {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (d *dynamicRepoDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	seg, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	_, static := d.static[seg]
@@ -971,6 +1010,7 @@ func (d *dynamicRepoDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request
 }
 
 func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[string]*RepoConfig, readPool, writePool *BufferPool) {
+	routes := http.NewServeMux()
 	var defaultHandler http.Handler
 	patternHandlers := make(map[string]http.Handler)
 	for name, repo := range repos {
@@ -990,31 +1030,32 @@ func setupAllRoutes(mux *http.ServeMux, connMgr *ConnectionManager, repos map[st
 		case name == "default":
 			defaultHandler = h.logRequests(repoMux)
 		default:
-			mux.Handle("/"+name+"/", http.StripPrefix("/"+name, h.logRequests(repoMux)))
+			routes.Handle("/"+name+"/", http.StripPrefix("/"+name, h.logRequests(repoMux)))
 		}
 	}
 	switch {
 	case len(patternHandlers) > 0:
-		mux.Handle("/", &dynamicRepoDispatcher{
+		routes.Handle("/", &dynamicRepoDispatcher{
 			fallback: defaultHandler,
 			patterns: compileRepoPatterns(repos),
 			handlers: patternHandlers,
 			static:   repos,
 		})
 	case defaultHandler != nil:
-		mux.Handle("/", defaultHandler)
+		routes.Handle("/", defaultHandler)
 	}
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	routes.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok\n")
 	})
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+	routes.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if !connMgr.Ready() {
 			http.Error(w, "ceph cluster unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = io.WriteString(w, "ok\n")
 	})
+	mux.Handle("/", rejectEncodedPathSeparators(routes))
 }
 
 func parseExpectedHash(object string) ([32]byte, error) {
