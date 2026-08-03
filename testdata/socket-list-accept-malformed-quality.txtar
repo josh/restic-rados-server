@@ -1,0 +1,31 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-small 'http://localhost/data/f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: application/vnd.x.restic.rest.v2;q=1.0.0' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v2'
+stdout '"name":"f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"'
+stdout '"size":5'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: application/vnd.x.restic.rest.v2;q=high' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v2'
+stdout '"size":5'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: text/html, application/vnd.x.restic.rest.v2;q=1.0.0' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v2'
+stdout '"size":5'
+
+exec curl --silent --unix-socket $WORK/restic.sock --request GET --header 'Accept: application/vnd.x.restic.rest.v2;q=0.0' --include 'http://localhost/data/'
+stdout 'Content-Type: application/vnd.x.restic.rest.v1'
+stdout '\["f2ca1bb6c7e907d06dafe4687e579fce76b37e4e93b7605022da52e6ccc26fd2"\]'
+
+kill server
+
+-- blob-small --
+test
