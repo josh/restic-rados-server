@@ -1,0 +1,33 @@
+tail-logs
+create-pool shared
+
+envsubst config.json.tmpl config.json
+sha256 blob-data HASH
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/'$HASH --output /dev/null
+stdout '200'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace tenant:blue ls
+stdout '^data/'$HASH'$'
+
+exec rados --pool $CEPH_POOL_SHARED ls
+! stdout '.'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {
+            "pools": {
+                "$CEPH_POOL_SHARED/tenant:blue": ["*"]
+            }
+        }
+    }
+}
+-- blob-data --
+legacy namespace with colon

@@ -1,0 +1,17 @@
+create-pool
+
+env RESTIC_RADOS_SERVER_VERBOSE=ON
+env RESTIC_RADOS_SERVER_STRIPER=Off
+exec restic-rados-server --log-file $WORK/enabled.log --listen $WORK/enabled.sock &enabled&
+wait4socket $WORK/enabled.sock
+exec curl --silent --unix-socket $WORK/enabled.sock --request POST 'http://localhost/?create=true'
+wait4log 'level=DEBUG msg=request-start' $WORK/enabled.log
+kill enabled
+
+env RESTIC_RADOS_SERVER_VERBOSE=NO
+env RESTIC_RADOS_SERVER_STRIPER=on
+exec restic-rados-server --log-file $WORK/disabled.log --listen $WORK/disabled.sock &disabled&
+wait4socket $WORK/disabled.sock
+exec curl --silent --unix-socket $WORK/disabled.sock 'http://localhost/config'
+! grep 'level=DEBUG' $WORK/disabled.log
+kill disabled
