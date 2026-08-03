@@ -16,6 +16,7 @@ wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock http://localhost/config
 cmp stdout config-data
+wait4log 'method=GET path=/config status=200 .*rados_calls=6' $RESTIC_RADOS_SERVER_LOG_FILE
 
 exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
 cmp stdout test-data

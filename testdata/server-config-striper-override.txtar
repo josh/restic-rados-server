@@ -18,7 +18,7 @@ stdout 'data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562\.0
 
 kill server
 
-exec restic-rados-server --listen $WORK/restic2.sock &server2&
+exec restic-rados-server --max-object-size 67108864 --listen $WORK/restic2.sock &server2&
 wait4socket $WORK/restic2.sock
 
 exec curl --silent --unix-socket $WORK/restic2.sock --head --include 'http://localhost/data/c0e6623abfbed73c146be81338cff1e8e4c06dd05eb98721163dc79fbbd20562'

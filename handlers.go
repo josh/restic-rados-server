@@ -243,14 +243,14 @@ func (h *Handler) logRequests(next http.Handler) http.Handler {
 }
 
 func (h *Handler) openIOContext(ctx context.Context, blobType BlobType) (*HandlerContext, error) {
-	ioctx, lowerIoctx, conn, bp, err := h.connMgr.GetIOContextForRepo(h.repoName(ctx), blobType)
+	radosCalls := radosCallCounter(ctx)
+	ioctx, lowerIoctx, conn, bp, err := h.connMgr.GetIOContextForRepo(h.repoName(ctx), blobType, radosCalls)
 	if err != nil {
 		return nil, err
 	}
 
 	readBufPtr := h.readBufferPool.Get()
 	writeBufPtr := h.writeBufferPool.Get()
-	radosCalls := radosCallCounter(ctx)
 
 	hctx := &HandlerContext{
 		conn:            conn,
