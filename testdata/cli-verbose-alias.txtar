@@ -1,0 +1,14 @@
+create-pool
+
+env RESTIC_RADOS_SERVER_VERBOSE=
+env RESTIC_CEPH_SERVER_VERBOSE=
+env CEPH_RESTIC_SERVER_VERBOSE=
+env RADOS_RESTIC_SERVER_VERBOSE=
+
+exec restic-rados-server -v --log-file $WORK/verbose.log --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+wait4log 'level=DEBUG msg=request-start' $WORK/verbose.log
+
+kill server

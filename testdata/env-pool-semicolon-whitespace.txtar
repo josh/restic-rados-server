@@ -1,0 +1,23 @@
+tail-logs
+create-pool meta
+create-pool data
+
+env RESTIC_RADOS_SERVER_POOL=' '$CEPH_POOL_META' : *; '$CEPH_POOL_DATA' : data; '
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config
+
+sha256 blob-data HASH
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://localhost/data/'$HASH
+exec rados --pool $CEPH_POOL_DATA ls
+stdout '^data/'$HASH'$'
+exec rados --pool $CEPH_POOL_META ls
+stdout '^config$'
+! stdout '^data/'
+kill server
+
+-- blob-data --
+semicolon pool data
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}

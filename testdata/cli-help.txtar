@@ -1,0 +1,20 @@
+exec restic-rados-server --help
+stderr '^Usage: restic-rados-server \[options\]'
+stderr 'Options:'
+stderr '  -pool value'
+stderr 'Pool specification:'
+stderr 'access level: r/read-only, ra/read-append, rw/read-write'
+stderr 'buffer size for reading objects in bytes \(default 16777216\)'
+stderr 'buffer size for writing objects in bytes \(default 16777216\)'
+stderr 'enable librados striper for large objects \(default true\)'
+stderr 'graceful shutdown timeout for listeners \(default 1m0s\)'
+stderr '  -version'
+stderr 'print version and exit'
+! stdout .
+
+exec restic-rados-server -h
+stderr '^Usage: restic-rados-server \[options\]'
+stderr 'path to JSON configuration file'
+stderr 'use HTTP/2 over stdin/stdout \(default when no listeners specified\)'
+stderr '  -pool value'
+! stdout .

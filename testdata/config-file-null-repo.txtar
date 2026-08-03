@@ -1,0 +1,9 @@
+! exec restic-rados-server --config null-repo.json
+stderr 'repo "default": configuration cannot be null'
+
+-- null-repo.json --
+{
+    "repos": {
+        "default": null
+    }
+}

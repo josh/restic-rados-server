@@ -1,0 +1,13 @@
+create-pool
+
+env RESTIC_RADOS_SERVER_VERBOSE=yes
+env RESTIC_RADOS_SERVER_STRIPER=yes
+exec restic-rados-server --log-file $WORK/verbose.log --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+wait4log 'level=DEBUG msg=request-start' $WORK/verbose.log
+kill server
+
+env RESTIC_RADOS_SERVER_VERBOSE=maybe
+! exec timeout 5s restic-rados-server --listen $WORK/invalid.sock
+stderr 'invalid VERBOSE value "maybe"'

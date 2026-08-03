@@ -1,0 +1,24 @@
+! exec restic-rados-server --config punctuation-witness.json
+stderr 'repo "\*": blob type "data": lower layer may overlap upper layer across dynamic repos'
+
+-- punctuation-witness.json --
+{
+    "repos": {
+        "*": {
+            "blob_pools": {
+                "data": {
+                    "upper": {
+                        "pool": "shared",
+                        "namespace": "{repo}",
+                        "prefix": "-customer-/root/"
+                    },
+                    "lower": {
+                        "pool": "shared",
+                        "namespace": "tenant-a",
+                        "prefix": "{repo}/root/"
+                    }
+                }
+            }
+        }
+    }
+}

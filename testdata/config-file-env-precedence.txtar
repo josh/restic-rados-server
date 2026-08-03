@@ -1,0 +1,50 @@
+tail-logs
+create-pool file
+create-pool environment
+
+envsubst config.json.tmpl config.json
+env RESTIC_RADOS_SERVER_POOL=$CEPH_POOL_ENVIRONMENT
+env RESTIC_RADOS_SERVER_ACCESS=rw
+
+exec restic-rados-server --config config.json --listen $WORK/env.sock &envserver&
+wait4socket $WORK/env.sock
+
+exec curl --silent --unix-socket $WORK/env.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/env.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+kill envserver
+
+exec rados --pool $CEPH_POOL_ENVIRONMENT ls
+stdout 'data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+
+exec rados --pool $CEPH_POOL_FILE ls
+! stdout 'data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+
+env RESTIC_RADOS_SERVER_ACCESS=r
+
+exec restic-rados-server --config config.json --pool $CEPH_POOL_FILE --access rw --listen $WORK/cli.sock &cliserver&
+wait4socket $WORK/cli.sock
+
+exec curl --silent --unix-socket $WORK/cli.sock --request POST 'http://localhost/?create=true'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/cli.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+kill cliserver
+
+exec rados --pool $CEPH_POOL_FILE ls
+stdout 'data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {
+            "access": "r",
+            "pools": {
+                "$CEPH_POOL_FILE": ["*"]
+            }
+        }
+    }
+}
+-- blob-data --
+test blob content
