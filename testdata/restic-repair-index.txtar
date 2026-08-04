@@ -12,7 +12,11 @@ exec restic backup data --option rclone.program=restic-rados-server --repo rclon
 
 exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 
-exec bash delete-indexes.sh
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdin stdout
+exec grep '^index/'
+stdin stdout
+exec xargs --no-run-if-empty --max-args=1 rados --pool $RESTIC_RADOS_SERVER_POOL rm
 
 rados-object-count index/
 cmp stdout zero.txt
@@ -28,14 +32,6 @@ exec restic restore latest --target $WORK/restored --option rclone.program=resti
 
 bin-cmp $WORK/restored/data/first.bin data/first.bin
 bin-cmp $WORK/restored/data/second.bin data/second.bin
-
--- delete-indexes.sh --
-set -o errexit
-set -o pipefail
-
-rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep '^index/' | while read -r object; do
-	rados --pool "$RESTIC_RADOS_SERVER_POOL" rm "$object"
-done
 -- password.txt --
 secret
 -- zero.txt --

@@ -10,7 +10,11 @@ cmp stdout two.txt
 
 exec restic snapshots --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt
 
-exec bash remove-first-key.sh
+exec restic key list --json --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt
+stdin stdout
+exec jq -r '.[] | select(.current == false) | .id'
+capture-output KEY_ID
+exec restic key remove $KEY_ID --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt
 
 rados-object-count keys/
 cmp stdout one.txt
@@ -19,13 +23,6 @@ cmp stdout one.txt
 stderr 'wrong password'
 
 exec restic snapshots --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt
-
--- remove-first-key.sh --
-set -o errexit
-set -o pipefail
-
-id=$(restic key list --json --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt | jq -r '.[] | select(.current == false) | .id')
-restic key remove "$id" --option rclone.program=restic-rados-server --repo rclone: --password-file password2.txt
 -- password.txt --
 secret
 -- password2.txt --
