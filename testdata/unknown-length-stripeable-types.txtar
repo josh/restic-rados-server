@@ -1,0 +1,62 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen 127.0.0.1:$PORT --max-object-size 1000000 --write-buffer-size 262144 &server&
+wait4socket 127.0.0.1:$PORT
+
+exec curl --silent --request POST 'http://127.0.0.1:'$PORT'/?create=true'
+
+bin-file rand small-blob 4096
+sha256 small-blob SMALLHASH
+
+exec curl --http1.1 --silent --write-out '%{http_code}' --request POST --header 'Content-Type: application/octet-stream' --header 'Transfer-Encoding: chunked' --data-binary @small-blob 'http://127.0.0.1:'$PORT'/index/'$SMALLHASH --output index-response
+stdout '411'
+cmp index-response expected-response
+
+exec curl --http1.1 --silent --write-out '%{http_code}' --request POST --header 'Content-Type: application/octet-stream' --header 'Transfer-Encoding: chunked' --data-binary @small-blob 'http://127.0.0.1:'$PORT'/snapshots/'$SMALLHASH --output snapshots-response
+stdout '411'
+cmp snapshots-response expected-response
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'index/'
+! stdout 'snapshots/'
+
+bin-file rand large-blob 2500000
+sha256 large-blob LARGEHASH
+
+exec curl --http1.1 --silent --write-out '%{http_code}' --request POST --header 'Content-Type: application/octet-stream' --header 'Transfer-Encoding: chunked' --data-binary @large-blob 'http://127.0.0.1:'$PORT'/index/'$LARGEHASH --output large-response
+stdout '411'
+cmp large-response expected-response
+
+exec curl --silent --write-out '%{http_code}' --request POST --header 'Content-Type: application/octet-stream' --data-binary @small-blob 'http://127.0.0.1:'$PORT'/index/'$SMALLHASH --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --request POST --header 'Content-Type: application/octet-stream' --data-binary @large-blob 'http://127.0.0.1:'$PORT'/index/'$LARGEHASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout 'index/'$SMALLHASH'$'
+stdout 'index/'$LARGEHASH'\.0000000000000000'
+stdout 'index/'$LARGEHASH'\.0000000000000002'
+
+exec curl --silent 'http://127.0.0.1:'$PORT'/index/'$LARGEHASH --output downloaded-large
+bin-cmp downloaded-large large-blob
+
+kill server
+
+exec restic-rados-server --listen $WORK/unstriped.sock --striper=false &unstriped&
+wait4socket $WORK/unstriped.sock
+
+exec curl --http1.1 --silent --write-out '%{http_code}' --unix-socket $WORK/unstriped.sock --request POST --header 'Content-Type: application/octet-stream' --header 'Transfer-Encoding: chunked' --data-binary @small-blob 'http://localhost/snapshots/'$SMALLHASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout 'snapshots/'$SMALLHASH'$'
+
+exec curl --silent --unix-socket $WORK/unstriped.sock 'http://localhost/snapshots/'$SMALLHASH --output downloaded-snapshot
+bin-cmp downloaded-snapshot small-blob
+
+kill unstriped
+
+-- expected-response --
+content length required

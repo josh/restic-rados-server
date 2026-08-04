@@ -1,0 +1,27 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/healthz'
+cmp stdout expected-body
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/readyz'
+cmp stdout expected-body
+
+kill server
+
+exec restic-rados-server --access r --listen $WORK/gated.sock &gated&
+wait4socket $WORK/gated.sock
+
+exec curl --silent --unix-socket $WORK/gated.sock 'http://localhost/healthz'
+cmp stdout expected-body
+
+exec curl --silent --unix-socket $WORK/gated.sock 'http://localhost/readyz'
+cmp stdout expected-body
+
+kill gated
+
+-- expected-body --
+ok

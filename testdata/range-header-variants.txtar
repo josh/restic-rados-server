@@ -1,0 +1,50 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @empty http://localhost/data/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 --output /dev/null
+stdout '200'
+
+exec curl --silent --include --unix-socket $WORK/restic.sock --header 'Range: bytes=0-' http://localhost/data/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 0'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=0-99' http://localhost/data/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 --output empty-range
+stdout '200'
+byte-count empty-range
+stdout '0'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=-5' http://localhost/data/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @empty http://localhost/config --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=0-' http://localhost/config --output /dev/null
+stdout '200'
+
+bin-file rand blob 1000
+sha256 blob HASH
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob http://localhost/data/$HASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=0-9' --header 'Range: bytes=0-9' http://localhost/data/$HASH --output duplicate-range
+stdout '206'
+byte-count duplicate-range
+stdout '10'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=10-19' --header 'Range: bytes=100-299' http://localhost/data/$HASH --output duplicate-first
+stdout '206'
+byte-count duplicate-first
+stdout '10'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Range: bytes=0-9,20-29' http://localhost/data/$HASH --output /dev/null
+stdout '416'
+
+kill server
+
+-- empty --

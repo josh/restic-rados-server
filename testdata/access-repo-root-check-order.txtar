@@ -1,0 +1,36 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --access r --listen $WORK/readonly.sock &readonly&
+wait4socket $WORK/readonly.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/readonly.sock --request POST 'http://localhost/' --output create-missing.txt
+stdout '403'
+grep 'access denied' create-missing.txt
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/readonly.sock --request POST 'http://localhost/?create=false' --output create-invalid.txt
+stdout '403'
+grep 'access denied' create-invalid.txt
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/readonly.sock --request DELETE 'http://localhost/' --output purge-missing.txt
+stdout '403'
+grep 'access denied' purge-missing.txt
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/readonly.sock --request DELETE 'http://localhost/?purge=true' --output purge-denied.txt
+stdout '403'
+grep 'access denied' purge-denied.txt
+
+kill readonly
+
+exec restic-rados-server --access ra --listen $WORK/append.sock &append&
+wait4socket $WORK/append.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/append.sock --request DELETE 'http://localhost/' --output append-purge.txt
+stdout '403'
+grep 'access denied' append-purge.txt
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/append.sock --request POST 'http://localhost/' --output append-create.txt
+stdout '400'
+grep 'missing required query parameter: create' append-create.txt
+
+kill append
