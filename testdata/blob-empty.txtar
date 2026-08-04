@@ -1,0 +1,33 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @empty http://localhost/data/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out 'STATUS=%{http_code} LEN=%{size_download}' --unix-socket $WORK/restic.sock http://localhost/data/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 --output downloaded-data
+stdout 'STATUS=200 LEN=0'
+cmp downloaded-data empty
+
+exec curl --silent --head --include --unix-socket $WORK/restic.sock http://localhost/data/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+stdout 'HTTP/.* 200'
+stdout 'Content-Length: 0'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @empty http://localhost/locks/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 --output /dev/null
+stdout '200'
+
+exec curl --silent --header 'Accept: application/vnd.x.restic.rest.v2' --unix-socket $WORK/restic.sock http://localhost/data/
+stdin stdout
+exec jq -e '. == [{"name":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0}]'
+
+exec curl --silent --header 'Accept: application/vnd.x.restic.rest.v2' --unix-socket $WORK/restic.sock http://localhost/locks/
+stdin stdout
+exec jq -e '. == [{"name":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","size":0}]'
+
+kill server
+
+-- empty --
