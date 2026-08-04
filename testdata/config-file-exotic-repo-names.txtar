@@ -6,6 +6,22 @@ envsubst config.json.tmpl config.json
 exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
+exec curl --silent --include --path-as-is --unix-socket $WORK/restic.sock 'http://localhost/question%3Fmark?source=test'
+stdout 'HTTP/.* 307'
+stdout 'Location: /question%3Fmark/\?source=test'
+
+exec curl --silent --include --path-as-is --unix-socket $WORK/restic.sock 'http://localhost/hash%23tag'
+stdout 'HTTP/.* 307'
+stdout 'Location: /hash%23tag/'
+
+exec curl --silent --include --path-as-is --unix-socket $WORK/restic.sock 'http://localhost/percent%25name'
+stdout 'HTTP/.* 307'
+stdout 'Location: /percent%25name/'
+
+exec curl --silent --include --path-as-is --unix-socket $WORK/restic.sock 'http://localhost/back%5Cslash'
+stdout 'HTTP/.* 307'
+stdout 'Location: /back%5Cslash/'
+
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/backup@laptop/?create=true' --output /dev/null
 stdout '200'
 
@@ -15,6 +31,18 @@ stdout '200'
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/tilde~equals=/?create=true' --output /dev/null
 stdout '200'
 
+exec curl --silent --write-out '%{http_code}' --path-as-is --unix-socket $WORK/restic.sock --request POST 'http://localhost/question%3Fmark/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --path-as-is --unix-socket $WORK/restic.sock --request POST 'http://localhost/hash%23tag/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --path-as-is --unix-socket $WORK/restic.sock --request POST 'http://localhost/percent%25name/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --path-as-is --unix-socket $WORK/restic.sock --request POST 'http://localhost/back%5Cslash/?create=true' --output /dev/null
+stdout '200'
+
 kill server
 
 -- config.json.tmpl --
@@ -22,6 +50,10 @@ kill server
     "repos": {
         "backup@laptop": {"pools": {"$RESTIC_RADOS_SERVER_POOL/at": ["*"]}},
         "repo+extra": {"pools": {"$RESTIC_RADOS_SERVER_POOL/plus": ["*"]}},
-        "tilde~equals=": {"pools": {"$RESTIC_RADOS_SERVER_POOL/tilde": ["*"]}}
+        "tilde~equals=": {"pools": {"$RESTIC_RADOS_SERVER_POOL/tilde": ["*"]}},
+        "question?mark": {"pools": {"$RESTIC_RADOS_SERVER_POOL/question": ["*"]}},
+        "hash#tag": {"pools": {"$RESTIC_RADOS_SERVER_POOL/hash": ["*"]}},
+        "percent%name": {"pools": {"$RESTIC_RADOS_SERVER_POOL/percent": ["*"]}},
+        "back\\slash": {"pools": {"$RESTIC_RADOS_SERVER_POOL/backslash": ["*"]}}
     }
 }

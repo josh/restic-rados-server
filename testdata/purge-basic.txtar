@@ -18,6 +18,9 @@ stdout '200'
 
 exec rados --pool $RESTIC_RADOS_SERVER_POOL put data/not-a-valid-blob-id blob-x
 exec rados --pool $RESTIC_RADOS_SERVER_POOL put foreign-object blob-x
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put config.backup blob-x
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put config.000000000000000g blob-x
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put config.0000000000000001 blob-x
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/'
 stdout 'missing required query parameter: purge'
@@ -35,7 +38,10 @@ stdout '200'
 
 exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
 stdout '^foreign-object$'
-! stdout 'config'
+stdout '^config\.backup$'
+stdout '^config\.000000000000000g$'
+! stdout '^config$'
+! stdout '^config\.0000000000000001$'
 ! stdout 'data/'
 ! stdout 'index/'
 ! stdout 'keys/'
@@ -48,6 +54,8 @@ stdout '200'
 
 exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
 stdout '^foreign-object$'
+stdout '^config\.backup$'
+stdout '^config\.000000000000000g$'
 
 kill server
 

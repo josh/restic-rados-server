@@ -1,0 +1,15 @@
+tail-logs
+create-pool
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put data/0000000000000000000000000000000000000000000000000000000000000001.0000000000000000 payload
+
+exec restic-rados-server --listen $WORK/restic.sock &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Accept: application/vnd.x.restic.rest.v2' 'http://localhost/data/' --output /dev/null
+stdout '500'
+
+kill server
+
+-- payload --
+unreadable striped object
