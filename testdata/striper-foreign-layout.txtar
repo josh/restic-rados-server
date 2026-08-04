@@ -3,7 +3,13 @@ create-pool
 
 bin-file rand part0 4194304
 bin-file rand part1 4194304
-exec bash make-foreign.sh
+env FOREIGN_ID=data/0000000000000000000000000000000000000000000000000000000000000001
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put $FOREIGN_ID.0000000000000000 part0
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put $FOREIGN_ID.0000000000000001 part1
+exec rados --pool $RESTIC_RADOS_SERVER_POOL setxattr $FOREIGN_ID.0000000000000000 striper.layout.stripe_unit 1048576
+exec rados --pool $RESTIC_RADOS_SERVER_POOL setxattr $FOREIGN_ID.0000000000000000 striper.layout.stripe_count 2
+exec rados --pool $RESTIC_RADOS_SERVER_POOL setxattr $FOREIGN_ID.0000000000000000 striper.layout.object_size 4194304
+exec rados --pool $RESTIC_RADOS_SERVER_POOL setxattr $FOREIGN_ID.0000000000000000 striper.size 8388608
 
 bin-file rand friendly.bin 8388608
 exec rados --pool $RESTIC_RADOS_SERVER_POOL --striper put data/0000000000000000000000000000000000000000000000000000000000000002 friendly.bin
@@ -32,14 +38,3 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --
 stdout '200'
 
 kill server
-
--- make-foreign.sh --
-set -o errexit
-
-id=data/0000000000000000000000000000000000000000000000000000000000000001
-rados --pool "$RESTIC_RADOS_SERVER_POOL" put "$id.0000000000000000" part0
-rados --pool "$RESTIC_RADOS_SERVER_POOL" put "$id.0000000000000001" part1
-rados --pool "$RESTIC_RADOS_SERVER_POOL" setxattr "$id.0000000000000000" striper.layout.stripe_unit 1048576
-rados --pool "$RESTIC_RADOS_SERVER_POOL" setxattr "$id.0000000000000000" striper.layout.stripe_count 2
-rados --pool "$RESTIC_RADOS_SERVER_POOL" setxattr "$id.0000000000000000" striper.layout.object_size 4194304
-rados --pool "$RESTIC_RADOS_SERVER_POOL" setxattr "$id.0000000000000000" striper.size 8388608

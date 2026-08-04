@@ -10,7 +10,13 @@ exec restic backup data --option rclone.program=restic-rados-server --repo rclon
 
 exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 
-exec bash truncate-pack.sh
+bin-file zeros short.bin 9
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdin stdout
+exec grep --max-count=1 '^data/'
+capture-output PACK
+exec rados --pool $RESTIC_RADOS_SERVER_POOL rm $PACK
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put $PACK short.bin
 
 ! exec restic check --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 stderr 'repository contains errors'
@@ -30,14 +36,5 @@ exec restic check --option rclone.program=restic-rados-server --repo rclone: --p
 exec restic restore latest --target $WORK/restored --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
 
 bin-cmp $WORK/restored/data/blob.bin data/blob.bin
-
--- truncate-pack.sh --
-set -o errexit
-set -o pipefail
-
-pack=$(rados --pool "$RESTIC_RADOS_SERVER_POOL" ls | grep '^data/' | sed -n '1p')
-printf 'truncated' > short.bin
-rados --pool "$RESTIC_RADOS_SERVER_POOL" rm "$pack"
-rados --pool "$RESTIC_RADOS_SERVER_POOL" put "$pack" short.bin
 -- password.txt --
 secret

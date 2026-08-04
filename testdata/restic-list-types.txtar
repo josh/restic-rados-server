@@ -26,21 +26,20 @@ stdout '^[0-9a-f]{64}$'
 rados-object-count snapshots/
 cmp stdout one.txt
 
-exec bash compare-counts.sh
+exec restic list packs --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stdin stdout
+exec grep --count '^[0-9a-f]'
+cp stdout pack-count.txt
+rados-object-count data/
+cmp stdout pack-count.txt
 
--- compare-counts.sh --
-set -o errexit
-set -o pipefail
+exec restic list index --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt
+stdin stdout
+exec grep --count '^[0-9a-f]'
+cp stdout index-count.txt
+rados-object-count index/
+cmp stdout index-count.txt
 
-objects=$(rados --pool "$RESTIC_RADOS_SERVER_POOL" ls)
-
-packs=$(restic list packs --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt | grep -c '^[0-9a-f]')
-data_objects=$(printf '%s\n' "$objects" | grep -c '^data/')
-test "$packs" = "$data_objects"
-
-indexes=$(restic list index --option rclone.program=restic-rados-server --repo rclone: --password-file password.txt | grep -c '^[0-9a-f]')
-index_objects=$(printf '%s\n' "$objects" | grep -c '^index/')
-test "$indexes" = "$index_objects"
 -- password.txt --
 secret
 -- data/content.txt --

@@ -92,13 +92,16 @@ func TestScript(t *testing.T) {
 				Cmds: map[string]func(*testscript.TestScript, bool, []string){
 					"bin-cmp":            cmdBinCmp,
 					"bin-file":           cmdBinFile,
-					"sha256":             cmdSHA256,
 					"byte-count":         cmdByteCount,
+					"capture-output":     cmdCaptureOutput,
 					"create-pool":        cmdCreatePool,
 					"envsubst":           cmdEnvsubst,
+					"partial-http-post":  cmdPartialHTTPPost,
 					"rados-object-count": cmdRadosObjectCount,
 					"scrubhex":           cmdScrubHex,
+					"sha256":             cmdSHA256,
 					"tail-logs":          cmdTailLogs,
+					"wait4exit":          cmdWait4Exit,
 					"wait4http":          cmdWait4HTTP,
 					"wait4log":           cmdWait4log,
 					"wait4socket":        cmdWait4socket,
@@ -721,6 +724,56 @@ func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
 	}
 }
 
+func cmdWait4Exit(ts *testscript.TestScript, neg bool, args []string) {
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
+
+	if neg {
+		ts.Fatalf("unsupported: ! wait4exit")
+	}
+	if len(args) != 1 {
+		ts.Fatalf("usage: wait4exit <timeout>")
+	}
+
+	timeout, err := time.ParseDuration(args[0])
+	if err != nil {
+		ts.Fatalf("invalid timeout: %v", err)
+	}
+	if timeout <= 0 {
+		ts.Fatalf("timeout must be positive")
+	}
+
+	background := ts.BackgroundCmds()
+	if len(background) != 1 {
+		ts.Fatalf("wait4exit requires exactly one background process, got %d", len(background))
+	}
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		err := background[0].Process.Signal(syscall.Signal(0))
+		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if err != nil {
+			ts.Fatalf("failed to inspect background process: %v", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			ts.Fatalf("context cancelled while waiting for background process: %v", ctx.Err())
+		case <-timer.C:
+			ts.Fatalf("background process did not exit within %s", timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
 func cmdWait4log(ts *testscript.TestScript, neg bool, args []string) {
 	ctx, ok := ts.Value("ctx").(context.Context)
 	if !ok {
@@ -818,6 +871,75 @@ func cmdWait4HTTP(ts *testscript.TestScript, neg bool, args []string) {
 			}
 		}
 	}
+}
+
+func cmdPartialHTTPPost(ts *testscript.TestScript, neg bool, args []string) {
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
+
+	if neg {
+		ts.Fatalf("unsupported: ! partial-http-post")
+	}
+
+	holdOpen := false
+	if len(args) > 0 && args[0] == "--hold-open" {
+		holdOpen = true
+		args = args[1:]
+	}
+	if len(args) != 4 {
+		ts.Fatalf("usage: partial-http-post [--hold-open] <address> <path> <declared-length> <body>")
+	}
+
+	declaredLength, err := strconv.ParseInt(args[2], 10, 64)
+	if err != nil {
+		ts.Fatalf("invalid declared length: %v", err)
+	}
+	if declaredLength <= int64(len(args[3])) {
+		ts.Fatalf("declared length must exceed body length")
+	}
+
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", args[0])
+	if err != nil {
+		ts.Fatalf("failed to connect to %s: %v", args[0], err)
+	}
+
+	request := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", args[1], declaredLength, args[3])
+	if _, err := io.Copy(conn, strings.NewReader(request)); err != nil {
+		_ = conn.Close()
+		ts.Fatalf("failed to write partial request: %v", err)
+	}
+
+	if holdOpen {
+		ts.Defer(func() { _ = conn.Close() })
+		return
+	}
+	if err := conn.Close(); err != nil {
+		ts.Fatalf("failed to close partial request: %v", err)
+	}
+}
+
+func cmdCaptureOutput(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! capture-output")
+	}
+	if len(args) != 1 {
+		ts.Fatalf("usage: capture-output <env-var>")
+	}
+	if args[0] == "" || strings.Contains(args[0], "=") {
+		ts.Fatalf("invalid environment variable name: %q", args[0])
+	}
+
+	value := strings.TrimSpace(ts.ReadFile("stdout"))
+	if value == "" {
+		ts.Fatalf("cannot capture empty stdout")
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		ts.Fatalf("cannot capture multiple stdout lines")
+	}
+
+	ts.Setenv(args[0], value)
 }
 
 func cmdEnvsubst(ts *testscript.TestScript, neg bool, args []string) {
