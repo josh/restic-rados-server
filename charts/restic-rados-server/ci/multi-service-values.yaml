@@ -1,0 +1,20 @@
+services:
+  ro:
+    port: 8000
+    targetPort: 8001
+    access: read-only
+    annotations:
+      example.com/access: read-only
+    networkPolicy:
+      ingressFrom:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: restore-jobs
+  rw:
+    targetPort: 8000
+    access: rw
+    networkPolicy:
+      ingressFrom:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: backup-jobs

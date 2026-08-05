@@ -51,6 +51,36 @@ service:
   type: ClusterIP
   port: 8000
 
+# Optional chart-managed listeners and Services. When non-empty, this map
+# replaces config.listen in the rendered server configuration. Each key is
+# appended to the release fullname and must be a DNS label no longer than 61
+# characters; default-deny is reserved. targetPort is the unique TCP port the
+# pod listens on; port is the Service port and defaults to targetPort; access
+# defaults to rw; type defaults to service.type. annotations are copied to the
+# generated Service, and
+# networkPolicy.ingressFrom accepts a list of Kubernetes NetworkPolicyPeer
+# objects. For example:
+# services:
+#   rw:
+#     port: 8000
+#     targetPort: 8000
+#     access: rw
+#     networkPolicy:
+#       ingressFrom:
+#         - namespaceSelector:
+#             matchLabels:
+#               kubernetes.io/metadata.name: backup-jobs
+#   ro:
+#     port: 8000
+#     targetPort: 8001
+#     access: r
+#     networkPolicy:
+#       ingressFrom:
+#         - namespaceSelector:
+#             matchLabels:
+#               kubernetes.io/metadata.name: restore-jobs
+services: {}
+
 networkPolicy:
   enabled: true
   ingress: []
