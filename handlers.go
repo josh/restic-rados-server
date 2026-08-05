@@ -347,6 +347,9 @@ func (h *Handler) serveReady(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) serveRepository(w *responseWriter, r *http.Request, repo repositoryRoute, radosCalls *uint64) {
 	access := ParseAccess(repo.config.Access)
+	if listenerAccess := listenerAccessForRequest(r.Context()); listenerAccess < access {
+		access = listenerAccess
+	}
 	if granted := grantForRepo(r.Context(), repo.name); granted < access {
 		access = granted
 	}

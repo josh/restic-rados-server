@@ -1,0 +1,27 @@
+tail-logs
+create-pool
+
+exec systemd-socket-activate --fdname=read:write --setenv=RESTIC_RADOS_SERVER_POOL --setenv=CEPH_CONF --setenv=RESTIC_RADOS_SERVER_VERBOSE --setenv=RESTIC_RADOS_SERVER_LOG_FILE --listen=127.0.0.1:$PORT --listen=$WORK/write.sock restic-rados-server --config config.json &server&
+wait4socket 127.0.0.1:$PORT $WORK/write.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/write.sock --request POST --data-binary @blob-data http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --request DELETE http://127.0.0.1:$PORT/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' http://127.0.0.1:$PORT/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output downloaded
+stdout '200'
+cmp downloaded blob-data
+
+kill server
+
+-- config.json --
+{
+    "listen": [
+        {"systemd": "read", "access": "r"},
+        {"systemd": "write", "access": "rw"}
+    ]
+}
+-- blob-data --
+test blob content

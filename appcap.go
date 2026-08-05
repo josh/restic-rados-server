@@ -37,9 +37,22 @@ func ParseAccess(s string) Access {
 type capGrant map[string]Access
 
 type grantContextKey struct{}
+type listenerAccessContextKey struct{}
 
 func withGrant(ctx context.Context, grant capGrant) context.Context {
 	return context.WithValue(ctx, grantContextKey{}, grant)
+}
+
+func withListenerAccess(ctx context.Context, access Access) context.Context {
+	return context.WithValue(ctx, listenerAccessContextKey{}, access)
+}
+
+func listenerAccessForRequest(ctx context.Context) Access {
+	access, ok := ctx.Value(listenerAccessContextKey{}).(Access)
+	if !ok {
+		return AccessReadWrite
+	}
+	return access
 }
 
 func grantForRepo(ctx context.Context, repo string) Access {
@@ -166,5 +179,11 @@ func enforceCaps(trustedCapsHeader, trustedTailscaleCaps string, next http.Handl
 		}
 		r.Header.Del(tailscaleCapHeader)
 		next.ServeHTTP(w, r.WithContext(withGrant(r.Context(), grant)))
+	})
+}
+
+func enforceListenerAccess(access Access, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(withListenerAccess(r.Context(), access)))
 	})
 }
