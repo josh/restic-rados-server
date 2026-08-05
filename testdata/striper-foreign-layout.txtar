@@ -19,7 +19,7 @@ wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
 
-exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --head 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output got-plain.bin
 stdout '500'
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Accept: application/vnd.x.restic.rest.v2' 'http://localhost/data/' --output list.json
@@ -30,6 +30,29 @@ wait4log 'skipping striped object with unsupported layout' $RESTIC_RADOS_SERVER_
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
 stdout '500'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL put $FOREIGN_ID part0
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output got-plain.bin
+stdout '200'
+bin-cmp got-plain.bin part0
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Accept: application/vnd.x.restic.rest.v2' 'http://localhost/data/' --output list-with-plain.json
+stdout '200'
+grep '0000000000000000000000000000000000000000000000000000000000000001' list-with-plain.json
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
+stdout '200'
+! exec rados --pool $RESTIC_RADOS_SERVER_POOL stat $FOREIGN_ID
+exec rados --pool $RESTIC_RADOS_SERVER_POOL stat $FOREIGN_ID.0000000000000000
+exec rados --pool $RESTIC_RADOS_SERVER_POOL stat $FOREIGN_ID.0000000000000001
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
+stdout '500'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --header 'Accept: application/vnd.x.restic.rest.v2' 'http://localhost/data/' --output list-after-delete.json
+stdout '200'
+! grep '0000000000000000000000000000000000000000000000000000000000000001' list-after-delete.json
 
 exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000002' --output got.bin
 bin-cmp got.bin friendly.bin
