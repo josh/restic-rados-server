@@ -42,7 +42,8 @@ stdout '200'
 grep '0000000000000000000000000000000000000000000000000000000000000001' list-with-plain.json
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
-stdout '200'
+stdout '500'
+wait4log 'leaving striped object with unsupported layout' $RESTIC_RADOS_SERVER_LOG_FILE
 ! exec rados --pool $RESTIC_RADOS_SERVER_POOL stat $FOREIGN_ID
 exec rados --pool $RESTIC_RADOS_SERVER_POOL stat $FOREIGN_ID.0000000000000000
 exec rados --pool $RESTIC_RADOS_SERVER_POOL stat $FOREIGN_ID.0000000000000001

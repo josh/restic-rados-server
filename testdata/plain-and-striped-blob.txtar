@@ -19,11 +19,11 @@ bin-cmp downloaded.bin plain.bin
 
 exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/' --output list-v1.json
 exec jq '[.[] | select(. == "'$HASH'")] | length' list-v1.json
-stdout '^2$'
+stdout '^1$'
 
 exec curl --silent --unix-socket $WORK/restic.sock --header 'Accept: application/vnd.x.restic.rest.v2' 'http://localhost/data/' --output list-v2.json
 exec jq '[.[] | select(.name == "'$HASH'")] | length' list-v2.json
-stdout '^2$'
+stdout '^1$'
 exec jq -r '.[] | select(.name == "'$HASH'") | .size' list-v2.json
 stdout '^1024$'
 
@@ -31,10 +31,9 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --
 stdout '^200$'
 
 rados-object-count data/
-stdout '^1$'
+stdout '^0$'
 
-exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/'$HASH --output downloaded-after-delete.bin
-stdout '^200$'
-bin-cmp downloaded-after-delete.bin striped.bin
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/'$HASH --output /dev/null
+stdout '^404$'
 
 kill server
