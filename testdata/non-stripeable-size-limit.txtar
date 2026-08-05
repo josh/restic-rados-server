@@ -1,0 +1,62 @@
+tail-logs
+create-pool
+
+cp $CEPH_CONF client.conf
+exec sed --in-place 's/^osd_max_object_size = .*/osd_max_object_size = 3000000/' client.conf
+
+exec restic-rados-server --ceph-conf client.conf --listen $WORK/restic.sock --max-object-size 1000000 --write-buffer-size 262144 &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --request POST 'http://localhost/?create=true' --unix-socket $WORK/restic.sock
+
+bin-file rand accepted 2500000
+sha256 accepted ACCEPTEDHASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @accepted 'http://localhost/config' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @accepted 'http://localhost/keys/'$ACCEPTEDHASH --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @accepted 'http://localhost/locks/'$ACCEPTEDHASH --output /dev/null
+stdout '200'
+
+bin-file rand chunked 2500000
+sha256 chunked CHUNKEDHASH
+
+exec curl --http1.1 --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --header 'Transfer-Encoding: chunked' --data-binary @chunked 'http://localhost/keys/'$CHUNKEDHASH --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+stdout '^config$'
+stdout '^keys/'$ACCEPTEDHASH'$'
+stdout '^locks/'$ACCEPTEDHASH'$'
+stdout '^keys/'$CHUNKEDHASH'$'
+! stdout '\.0000000000000000$'
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/config' --output downloaded-config
+bin-cmp downloaded-config accepted
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/keys/'$ACCEPTEDHASH --output downloaded-key
+bin-cmp downloaded-key accepted
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/locks/'$ACCEPTEDHASH --output downloaded-lock
+bin-cmp downloaded-lock accepted
+
+exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/keys/'$CHUNKEDHASH --output downloaded-chunked
+bin-cmp downloaded-chunked chunked
+
+bin-file zeros too-large 40000000
+sha256 too-large TOOLARGEHASH
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @too-large 'http://localhost/keys/'$TOOLARGEHASH --output /dev/null
+stdout '413'
+
+exec curl --http1.1 --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --header 'Transfer-Encoding: chunked' --data-binary @too-large 'http://localhost/locks/'$TOOLARGEHASH --output /dev/null
+stdout '413'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout '^keys/'$TOOLARGEHASH
+! stdout '^locks/'$TOOLARGEHASH
+
+kill server
