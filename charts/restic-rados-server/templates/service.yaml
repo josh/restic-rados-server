@@ -1,3 +1,26 @@
+{{- if .Values.services }}
+{{- range $name, $service := .Values.services }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "restic-rados-server.serviceName" (dict "root" $ "name" $name) }}
+  labels:
+    {{- include "restic-rados-server.labels" $ | nindent 4 }}
+  {{- with $service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ default $.Values.service.type $service.type }}
+  ports:
+    - name: http
+      port: {{ include "restic-rados-server.servicePort" (dict "service" $service) }}
+      targetPort: {{ int $service.targetPort }}
+  selector:
+    {{- include "restic-rados-server.selectorLabels" $ | nindent 4 }}
+{{- end }}
+{{- else }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -12,3 +35,4 @@ spec:
       targetPort: http
   selector:
     {{- include "restic-rados-server.selectorLabels" . | nindent 4 }}
+{{- end }}

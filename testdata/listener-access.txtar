@@ -1,0 +1,89 @@
+tail-logs
+create-pool
+
+! exec restic-rados-server --listen '$WORK/invalid.sock?access='
+stderr 'requires an access level'
+
+! exec restic-rados-server --listen '$WORK/invalid.sock?access=bogus'
+stderr 'invalid listener access "bogus"'
+
+! exec restic-rados-server --config invalid.json
+stderr 'invalid listener access "bogus"'
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json &server&
+wait4socket $WORK/read.sock $WORK/append.sock $WORK/write.sock $WORK/caps.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/write.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/write.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @config-data http://localhost/config --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/read.sock http://localhost/config --output read-config
+stdout '200'
+cmp read-config config-data
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/read.sock --request POST --data-binary @blob-data http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/append.sock --request POST --data-binary @blob-data http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"rw"}' --unix-socket $WORK/caps.sock --request DELETE http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/append.sock --request DELETE http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '403'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/write.sock --request DELETE http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/append.sock --request POST --data-binary @blob-data http://localhost/locks/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/append.sock --request DELETE http://localhost/locks/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/read.sock http://localhost/healthz --output /dev/null
+stdout '200'
+
+kill server
+
+exec restic-rados-server --listen $WORK/query.sock?access=read-only &queryserver&
+wait4socket $WORK/query.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/query.sock http://localhost/config --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/query.sock --request POST --data-binary @blob-data http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '403'
+
+kill queryserver
+
+exec restic-rados-server --access r --listen $WORK/repo.sock?access=rw &reposerver&
+wait4socket $WORK/repo.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/repo.sock --request POST --data-binary @blob-data http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
+stdout '403'
+
+kill reposerver
+
+-- config.json.tmpl --
+{
+    "listen": [
+        {"address": "$WORK/read.sock", "access": "read-only"},
+        {"address": "$WORK/append.sock", "access": "read-append"},
+        {"address": "$WORK/write.sock", "access": "read-write"},
+        {"address": "$WORK/caps.sock", "access": "r", "trusted_caps_header": "X-Restic-Capabilities"}
+    ]
+}
+-- invalid.json --
+{
+    "listen": [{"address": "/tmp/invalid.sock", "access": "bogus"}]
+}
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- blob-data --
+test blob content

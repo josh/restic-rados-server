@@ -163,9 +163,9 @@ URL exposed by your proxy, for example
 ## Use case 2: Helm on Kubernetes
 
 The chart in [`charts/restic-rados-server`](charts/restic-rados-server) creates
-a Deployment, ClusterIP Service, ConfigMap, ServiceAccount, and optional
-NetworkPolicy. It does not create Ceph credentials, an Ingress, a Gateway, or
-TLS certificates.
+a Deployment, one or more ClusterIP Services, a ConfigMap, a ServiceAccount,
+and optional NetworkPolicies. It does not create Ceph credentials, an Ingress,
+a Gateway, or TLS certificates.
 
 The chart requires Kubernetes 1.25 or newer. Pods must be able to reach the
 Ceph monitors and OSDs.
@@ -217,15 +217,25 @@ config:
           - locks
           - snapshots
 
-networkPolicy:
-  ingress:
-    - from:
+services:
+  rw:
+    port: 8000
+    targetPort: 8000
+    access: rw
+    networkPolicy:
+      ingressFrom:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: backup-jobs
-      ports:
-        - protocol: TCP
-          port: 8000
+  ro:
+    port: 8000
+    targetPort: 8001
+    access: r
+    networkPolicy:
+      ingressFrom:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: restore-jobs
 ```
 
 The `config` block uses the server's JSON configuration schema. The chart
@@ -233,10 +243,25 @@ renders it as `restic-rados-server.json` in a ConfigMap and mounts it into each
 pod. This example sends `data` and `index` objects to `restic-data` and uses
 `restic-metadata` for `config`, `keys`, `locks`, and `snapshots`.
 
-The chart enables a default-deny ingress policy when `networkPolicy.enabled`
-is true and `networkPolicy.ingress` is empty. Add every backup-job, gateway, or
-proxy source that must reach the Service. The example allows only pods from a
-namespace named `backup-jobs`.
+When `services` is non-empty, the chart generates `config.listen` from the
+map and creates one Service per entry. The example creates
+`restic-rados-server-rw` and `restic-rados-server-ro`. Both expose port 8000,
+but they target distinct pod ports whose listeners enforce read-write and
+read-only access ceilings. Each `targetPort` must be unique. The Service
+`port` defaults to its `targetPort`, `access` defaults to `rw`, and
+`type` defaults to `service.type`.
+
+When `networkPolicy.enabled` is true, the chart creates a default-deny ingress
+policy and a separate allow policy for each non-empty
+`services.<name>.networkPolicy.ingressFrom` list. Entries are Kubernetes
+NetworkPolicy peers. The chart always scopes each allow policy to that
+Service's TCP `targetPort`, so the read-only and read-write paths can have
+different callers. The example grants `backup-jobs` access to the read-write
+port and `restore-jobs` access to the read-only port.
+
+Leave `services` empty to keep the legacy single Service. In that mode,
+`config.listen`, `service`, and `networkPolicy.ingress` retain their
+existing behavior.
 
 ### 3. Install or upgrade the release
 
@@ -261,7 +286,7 @@ kubectl -n restic logs deployment/restic-rados-server
 For a local smoke test, forward the Service and query its readiness endpoint:
 
 ```sh
-kubectl -n restic port-forward service/restic-rados-server 8000:8000
+kubectl -n restic port-forward service/restic-rados-server-rw 8000:8000
 curl --fail http://127.0.0.1:8000/readyz
 ```
 
@@ -278,9 +303,9 @@ restic backup /path/to/data
 
 ### Production considerations
 
-- Keep the Service as `ClusterIP` and publish it through an existing gateway or
-  proxy that provides TLS and client authentication. Restrict the NetworkPolicy
-  to that component and any in-cluster backup clients.
+- Keep the Services as `ClusterIP` and publish them through existing gateways
+  or proxies that provide TLS and client authentication. Restrict each
+  NetworkPolicy to that component and the appropriate in-cluster clients.
 - Multiple replicas are safe: they share state through Ceph, while restic's
   repository locks coordinate client operations. Use anti-affinity or other
   placement rules so a single node failure does not remove every replica.
@@ -414,6 +439,30 @@ Each repository accepts one of three access levels:
 
 The default is `rw`. These values limit what the endpoint may do; they do not
 authenticate the caller.
+
+Each listener can add its own access ceiling. This lets one server process
+serve separate read-only and read-write TCP ports:
+
+```json
+{
+  "listen": [
+    {
+      "address": "0.0.0.0:8000",
+      "access": "rw"
+    },
+    {
+      "address": "0.0.0.0:8001",
+      "access": "r"
+    }
+  ]
+}
+```
+
+Listener access accepts the same `r`/`read-only`, `ra`/`read-append`, and
+`rw`/`read-write` values. Omitting it leaves that listener without an
+additional ceiling. The effective access for a request is the most restrictive
+of the repository setting, the listener setting, and any grant from a trusted
+capability header; none of these can elevate another ceiling.
 
 ## Optional Tailscale service listener
 

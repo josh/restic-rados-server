@@ -36,16 +36,31 @@ spec:
             - --config
             - /etc/restic-rados-server/restic-rados-server.json
           ports:
+            {{- if .Values.services }}
+            {{- range $name, $service := .Values.services }}
+            - containerPort: {{ int $service.targetPort }}
+              protocol: TCP
+            {{- end }}
+            {{- else }}
             - name: http
               containerPort: {{ include "restic-rados-server.httpPort" . }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
+              {{- if .Values.services }}
+              port: {{ include "restic-rados-server.probePort" . }}
+              {{- else }}
               port: http
+              {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
+              {{- if .Values.services }}
+              port: {{ include "restic-rados-server.probePort" . }}
+              {{- else }}
               port: http
+              {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:

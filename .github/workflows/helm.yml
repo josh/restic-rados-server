@@ -45,3 +45,8 @@ jobs:
           helm template test ./charts/restic-rados-server \
             --set 'ceph.monitors={mon.ceph.svc.cluster.local}' \
             --set-json 'config.repos.default.pools={"restic_data":["data","index"],"restic_metadata":["config","keys","locks","snapshots"]}'
+
+      - name: Template chart with multiple services
+        run: |
+          helm template test ./charts/restic-rados-server \
+            --values ./charts/restic-rados-server/ci/multi-service-values.yaml

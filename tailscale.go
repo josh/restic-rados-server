@@ -207,6 +207,7 @@ func setupTailscaleService(ctx context.Context, cfg listenerConfig, tsCfg *Tails
 		kind:                 listenerTypeUnix,
 		address:              upstream,
 		raw:                  cfg.raw,
+		access:               cfg.access,
 		trustedTailscaleCaps: appCapability,
 		bound:                listener,
 	}, withdraw, nil
