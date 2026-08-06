@@ -1,0 +1,87 @@
+tail-logs
+create-pool shared replicated
+
+envsubst config.json.tmpl config.json
+envsubst canonical-access.json.tmpl canonical-access.json
+envsubst restrictive-repos.json.tmpl restrictive-repos.json
+
+exec restic-rados-server --config config.json --access ra --listen $WORK/cli.sock?access=rw &cli&
+wait4socket $WORK/cli.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/cli.sock 'http://localhost/' --output /dev/null
+stdout '404'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/cli.sock --request POST 'http://localhost/named/?create=true' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/cli.sock --request POST --data-binary @blob-data 'http://localhost/named/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/cli.sock --request POST --data-binary @blob-data 'http://localhost/named/keys/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/cli.sock --request POST --data-binary @blob-data 'http://localhost/named/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/cli.sock --request DELETE 'http://localhost/named/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+kill cli
+
+env RESTIC_RADOS_SERVER_ACCESS=ra
+exec restic-rados-server --config config.json --listen $WORK/env.sock?access=rw &envserver&
+wait4socket $WORK/env.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/env.sock 'http://localhost/' --output /dev/null
+stdout '404'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/env.sock --request POST 'http://localhost/dynamic/?create=true' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/env.sock --request POST --data-binary @blob-data 'http://localhost/dynamic/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/env.sock --request DELETE 'http://localhost/dynamic/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+kill envserver
+
+env RESTIC_RADOS_SERVER_ACCESS=
+exec restic-rados-server --config canonical-access.json --listen $WORK/canonical-json.sock?access=rw &canonicaljson&
+wait4socket $WORK/canonical-json.sock
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/canonical-json.sock --request DELETE 'http://localhost/named/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/canonical-json.sock --request DELETE 'http://localhost/dynamic/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+kill canonicaljson
+
+env RESTIC_RADOS_SERVER_ACCESS=rw
+exec restic-rados-server --config restrictive-repos.json --access rw --listen $WORK/restrictive.sock?access=rw &restrictive&
+wait4socket $WORK/restrictive.sock
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restrictive.sock --request POST --data-binary @blob-data 'http://localhost/named/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restrictive.sock --request DELETE 'http://localhost/named/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restrictive.sock --request POST --data-binary @blob-data 'http://localhost/dynamic/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+kill restrictive
+
+env RESTIC_RADOS_SERVER_ACCESS=
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "named": {"pools": {"$CEPH_POOL_SHARED/named": ["*"]}, "access": "rw"},
+        "*": {"pools": {"$CEPH_POOL_SHARED/wildcard-{repo}": ["*"]}, "access": "rw"}
+    }
+}
+-- blob-data --
+test blob content
+-- canonical-access.json.tmpl --
+{
+    "access": "ra",
+    "repos": {
+        "named": {"pools": {"$CEPH_POOL_SHARED/named": ["*"]}, "access": "rw"},
+        "*": {"pools": {"$CEPH_POOL_SHARED/wildcard-{repo}": ["*"]}, "access": "rw"}
+    }
+}
+-- restrictive-repos.json.tmpl --
+{
+    "access": "r",
+    "repos": {
+        "named": {"pools": {"$CEPH_POOL_SHARED/named": ["*"]}, "access": "ra"},
+        "*": {"pools": {"$CEPH_POOL_SHARED/wildcard-{repo}": ["*"]}, "access": "r"}
+    }
+}

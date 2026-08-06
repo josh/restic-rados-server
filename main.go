@@ -125,7 +125,7 @@ func main() {
 	defer cancel()
 
 	mux := http.NewServeMux()
-	setupAllRoutes(mux, connMgr, config.Repos, readPool, writePool)
+	setupAllRoutes(mux, connMgr, config.Repos, ParseAccess(config.Access), readPool, writePool)
 
 	if config.Stdio && time.Duration(config.MaxIdleTime) > 0 {
 		slog.Error("--max-idle-time is not supported in stdio mode")

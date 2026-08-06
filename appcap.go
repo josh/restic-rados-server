@@ -85,20 +85,30 @@ func grantForRepo(ctx context.Context, repo string) Access {
 	return AccessNone
 }
 
-func mergeGrantObject(grant capGrant, obj map[string]string) {
-	for repo, accessStr := range obj {
+func mergeGrantAccess(grant capGrant, repo string, access Access) {
+	current, ok := grant[repo]
+	if !ok || access > current {
+		grant[repo] = access
+	}
+}
+
+func mergeGrantObject(grant capGrant, obj map[string]json.RawMessage) {
+	for repo, raw := range obj {
 		if strings.Count(repo, "*") > 1 {
 			slog.Debug("ignoring capability key with multiple wildcards", "repo", repo)
 			continue
 		}
-		access := ParseAccess(accessStr)
-		if access == AccessNone && accessStr != "" {
-			slog.Debug("ignoring unrecognized capability access token", "repo", repo, "access", accessStr)
+		var accessStr string
+		if err := json.Unmarshal(raw, &accessStr); err != nil {
+			slog.Debug("denying capability key with non-string access", "repo", repo)
+			mergeGrantAccess(grant, repo, AccessNone)
 			continue
 		}
-		if access > grant[repo] {
-			grant[repo] = access
+		access := ParseAccess(accessStr)
+		if access == AccessNone && accessStr != "" && accessStr != "none" {
+			slog.Debug("denying capability key with unrecognized access token", "repo", repo, "access", accessStr)
 		}
+		mergeGrantAccess(grant, repo, access)
 	}
 }
 
@@ -108,7 +118,7 @@ func mergeGrantList(grant capGrant, raw []byte) {
 		return
 	}
 	for _, rule := range rules {
-		var obj map[string]string
+		var obj map[string]json.RawMessage
 		if err := json.Unmarshal(rule, &obj); err != nil {
 			continue
 		}
@@ -125,7 +135,7 @@ func mergeGrantValue(grant capGrant, raw []byte) {
 		mergeGrantList(grant, trimmed)
 		return
 	}
-	var obj map[string]string
+	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &obj); err != nil {
 		return
 	}

@@ -5,7 +5,7 @@ stderr 'failed to load config file'
 stderr 'failed to load config file'
 
 ! exec restic-rados-server --config flat-access.json
-stderr 'failed to load config file'
+stderr 'pool not set'
 
 ! exec restic-rados-server --config flat-striper.json
 stderr 'failed to load config file'
@@ -15,6 +15,45 @@ stderr 'failed to load config file'
 
 ! exec restic-rados-server --config bad-duration.json
 stderr 'failed to load config file'
+
+! exec restic-rados-server --config global-access-null.json
+stderr 'access cannot be null'
+
+! exec restic-rados-server --config repo-access-null.json
+stderr 'access cannot be null'
+
+! exec restic-rados-server --config global-access-none.json
+stderr 'invalid access "none"'
+
+! exec restic-rados-server --config repo-access-none.json
+stderr 'invalid access "none"'
+
+! exec restic-rados-server --config listener-access-none.json
+stderr 'invalid listener access "none"'
+
+! exec restic-rados-server --config global-access-empty.json
+stderr 'invalid access ""'
+
+! exec restic-rados-server --config trailing-json.json
+stderr 'unexpected data after JSON object'
+
+! exec restic-rados-server --config listener-access-null.json
+stderr 'access cannot be null'
+
+! exec restic-rados-server --config listener-access-empty.json
+stderr 'invalid listener access ""'
+
+! exec restic-rados-server --config listener-trust-empty.json
+stderr 'trusted_caps_header cannot be empty'
+
+! exec restic-rados-server --config listener-trust-null.json
+stderr 'trusted_tailscale_caps cannot be null'
+
+! exec restic-rados-server --access=none
+stderr 'invalid access "none"'
+
+! exec restic-rados-server --access=
+stderr 'invalid access ""'
 
 -- config.json --
 {
@@ -40,4 +79,46 @@ stderr 'failed to load config file'
 -- bad-duration.json --
 {
     "shutdown_timeout": "banana"
+}
+-- global-access-null.json --
+{
+    "Access": null
+}
+-- repo-access-null.json --
+{
+    "repos": {"default": {"Access": null}}
+}
+-- global-access-none.json --
+{
+    "access": "none"
+}
+-- repo-access-none.json --
+{
+    "repos": {"default": {"access": "none"}}
+}
+-- listener-access-none.json --
+{
+    "listen": [{"address": "/tmp/restic.sock", "access": "none"}]
+}
+-- global-access-empty.json --
+{
+    "access": ""
+}
+-- trailing-json.json --
+{} {}
+-- listener-access-null.json --
+{
+    "listen": [{"address": "/tmp/restic.sock", "Access": null}]
+}
+-- listener-access-empty.json --
+{
+    "listen": [{"address": "/tmp/restic.sock", "access": ""}]
+}
+-- listener-trust-empty.json --
+{
+    "listen": [{"address": "/tmp/restic.sock", "trusted_caps_header": ""}]
+}
+-- listener-trust-null.json --
+{
+    "listen": [{"address": "/tmp/restic.sock", "TRUSTED_TAILSCALE_CAPS": null}]
 }
