@@ -83,7 +83,27 @@ services: {}
 
 networkPolicy:
   enabled: true
+  ingressFrom: []
   ingress: []
+  egress:
+    enabled: false
+    dns:
+      enabled: true
+      to: []
+    ceph:
+      monitors:
+        enabled: true
+        to: []
+        ports:
+          - 3300
+          - 6789
+      osds:
+        enabled: true
+        to: []
+        portRange:
+          from: 6800
+          to: 7568
+    rules: []
 
 serviceAccount:
   create: true
