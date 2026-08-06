@@ -120,12 +120,329 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{ toPrettyJson $cfg }}
 {{- end -}}
 
+{{- define "restic-rados-server.networkPolicyEgressDefaults" -}}
+{{- $dns := dict "enabled" true "to" (list) -}}
+{{- $monitors := dict "enabled" true "ports" (list 3300 6789) "to" (list) -}}
+{{- $portRange := dict "from" 6800 "to" 7568 -}}
+{{- $osds := dict "enabled" true "portRange" $portRange "to" (list) -}}
+{{- $ceph := dict "monitors" $monitors "osds" $osds -}}
+{{- dict "ceph" $ceph "dns" $dns "enabled" false "rules" (list) | toYaml -}}
+{{- end -}}
+
+{{- define "restic-rados-server.validateNetworkPolicyLabelSelector" -}}
+{{- $path := .path -}}
+{{- $selector := .selector -}}
+{{- if not (kindIs "map" $selector) -}}
+{{- fail (printf "%s must be an object" $path) -}}
+{{- end -}}
+{{- range $field := keys $selector -}}
+{{- if not (has $field (list "matchExpressions" "matchLabels")) -}}
+{{- fail (printf "%s has unknown field %q" $path $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $selector "matchLabels" -}}
+{{- $labels := get $selector "matchLabels" -}}
+{{- if not (kindIs "map" $labels) -}}
+{{- fail (printf "%s.matchLabels must be an object" $path) -}}
+{{- end -}}
+{{- range $label, $value := $labels -}}
+{{- if not (kindIs "string" $value) -}}
+{{- fail (printf "%s.matchLabels[%q] must be a string" $path $label) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $selector "matchExpressions" -}}
+{{- $expressions := get $selector "matchExpressions" -}}
+{{- if not (kindIs "slice" $expressions) -}}
+{{- fail (printf "%s.matchExpressions must be a list" $path) -}}
+{{- end -}}
+{{- range $index, $expression := $expressions -}}
+{{- if not (kindIs "map" $expression) -}}
+{{- fail (printf "%s.matchExpressions[%d] must be an object" $path $index) -}}
+{{- end -}}
+{{- range $field := keys $expression -}}
+{{- if not (has $field (list "key" "operator" "values")) -}}
+{{- fail (printf "%s.matchExpressions[%d] has unknown field %q" $path $index $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (not (hasKey $expression "key")) (not (hasKey $expression "operator")) -}}
+{{- fail (printf "%s.matchExpressions[%d] requires key and operator" $path $index) -}}
+{{- end -}}
+{{- if or (not (kindIs "string" $expression.key)) (not (kindIs "string" $expression.operator)) -}}
+{{- fail (printf "%s.matchExpressions[%d].key and operator must be strings" $path $index) -}}
+{{- end -}}
+{{- if hasKey $expression "values" -}}
+{{- if not (kindIs "slice" $expression.values) -}}
+{{- fail (printf "%s.matchExpressions[%d].values must be a list" $path $index) -}}
+{{- end -}}
+{{- range $valueIndex, $value := $expression.values -}}
+{{- if not (kindIs "string" $value) -}}
+{{- fail (printf "%s.matchExpressions[%d].values[%d] must be a string" $path $index $valueIndex) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "restic-rados-server.validateNetworkPolicyPeers" -}}
+{{- $path := .path -}}
+{{- range $index, $peer := .peers -}}
+{{- if not (kindIs "map" $peer) -}}
+{{- fail (printf "%s[%d] must be an object" $path $index) -}}
+{{- end -}}
+{{- range $field := keys $peer -}}
+{{- if not (has $field (list "ipBlock" "namespaceSelector" "podSelector")) -}}
+{{- fail (printf "%s[%d] has unknown field %q" $path $index $field) -}}
+{{- end -}}
+{{- end -}}
+{{- $hasIPBlock := hasKey $peer "ipBlock" -}}
+{{- $hasNamespaceSelector := hasKey $peer "namespaceSelector" -}}
+{{- $hasPodSelector := hasKey $peer "podSelector" -}}
+{{- if $hasIPBlock -}}
+{{- $ipBlock := get $peer "ipBlock" -}}
+{{- if not (kindIs "map" $ipBlock) -}}
+{{- fail (printf "%s[%d].ipBlock must be an object" $path $index) -}}
+{{- end -}}
+{{- range $field := keys $ipBlock -}}
+{{- if not (has $field (list "cidr" "except")) -}}
+{{- fail (printf "%s[%d].ipBlock has unknown field %q" $path $index $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (not (hasKey $ipBlock "cidr")) (not (kindIs "string" $ipBlock.cidr)) -}}
+{{- fail (printf "%s[%d].ipBlock.cidr must be a string" $path $index) -}}
+{{- end -}}
+{{- if hasKey $ipBlock "except" -}}
+{{- if not (kindIs "slice" $ipBlock.except) -}}
+{{- fail (printf "%s[%d].ipBlock.except must be a list" $path $index) -}}
+{{- end -}}
+{{- range $exceptIndex, $except := $ipBlock.except -}}
+{{- if not (kindIs "string" $except) -}}
+{{- fail (printf "%s[%d].ipBlock.except[%d] must be a string" $path $index $exceptIndex) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $hasNamespaceSelector -}}
+{{- include "restic-rados-server.validateNetworkPolicyLabelSelector" (dict "path" (printf "%s[%d].namespaceSelector" $path $index) "selector" (get $peer "namespaceSelector")) -}}
+{{- end -}}
+{{- if $hasPodSelector -}}
+{{- include "restic-rados-server.validateNetworkPolicyLabelSelector" (dict "path" (printf "%s[%d].podSelector" $path $index) "selector" (get $peer "podSelector")) -}}
+{{- end -}}
+{{- if not (or $hasIPBlock $hasNamespaceSelector $hasPodSelector) -}}
+{{- fail (printf "%s[%d] must specify ipBlock, namespaceSelector, or podSelector" $path $index) -}}
+{{- end -}}
+{{- if and $hasIPBlock (or $hasNamespaceSelector $hasPodSelector) -}}
+{{- fail (printf "%s[%d].ipBlock cannot be combined with namespaceSelector or podSelector" $path $index) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "restic-rados-server.validateNetworkPolicyRules" -}}
+{{- $path := .path -}}
+{{- $fields := .fields -}}
+{{- $peerField := .peerField -}}
+{{- range $index, $rule := .rules -}}
+{{- if not (kindIs "map" $rule) -}}
+{{- fail (printf "%s[%d] must be an object" $path $index) -}}
+{{- end -}}
+{{- range $field := keys $rule -}}
+{{- if not (has $field $fields) -}}
+{{- fail (printf "%s[%d] has unknown field %q" $path $index $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $rule $peerField -}}
+{{- $peers := get $rule $peerField -}}
+{{- if not (kindIs "slice" $peers) -}}
+{{- fail (printf "%s[%d].%s must be a list" $path $index $peerField) -}}
+{{- end -}}
+{{- include "restic-rados-server.validateNetworkPolicyPeers" (dict "path" (printf "%s[%d].%s" $path $index $peerField) "peers" $peers) -}}
+{{- end -}}
+{{- if hasKey $rule "ports" -}}
+{{- $ports := get $rule "ports" -}}
+{{- if not (kindIs "slice" $ports) -}}
+{{- fail (printf "%s[%d].ports must be a list" $path $index) -}}
+{{- end -}}
+{{- range $portIndex, $port := $ports -}}
+{{- if not (kindIs "map" $port) -}}
+{{- fail (printf "%s[%d].ports[%d] must be an object" $path $index $portIndex) -}}
+{{- end -}}
+{{- range $field := keys $port -}}
+{{- if not (has $field (list "endPort" "port" "protocol")) -}}
+{{- fail (printf "%s[%d].ports[%d] has unknown field %q" $path $index $portIndex $field) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "restic-rados-server.validate" -}}
 {{- if and (not .Values.services) (not .Values.config.listen) -}}
 {{- fail "config.listen must not be empty" -}}
 {{- end -}}
+{{- if not (kindIs "map" .Values.networkPolicy) -}}
+{{- fail "networkPolicy must be an object" -}}
+{{- end -}}
+{{- range $field := keys .Values.networkPolicy -}}
+{{- if not (has $field (list "enabled" "egress" "ingress" "ingressFrom")) -}}
+{{- fail (printf "networkPolicy has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "bool" .Values.networkPolicy.enabled) -}}
+{{- fail "networkPolicy.enabled must be a boolean" -}}
+{{- end -}}
+{{- if .Values.networkPolicy.enabled -}}
+{{- $ingressFrom := dig "ingressFrom" (list) .Values.networkPolicy -}}
+{{- if not (kindIs "slice" $ingressFrom) -}}
+{{- fail "networkPolicy.ingressFrom must be a list" -}}
+{{- end -}}
+{{- include "restic-rados-server.validateNetworkPolicyPeers" (dict "path" "networkPolicy.ingressFrom" "peers" $ingressFrom) -}}
+{{- $ingress := dig "ingress" (list) .Values.networkPolicy -}}
+{{- if not (kindIs "slice" $ingress) -}}
+{{- fail "networkPolicy.ingress must be a list" -}}
+{{- end -}}
+{{- include "restic-rados-server.validateNetworkPolicyRules" (dict "fields" (list "from" "ports") "path" "networkPolicy.ingress" "peerField" "from" "rules" $ingress) -}}
+{{- $configuredEgress := dig "egress" (dict) .Values.networkPolicy -}}
+{{- if not (kindIs "map" $configuredEgress) -}}
+{{- fail "networkPolicy.egress must be an object" -}}
+{{- end -}}
+{{- range $field := keys $configuredEgress -}}
+{{- if not (has $field (list "ceph" "dns" "enabled" "rules")) -}}
+{{- fail (printf "networkPolicy.egress has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- $egressDefaults := include "restic-rados-server.networkPolicyEgressDefaults" . | fromYaml -}}
+{{- $egress := mergeOverwrite $egressDefaults $configuredEgress -}}
+{{- if not (kindIs "bool" $egress.enabled) -}}
+{{- fail "networkPolicy.egress.enabled must be a boolean" -}}
+{{- end -}}
+{{- if $egress.enabled -}}
+{{- if or (not (hasKey $configuredEgress "enabled")) (not (hasKey $configuredEgress "rules")) (not (hasKey $configuredEgress "dns")) (not (hasKey $configuredEgress "ceph")) -}}
+{{- fail "networkPolicy.egress requires enabled, rules, dns, and ceph when enabled" -}}
+{{- end -}}
+{{- $egress = $configuredEgress -}}
+{{- if not (kindIs "slice" $egress.rules) -}}
+{{- fail "networkPolicy.egress.rules must be a list" -}}
+{{- end -}}
+{{- include "restic-rados-server.validateNetworkPolicyRules" (dict "fields" (list "ports" "to") "path" "networkPolicy.egress.rules" "peerField" "to" "rules" $egress.rules) -}}
+{{- if not (kindIs "map" $egress.dns) -}}
+{{- fail "networkPolicy.egress.dns must be an object" -}}
+{{- end -}}
+{{- if or (not (hasKey $egress.dns "enabled")) (not (hasKey $egress.dns "to")) -}}
+{{- fail "networkPolicy.egress.dns requires enabled and to" -}}
+{{- end -}}
+{{- range $field := keys $egress.dns -}}
+{{- if not (has $field (list "enabled" "to")) -}}
+{{- fail (printf "networkPolicy.egress.dns has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "bool" $egress.dns.enabled) -}}
+{{- fail "networkPolicy.egress.dns.enabled must be a boolean" -}}
+{{- end -}}
+{{- if $egress.dns.enabled -}}
+{{- if not (kindIs "slice" $egress.dns.to) -}}
+{{- fail "networkPolicy.egress.dns.to must be a list" -}}
+{{- end -}}
+{{- include "restic-rados-server.validateNetworkPolicyPeers" (dict "path" "networkPolicy.egress.dns.to" "peers" $egress.dns.to) -}}
+{{- end -}}
+{{- if not (kindIs "map" $egress.ceph) -}}
+{{- fail "networkPolicy.egress.ceph must be an object" -}}
+{{- end -}}
+{{- if or (not (hasKey $egress.ceph "monitors")) (not (hasKey $egress.ceph "osds")) -}}
+{{- fail "networkPolicy.egress.ceph requires monitors and osds" -}}
+{{- end -}}
+{{- range $field := keys $egress.ceph -}}
+{{- if not (has $field (list "monitors" "osds")) -}}
+{{- fail (printf "networkPolicy.egress.ceph has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "map" $egress.ceph.monitors) -}}
+{{- fail "networkPolicy.egress.ceph.monitors must be an object" -}}
+{{- end -}}
+{{- if or (not (hasKey $egress.ceph.monitors "enabled")) (not (hasKey $egress.ceph.monitors "ports")) (not (hasKey $egress.ceph.monitors "to")) -}}
+{{- fail "networkPolicy.egress.ceph.monitors requires enabled, ports, and to" -}}
+{{- end -}}
+{{- $monitors := $egress.ceph.monitors -}}
+{{- range $field := keys $monitors -}}
+{{- if not (has $field (list "enabled" "ports" "to")) -}}
+{{- fail (printf "networkPolicy.egress.ceph.monitors has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "bool" $monitors.enabled) -}}
+{{- fail "networkPolicy.egress.ceph.monitors.enabled must be a boolean" -}}
+{{- end -}}
+{{- if $monitors.enabled -}}
+{{- if not (kindIs "slice" $monitors.to) -}}
+{{- fail "networkPolicy.egress.ceph.monitors.to must be a list" -}}
+{{- end -}}
+{{- include "restic-rados-server.validateNetworkPolicyPeers" (dict "path" "networkPolicy.egress.ceph.monitors.to" "peers" $monitors.to) -}}
+{{- if not (kindIs "slice" $monitors.ports) -}}
+{{- fail "networkPolicy.egress.ceph.monitors.ports must be a non-empty list" -}}
+{{- end -}}
+{{- if eq (len $monitors.ports) 0 -}}
+{{- fail "networkPolicy.egress.ceph.monitors.ports must be a non-empty list" -}}
+{{- end -}}
+{{- range $port := $monitors.ports -}}
+{{- if not (regexMatch "^[0-9]+$" (toString $port)) -}}
+{{- fail "networkPolicy.egress.ceph.monitors.ports entries must be integers" -}}
+{{- end -}}
+{{- $portNumber := atoi (toString $port) -}}
+{{- if or (lt $portNumber 1) (gt $portNumber 65535) -}}
+{{- fail "networkPolicy.egress.ceph.monitors.ports entries must be between 1 and 65535" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "map" $egress.ceph.osds) -}}
+{{- fail "networkPolicy.egress.ceph.osds must be an object" -}}
+{{- end -}}
+{{- if or (not (hasKey $egress.ceph.osds "enabled")) (not (hasKey $egress.ceph.osds "portRange")) (not (hasKey $egress.ceph.osds "to")) -}}
+{{- fail "networkPolicy.egress.ceph.osds requires enabled, portRange, and to" -}}
+{{- end -}}
+{{- $osds := $egress.ceph.osds -}}
+{{- range $field := keys $osds -}}
+{{- if not (has $field (list "enabled" "portRange" "to")) -}}
+{{- fail (printf "networkPolicy.egress.ceph.osds has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "bool" $osds.enabled) -}}
+{{- fail "networkPolicy.egress.ceph.osds.enabled must be a boolean" -}}
+{{- end -}}
+{{- if $osds.enabled -}}
+{{- if not (kindIs "slice" $osds.to) -}}
+{{- fail "networkPolicy.egress.ceph.osds.to must be a list" -}}
+{{- end -}}
+{{- include "restic-rados-server.validateNetworkPolicyPeers" (dict "path" "networkPolicy.egress.ceph.osds.to" "peers" $osds.to) -}}
+{{- if not (kindIs "map" $osds.portRange) -}}
+{{- fail "networkPolicy.egress.ceph.osds.portRange must be an object" -}}
+{{- end -}}
+{{- range $field := keys $osds.portRange -}}
+{{- if not (has $field (list "from" "to")) -}}
+{{- fail (printf "networkPolicy.egress.ceph.osds.portRange has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (not (hasKey $osds.portRange "from")) (not (hasKey $osds.portRange "to")) -}}
+{{- fail "networkPolicy.egress.ceph.osds.portRange requires from and to" -}}
+{{- end -}}
+{{- if or (not (regexMatch "^[0-9]+$" (toString $osds.portRange.from))) (not (regexMatch "^[0-9]+$" (toString $osds.portRange.to))) -}}
+{{- fail "networkPolicy.egress.ceph.osds.portRange.from and to must be integers" -}}
+{{- end -}}
+{{- $from := atoi (toString $osds.portRange.from) -}}
+{{- $to := atoi (toString $osds.portRange.to) -}}
+{{- if or (lt $from 1) (gt $from 65535) (lt $to 1) (gt $to 65535) -}}
+{{- fail "networkPolicy.egress.ceph.osds.portRange.from and to must be between 1 and 65535" -}}
+{{- end -}}
+{{- if gt $from $to -}}
+{{- fail "networkPolicy.egress.ceph.osds.portRange.to must be greater than or equal to from" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.services -}}
-{{- if .Values.networkPolicy.ingress -}}
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.ingressFrom -}}
+{{- fail "networkPolicy.ingressFrom must be empty when services is configured; use services.<name>.networkPolicy.ingressFrom" -}}
+{{- end -}}
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.ingress -}}
 {{- fail "networkPolicy.ingress must be empty when services is configured; use services.<name>.networkPolicy.ingressFrom" -}}
 {{- end -}}
 {{- $targetPorts := dict -}}
@@ -199,6 +516,9 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- $ingressFrom := dig "networkPolicy" "ingressFrom" (list) $service -}}
 {{- if not (kindIs "slice" $ingressFrom) -}}
 {{- fail (printf "services.%s.networkPolicy.ingressFrom must be a list" $name) -}}
+{{- end -}}
+{{- if $.Values.networkPolicy.enabled -}}
+{{- include "restic-rados-server.validateNetworkPolicyPeers" (dict "path" (printf "services.%s.networkPolicy.ingressFrom" $name) "peers" $ingressFrom) -}}
 {{- end -}}
 {{- if and $.Values.networkPolicy.enabled (gt (len $ingressFrom) 0) -}}
 {{- if hasKey $networkPolicyNames $resourceName -}}
