@@ -185,7 +185,7 @@ func parseCommandLine(args []string) (commandLineConfig, error) {
 	fs.StringVar(&parsed.logFile, "log-file", "", "path to log file (default: stderr)")
 	fs.StringVar(&parsed.keyringPath, "keyring", "", "path to Ceph keyring file")
 	fs.StringVar(&parsed.clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
-	fs.Var(&parsed.poolSpecs, "pool", "Pool specification: 'pool[/namespace][//lowerpool[/namespace]][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
+	fs.Var(&parsed.poolSpecs, "pool", "Pool specification: 'pool[/namespace][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
 	fs.StringVar(&parsed.cephConf, "ceph-conf", "", "path to ceph.conf file")
 	fs.BoolVar(&parsed.striper, "striper", true, "enable librados striper for large objects")
 	fs.Int64Var(&parsed.readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
@@ -1114,52 +1114,18 @@ func poolSpecsToPoolsConfig(specs []string) (poolsConfig, error) {
 	return result, nil
 }
 
-func splitPoolKey(key string) (pool, namespace string) {
-	if idx := strings.Index(key, "/"); idx != -1 {
-		return key[:idx], key[idx+1:]
+func parsePoolTarget(target, spec string) (pool, namespace string, err error) {
+	pool, namespace, hasNamespace := strings.Cut(target, "/")
+	if pool == "" {
+		return "", "", fmt.Errorf("empty pool name in specification: %q", spec)
 	}
-	return key, ""
-}
-
-func parsePoolKey(key string) (BlobPoolConfig, error) {
-	upperPart, lowerPart, hasLower := strings.Cut(key, "//")
-
-	poolName, namespace := splitPoolKey(upperPart)
-	if poolName == "" {
-		return BlobPoolConfig{}, fmt.Errorf("empty pool name in specification: %q", key)
-	}
-	if strings.Contains(upperPart, "/") && namespace == "" {
-		return BlobPoolConfig{}, fmt.Errorf("empty namespace in specification: %q", key)
-	}
-	if strings.HasPrefix(namespace, "/") {
-		return BlobPoolConfig{}, fmt.Errorf("namespace cannot start with '/' in specification: %q", key)
+	if hasNamespace && namespace == "" {
+		return "", "", fmt.Errorf("empty namespace in specification: %q", spec)
 	}
 	if strings.Contains(namespace, "/") {
-		return BlobPoolConfig{}, fmt.Errorf("namespace cannot contain '/' in specification: %q", key)
+		return "", "", fmt.Errorf("namespace cannot contain '/' in specification: %q", spec)
 	}
-	bpc := BlobPoolConfig{Pool: poolName, Namespace: namespace}
-
-	if hasLower {
-		lowerPool, lowerNamespace := splitPoolKey(lowerPart)
-		if lowerPool == "" {
-			return BlobPoolConfig{}, fmt.Errorf("empty lower pool name in specification: %q", key)
-		}
-		if strings.Contains(lowerPart, "/") && lowerNamespace == "" {
-			return BlobPoolConfig{}, fmt.Errorf("empty namespace in specification: %q", key)
-		}
-		if strings.HasPrefix(lowerNamespace, "/") {
-			return BlobPoolConfig{}, fmt.Errorf("namespace cannot start with '/' in specification: %q", key)
-		}
-		if strings.Contains(lowerNamespace, "/") {
-			return BlobPoolConfig{}, fmt.Errorf("namespace cannot contain '/' in specification: %q", key)
-		}
-		if lowerPool == poolName && lowerNamespace == namespace {
-			return BlobPoolConfig{}, fmt.Errorf("lower layer must differ from upper layer in specification: %q", key)
-		}
-		bpc.Lower = &LayerPoolConfig{Pool: lowerPool, Namespace: lowerNamespace}
-	}
-
-	return bpc, nil
+	return pool, namespace, nil
 }
 
 func parsePoolsConfig(pc poolsConfig) (ServerConfigPools, error) {
@@ -1172,11 +1138,11 @@ func parsePoolsConfig(pc poolsConfig) (ServerConfigPools, error) {
 	var catchAll *BlobPoolConfig
 
 	for key, types := range pc {
-		bpc, err := parsePoolKey(key)
+		poolName, namespace, err := parsePoolTarget(key, key)
 		if err != nil {
 			return ServerConfigPools{}, err
 		}
-		poolName := bpc.Pool
+		bpc := BlobPoolConfig{Pool: poolName, Namespace: namespace}
 
 		if len(types) == 0 || types == nil {
 			return ServerConfigPools{}, fmt.Errorf("invalid pool specification: %q", key)
@@ -1241,20 +1207,8 @@ func parsePoolSpec(spec string) (key string, types []string, err error) {
 
 	poolPart = strings.TrimSpace(poolPart)
 
-	upperPart, lowerPart, hasLower := strings.Cut(poolPart, "//")
-	if err := validatePoolLayer(upperPart, spec); err != nil {
+	if _, _, err := parsePoolTarget(poolPart, spec); err != nil {
 		return "", nil, err
-	}
-	if hasLower {
-		if lowerPart == "" {
-			return "", nil, fmt.Errorf("empty lower pool name in specification: %q", spec)
-		}
-		if err := validatePoolLayer(lowerPart, spec); err != nil {
-			return "", nil, err
-		}
-		if lowerPart == upperPart {
-			return "", nil, fmt.Errorf("lower layer must differ from upper layer in specification: %q", spec)
-		}
 	}
 
 	if colonIdx == -1 {
@@ -1282,23 +1236,6 @@ func parsePoolSpec(spec string) (key string, types []string, err error) {
 	}
 
 	return poolPart, types, nil
-}
-
-func validatePoolLayer(layer, spec string) error {
-	poolName, namespace := splitPoolKey(layer)
-	if poolName == "" {
-		return fmt.Errorf("empty pool name in specification: %q", spec)
-	}
-	if strings.Contains(layer, "/") && namespace == "" {
-		return fmt.Errorf("empty namespace in specification: %q", spec)
-	}
-	if strings.HasPrefix(namespace, "/") {
-		return fmt.Errorf("namespace cannot start with '/' in specification: %q", spec)
-	}
-	if strings.Contains(namespace, "/") {
-		return fmt.Errorf("namespace cannot contain '/' in specification: %q", spec)
-	}
-	return nil
 }
 
 func isValidBlobTypeForMapping(bt BlobType) bool {

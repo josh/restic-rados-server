@@ -15,7 +15,9 @@ exec rados --pool $CEPH_POOL_NEW setxattr data/000000000000000000000000000000000
 exec rados --pool $CEPH_POOL_NEW setxattr data/0000000000000000000000000000000000000000000000000000000000000001.0000000000000000 striper.layout.object_size 4194304
 exec rados --pool $CEPH_POOL_NEW setxattr data/0000000000000000000000000000000000000000000000000000000000000001.0000000000000000 striper.size 2048
 
-exec restic-rados-server --pool=$CEPH_POOL_NEW//$CEPH_POOL_OLD --listen $WORK/restic.sock &server&
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/0000000000000000000000000000000000000000000000000000000000000001' --output /dev/null
@@ -27,3 +29,6 @@ stdout '200'
 wait4log 'skipping striped object with unsupported layout' $RESTIC_RADOS_SERVER_LOG_FILE
 
 kill server
+
+-- config.json.tmpl --
+{"repos":{"default":{"blob_pools":{"config":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"keys":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"locks":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"snapshots":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"index":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"data":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}}}}}}

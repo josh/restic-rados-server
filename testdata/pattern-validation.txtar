@@ -167,7 +167,12 @@ stderr 'blob type "data": lower layer may overlap upper layer across dynamic rep
 {
     "repos": {
         "*": {
-            "pools": {"p/hot-{repo}//p/cold-{repo}": ["*"]}
+            "blob_pools": {
+                "config": {
+                    "upper": {"pool": "p", "namespace": "hot-{repo}"},
+                    "lower": {"pool": "p", "namespace": "cold-{repo}"}
+                }
+            }
         }
     }
 }

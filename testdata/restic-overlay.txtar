@@ -6,14 +6,16 @@ exec restic init --option rclone.program=restic-rados-server --option rclone.arg
 
 exec restic backup data-first --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_OLD --repo rclone: --password-file password.txt
 
-exec restic snapshots --json --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
+envsubst layered.json.tmpl config.json
+
+exec restic snapshots --json --option rclone.program=restic-rados-server --option rclone.args='--config config.json' --repo rclone: --password-file password.txt
 stdin stdout
 exec jq 'length'
 stdout '^1$'
 
-exec restic backup data-second --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
+exec restic backup data-second --option rclone.program=restic-rados-server --option rclone.args='--config config.json' --repo rclone: --password-file password.txt
 
-exec restic snapshots --json --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
+exec restic snapshots --json --option rclone.program=restic-rados-server --option rclone.args='--config config.json' --repo rclone: --password-file password.txt
 stdin stdout
 exec jq 'length'
 stdout '^2$'
@@ -21,9 +23,9 @@ stdout '^2$'
 exec rados --pool $CEPH_POOL_NEW ls
 stdout 'snapshots/'
 
-exec restic check --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
+exec restic check --option rclone.program=restic-rados-server --option rclone.args='--config config.json' --repo rclone: --password-file password.txt
 
-exec restic restore latest --target $WORK/restored --option rclone.program=restic-rados-server --option rclone.args='--pool '$CEPH_POOL_NEW'//'$CEPH_POOL_OLD --repo rclone: --password-file password.txt
+exec restic restore latest --target $WORK/restored --option rclone.program=restic-rados-server --option rclone.args='--config config.json' --repo rclone: --password-file password.txt
 
 cmp $WORK/restored/data-second/second.txt data-second/second.txt
 
@@ -31,6 +33,8 @@ env RESTIC_RADOS_SERVER_POOL=$CEPH_POOL_OLD
 rados-object-count snapshots/
 cmp stdout old-snapshot-count.txt
 
+-- layered.json.tmpl --
+{"repos":{"default":{"blob_pools":{"config":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"keys":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"locks":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"snapshots":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"index":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"data":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}}}}}}
 -- password.txt --
 secret
 -- data-first/first.txt --
