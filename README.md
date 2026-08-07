@@ -408,9 +408,8 @@ The corresponding restic URLs end in `/` and `/archive`.
 
 ### Dynamic repository names
 
-A single `*` repository pattern can serve repositories created at arbitrary
-matching paths. Dynamic repositories must include `{repo}` or `{repo_match}`
-in their namespace or object prefix so their storage cannot overlap:
+A single `*` pattern can serve arbitrary matching repository paths. `{repo}`
+expands to the full repository name:
 
 ```json
 {
