@@ -14,8 +14,12 @@ stdout '200'
 kill seedserver
 
 env RESTIC_RADOS_SERVER_POOL=$CEPH_POOL_NEW'//'$CEPH_POOL_OLD':data;'$CEPH_POOL_META':*'
+! exec restic-rados-server
+env RESTIC_RADOS_SERVER_POOL=
 
-exec restic-rados-server --listen $WORK/overlay.sock &overlayserver&
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/overlay.sock &overlayserver&
 wait4socket $WORK/overlay.sock
 
 exec curl --silent --unix-socket $WORK/overlay.sock --request POST 'http://localhost/?create=true'
@@ -38,6 +42,8 @@ stdout '^config$'
 
 kill overlayserver
 
+-- config.json.tmpl --
+{"repos":{"default":{"blob_pools":{"config":{"pool":"$CEPH_POOL_META"},"keys":{"pool":"$CEPH_POOL_META"},"locks":{"pool":"$CEPH_POOL_META"},"snapshots":{"pool":"$CEPH_POOL_META"},"index":{"pool":"$CEPH_POOL_META"},"data":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}}}}}}
 -- old-data --
 legacy blob content
 -- new-data --

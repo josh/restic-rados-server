@@ -10,7 +10,9 @@ exec curl --silent --unix-socket $WORK/restic-old.sock --request POST --header '
 
 kill oldserver
 
-exec restic-rados-server --pool=$CEPH_POOL_SHARED/new//$CEPH_POOL_SHARED/old --listen $WORK/restic.sock &server&
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/data/a1fff0ffefb9eace7230c24e50731f0a91c62f9cefdfe77121c2f607125dffae'
@@ -26,6 +28,8 @@ exec rados --pool $CEPH_POOL_SHARED --namespace old ls
 
 kill server
 
+-- config.json.tmpl --
+{"repos":{"default":{"blob_pools":{"config":{"upper":{"pool":"$CEPH_POOL_SHARED","namespace":"new"},"lower":{"pool":"$CEPH_POOL_SHARED","namespace":"old"}},"keys":{"upper":{"pool":"$CEPH_POOL_SHARED","namespace":"new"},"lower":{"pool":"$CEPH_POOL_SHARED","namespace":"old"}},"locks":{"upper":{"pool":"$CEPH_POOL_SHARED","namespace":"new"},"lower":{"pool":"$CEPH_POOL_SHARED","namespace":"old"}},"snapshots":{"upper":{"pool":"$CEPH_POOL_SHARED","namespace":"new"},"lower":{"pool":"$CEPH_POOL_SHARED","namespace":"old"}},"index":{"upper":{"pool":"$CEPH_POOL_SHARED","namespace":"new"},"lower":{"pool":"$CEPH_POOL_SHARED","namespace":"old"}},"data":{"upper":{"pool":"$CEPH_POOL_SHARED","namespace":"new"},"lower":{"pool":"$CEPH_POOL_SHARED","namespace":"old"}}}}}}
 -- config-data --
 {"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
 -- test-data --

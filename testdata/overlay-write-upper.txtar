@@ -2,7 +2,9 @@ tail-logs
 create-pool new
 create-pool old
 
-exec restic-rados-server --pool=$CEPH_POOL_NEW//$CEPH_POOL_OLD --listen $WORK/restic.sock &server&
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
@@ -20,6 +22,8 @@ exec rados --pool $CEPH_POOL_OLD ls
 
 kill server
 
+-- config.json.tmpl --
+{"repos":{"default":{"blob_pools":{"config":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"keys":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"locks":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"snapshots":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"index":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}},"data":{"upper":{"pool":"$CEPH_POOL_NEW"},"lower":{"pool":"$CEPH_POOL_OLD"}}}}}}
 -- config-data --
 {"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
 -- test-data --
