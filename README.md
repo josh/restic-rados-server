@@ -448,35 +448,27 @@ process serve separate read-only and read-write TCP ports:
 ```json
 {
   "listen": [
-    {
-      "address": "0.0.0.0:8000",
-      "access": "rw"
-    },
-    {
-      "address": "0.0.0.0:8001",
-      "access": "r"
-    }
+    {"endpoint": "0.0.0.0:8000", "policy": {"access": "rw"}},
+    {"endpoint": "0.0.0.0:8001", "policy": {"access": "r"}}
   ]
 }
 ```
 
-Listener access accepts the same `r`/`read-only`, `ra`/`read-append`, and
-`rw`/`read-write` values. Omitting it adds no listener-specific limit.
+Listener `policy.access` accepts `r`, `ra`, or `rw`. Omitting it adds no
+listener-specific limit.
 
 ## Optional Tailscale service listener
 
-The server can listen on a Tailscale service with an address such as
-`tailscale+svc:restic`. To enforce Tailscale application capabilities, use a
+The server can listen on a Tailscale service endpoint such as
+`tailscale+svc:restic`. To accept Tailscale application capabilities, use a
 listener object in the JSON configuration:
 
 ```json
 {
-  "listen": [
-    {
-      "address": "tailscale+svc:restic",
-      "trusted_tailscale_caps": "github.com/josh/restic-rados-server"
-    }
-  ]
+  "listen": [{
+    "endpoint": "tailscale+svc:restic",
+    "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"]}
+  }]
 }
 ```
 
@@ -507,7 +499,7 @@ Run `restic-rados-server --help` for all flags. Common flags include:
 
 ```text
 --config PATH       JSON configuration file
---listen ADDRESS    TCP address or Unix socket; repeatable
+--listen ENDPOINT   listener endpoint; repeatable
 --pool SPEC         pool[/namespace]:types mapping for the default repository
 --access LEVEL      r, ra, or rw maximum access level for the server
 --ceph-conf PATH    Ceph configuration file

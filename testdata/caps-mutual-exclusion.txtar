@@ -1,10 +1,30 @@
-! exec restic-rados-server --listen 'tcp://127.0.0.1:8000?trusted-caps-header=X-Restic-Capabilities&trusted-ts-caps=github.com/josh/restic-rados-server'
-stderr 'only one of'
+tail-logs
+create-pool
 
-! exec restic-rados-server --config both.json
-stderr 'only one of'
+envsubst config.json.tmpl config.json
 
--- both.json --
+exec restic-rados-server --config config.json &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"r"}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"*":"rw"}]}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"r"}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"*":"rw"}]}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"*":"r"}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"*":"rw"}]}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+
+kill server
+
+-- config.json.tmpl --
 {
-    "listen": [{"address": "/tmp/x.sock", "trusted_caps_header": "X-Restic-Capabilities", "trusted_tailscale_caps": "github.com/josh/restic-rados-server"}]
+    "listen": [{
+        "endpoint": "$WORK/restic.sock",
+        "policy": {"access": "ra"},
+        "trusted_app_caps_header": "X-Restic-Capabilities",
+        "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"]}
+    }]
 }
+-- blob-data --
+test blob content

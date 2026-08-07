@@ -5,10 +5,10 @@ create-pool
 stderr 'unknown field'
 
 ! exec restic-rados-server --config no-address.json
-stderr 'one of address or systemd is required'
+stderr 'endpoint.*required'
 
 ! exec restic-rados-server --config both.json
-stderr 'address and systemd are mutually exclusive'
+stderr 'unknown field'
 
 envsubst config.json.tmpl config.json
 exec restic-rados-server --config config.json &server&
@@ -29,21 +29,21 @@ kill server
 -- config.json.tmpl --
 {
     "listen": [
-        {"address": "$WORK/caps.sock", "trusted_caps_header": "X-Restic-Capabilities"},
-        {"address": "$WORK/plain.sock"}
+        {"endpoint": "$WORK/caps.sock", "trusted_app_caps_header": "X-Restic-Capabilities"},
+        {"endpoint": "$WORK/plain.sock"}
     ]
 }
 -- bad-field.json --
 {
-    "listen": [{"address": "/tmp/x.sock", "trust": true}]
+    "listen": [{"endpoint": "/tmp/x.sock", "trust": true}]
 }
 -- no-address.json --
 {
-    "listen": [{"trusted_caps_header": "X-Restic-Capabilities"}]
+    "listen": [{"trusted_app_caps_header": "X-Restic-Capabilities"}]
 }
 -- both.json --
 {
-    "listen": [{"address": "/tmp/x.sock", "systemd": "restic"}]
+    "listen": [{"endpoint": "/tmp/x.sock", "options": {"bogus": true}}]
 }
 -- blob-data --
 test blob content

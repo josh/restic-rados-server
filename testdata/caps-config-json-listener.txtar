@@ -19,7 +19,7 @@ kill server
 
 -- config.json.tmpl --
 {
-    "listen": ["$WORK/restic.sock?trusted-caps-header=X-Restic-Capabilities"]
+    "listen": [{"endpoint": "$WORK/restic.sock", "trusted_app_caps_header": "X-Restic-Capabilities"}]
 }
 -- blob-data --
 test blob content

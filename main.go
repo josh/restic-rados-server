@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 var logger *slog.Logger
@@ -20,6 +22,28 @@ var logger *slog.Logger
 var version = "0.9.1"
 
 const tailscaleDrainTimeout = 10 * time.Second
+
+func serveStdio(ctx context.Context, handler http.Handler) error {
+	server := &http2.Server{}
+	stdioConn := &StdioConn{
+		stdin:  os.Stdin,
+		stdout: os.Stdout,
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = stdioConn.Close()
+		case <-done:
+		}
+	}()
+	server.ServeConn(stdioConn, &http2.ServeConnOpts{
+		Context: ctx,
+		Handler: handler,
+	})
+	return nil
+}
 
 func initLogger(verbose bool, logFilePath string) error {
 	logOutput := io.Writer(os.Stderr)
@@ -59,6 +83,10 @@ func main() {
 		fmt.Println(version)
 		os.Exit(0)
 	}
+	if err := validateResticListenerPolicies(config.Listeners); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 
 	if err := initLogger(config.Verbose, config.LogFile); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -80,20 +108,13 @@ func main() {
 		}
 	}
 
-	resolvedListeners, err := resolveSystemdListeners(config.Listeners)
-	if err != nil {
-		slog.Error("failed to resolve listeners", "error", err)
-		os.Exit(1)
-	}
-	config.Listeners = resolvedListeners
 	if config.Stdio && len(config.Listeners) > 0 {
 		slog.Error("--stdio cannot be combined with --listen")
 		os.Exit(1)
 	}
-	hasConfiguredListeners := len(config.Listeners) > 0
-
-	if !config.Stdio && !hasConfiguredListeners {
-		config.Stdio = true
+	if config.Stdio && time.Duration(config.MaxIdleTime) > 0 {
+		slog.Error("--max-idle-time is not supported in stdio mode")
+		os.Exit(1)
 	}
 
 	cephConfig := CephConfig{
@@ -119,23 +140,25 @@ func main() {
 	readPool := NewBufferPool(config.ReadBufferSize)
 	writePool := NewBufferPool(config.WriteBufferSize)
 
-	ctx := context.Background()
-
-	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	mux := http.NewServeMux()
 	setupAllRoutes(mux, connMgr, config.Repos, ParseAccess(config.Access), readPool, writePool)
 
-	if config.Stdio && time.Duration(config.MaxIdleTime) > 0 {
-		slog.Error("--max-idle-time is not supported in stdio mode")
-		os.Exit(1)
-	}
-
 	var monitor *idleMonitor
+	var connState func(net.Conn, http.ConnState)
 	if time.Duration(config.MaxIdleTime) > 0 {
 		monitor = newIdleMonitor(time.Duration(config.MaxIdleTime))
 		defer monitor.Stop()
+		connState = func(_ net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateNew:
+				monitor.Incr()
+			case http.StateClosed, http.StateHijacked:
+				monitor.Decr()
+			}
+		}
 		go func() {
 			select {
 			case <-monitor.Done():
@@ -146,71 +169,54 @@ func main() {
 		}()
 	}
 
-	if config.Stdio {
-		for _, cfg := range config.Listeners {
-			cfg.Close()
+	listeners, err := PrepareListeners(ctx, config.Listeners, newResticPolicyReducer, ListenOptions{
+		ShutdownTimeout:       time.Duration(config.ShutdownTimeout),
+		TailscaleDrainTimeout: tailscaleDrainTimeout,
+		RuntimeName:           "restic-rados-server",
+		ConnState:             connState,
+	})
+	if err != nil {
+		slog.Error("failed to prepare listeners", "error", err)
+		os.Exit(1)
+	}
+	closeListeners := func() {
+		if err := listeners.Close(); err != nil {
+			slog.Error("failed to close listeners", "error", err)
 		}
+	}
+	defer closeListeners()
 
-		stdioCfg := listenerConfig{
-			kind: listenerTypeStdio,
-			raw:  "stdio",
+	if config.Stdio && listeners.Len() > 0 {
+		closeListeners()
+		slog.Error("--stdio cannot be combined with inherited systemd listeners")
+		os.Exit(1)
+	}
+	if !config.Stdio && listeners.Len() == 0 {
+		config.Stdio = true
+	}
+	if config.Stdio && time.Duration(config.MaxIdleTime) > 0 {
+		closeListeners()
+		slog.Error("--max-idle-time is not supported in stdio mode")
+		os.Exit(1)
+	}
+
+	if config.Stdio {
+		if !connMgr.Ready() {
+			closeListeners()
+			slog.Error("failed to initialize pool configs", "error", errConnectionUnavailable)
+			os.Exit(1)
 		}
-		if err := stdioCfg.Serve(ctx, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil && ctx.Err() == nil {
+		if err := serveStdio(ctx, mux); err != nil && ctx.Err() == nil {
+			closeListeners()
 			slog.Error("stdio server error", "error", err)
 			os.Exit(1)
 		}
-	} else {
-		tailscaleCount := 0
-		tsServiceNames := map[string]bool{}
-		for _, l := range config.Listeners {
-			if l.kind != listenerTypeTailscaleService {
-				continue
-			}
-			tailscaleCount++
-			if tsServiceNames[l.serviceName] {
-				slog.Error("multiple tailscale services resolve to the same upstream socket", "service", l.serviceName)
-				os.Exit(1)
-			}
-			tsServiceNames[l.serviceName] = true
-		}
-		if tailscaleCount > 1 && config.Tailscale != nil && config.Tailscale.UpstreamSocket != "" {
-			slog.Error("tailscale.upstream_socket cannot be shared by multiple tailscale services")
-			os.Exit(1)
-		}
+		return
+	}
 
-		var withdrawals []func(context.Context)
-		var withdrawOnce sync.Once
-		withdrawAll := func() {
-			withdrawOnce.Do(func() {
-				for _, withdraw := range withdrawals {
-					drainCtx, drainCancel := context.WithTimeout(context.Background(), tailscaleDrainTimeout)
-					withdraw(drainCtx)
-					drainCancel()
-				}
-			})
-		}
-
-		for i := range config.Listeners {
-			if config.Listeners[i].kind == listenerTypeTailscaleService {
-				upstream, withdraw, err := setupTailscaleService(ctx, config.Listeners[i], config.Tailscale)
-				if err != nil {
-					withdrawAll()
-					slog.Error("failed to set up tailscale service", "error", err)
-					os.Exit(1)
-				}
-				config.Listeners[i] = upstream
-				withdrawals = append(withdrawals, withdraw)
-			}
-		}
-		go func() {
-			<-ctx.Done()
-			withdrawAll()
-		}()
-		if err := serveAllListeners(ctx, cancel, config.Listeners, mux, time.Duration(config.ShutdownTimeout), monitor); err != nil {
-			withdrawAll()
-			slog.Error("server error", "error", err)
-			os.Exit(1)
-		}
-		withdrawAll()
+	if err := listeners.Serve(ctx, mux); err != nil {
+		closeListeners()
+		slog.Error("server error", "error", err)
+		os.Exit(1)
 	}
 }
