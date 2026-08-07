@@ -44,6 +44,7 @@ type Handler struct {
 	connections *ConnectionManager
 	repos       map[string]*RepoConfig
 	patterns    []repoPattern
+	access      Access
 	readPool    *BufferPool
 	writePool   *BufferPool
 }
@@ -175,11 +176,12 @@ type purgeTargetKey struct {
 	namespace string
 }
 
-func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos map[string]*RepoConfig, readPool, writePool *BufferPool) {
+func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos map[string]*RepoConfig, access Access, readPool, writePool *BufferPool) {
 	mux.Handle("/", &Handler{
 		connections: connections,
 		repos:       repos,
 		patterns:    compileRepoPatterns(repos),
+		access:      access,
 		readPool:    readPool,
 		writePool:   writePool,
 	})
@@ -346,13 +348,12 @@ func (h *Handler) serveReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) serveRepository(w *responseWriter, r *http.Request, repo repositoryRoute, radosCalls *uint64) {
-	access := ParseAccess(repo.config.Access)
-	if listenerAccess := listenerAccessForRequest(r.Context()); listenerAccess < access {
-		access = listenerAccess
-	}
-	if granted := grantForRepo(r.Context(), repo.name); granted < access {
-		access = granted
-	}
+	access := minimumAccess(
+		h.access,
+		ParseAccess(repo.config.Access),
+		listenerAccessForRequest(r.Context()),
+		grantForRepo(r.Context(), repo.name),
+	)
 
 	if repo.resourcePath == "/" {
 		h.serveRepositoryRoot(w, r, repo.name, access, radosCalls)
@@ -379,6 +380,16 @@ func (h *Handler) serveRepository(w *responseWriter, r *http.Request, repo repos
 	case blobRouteObject:
 		h.serveObject(w, r, repo.name, route.blobType, route.objectID, access, radosCalls)
 	}
+}
+
+func minimumAccess(accesses ...Access) Access {
+	access := AccessReadWrite
+	for _, candidate := range accesses {
+		if candidate < access {
+			access = candidate
+		}
+	}
+	return access
 }
 
 func parseBlobRoute(path string) (blobRoute, bool) {

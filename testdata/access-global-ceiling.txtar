@@ -1,0 +1,89 @@
+tail-logs
+create-pool shared replicated
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --access ra --listen $WORK/restic.sock?access=rw &server&
+wait4socket $WORK/restic.sock
+
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @config-data 'http://localhost/config'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/keys/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/locks/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/config' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/keys/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/locks/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/?purge=true' --output /dev/null
+stdout '403'
+
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/named/?create=true'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @config-data 'http://localhost/named/config'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/named/keys/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/named/locks/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/named/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/named/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/named/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/named/config' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/named/keys/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/named/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/named/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/named/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/named/locks/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/named/?purge=true' --output /dev/null
+stdout '403'
+
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/dynamic/?create=true'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @config-data 'http://localhost/dynamic/config'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/dynamic/keys/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/dynamic/locks/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/dynamic/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/dynamic/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --fail --silent --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/dynamic/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/dynamic/config' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/dynamic/keys/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/dynamic/snapshots/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/dynamic/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/dynamic/index/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '403'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/dynamic/locks/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request DELETE 'http://localhost/dynamic/?purge=true' --output /dev/null
+stdout '403'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "repos": {
+        "default": {"pools": {"$CEPH_POOL_SHARED/default": ["*"]}, "access": "rw"},
+        "named": {"pools": {"$CEPH_POOL_SHARED/named": ["*"]}, "access": "rw"},
+        "*": {"pools": {"$CEPH_POOL_SHARED/wildcard-{repo}": ["*"]}, "access": "rw"}
+    }
+}
+-- config-data --
+{"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
+-- blob-data --
+test blob content

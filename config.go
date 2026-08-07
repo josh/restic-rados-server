@@ -104,6 +104,7 @@ type Config struct {
 	Listeners       listenerFlags          `json:"listen,omitempty"`
 	Stdio           bool                   `json:"-"`
 	ShutdownTimeout Duration               `json:"shutdown_timeout,omitempty"`
+	Access          string                 `json:"access,omitempty"`
 	MaxIdleTime     Duration               `json:"max_idle_time,omitempty"`
 	LogFile         string                 `json:"log_file,omitempty"`
 	Keyring         string                 `json:"keyring,omitempty"`
@@ -122,14 +123,127 @@ type TailscaleConfig struct {
 	UpstreamSocket string `json:"upstream_socket,omitempty"`
 }
 
+func normalizeAccess(value string) (string, error) {
+	switch value {
+	case "r", "read-only":
+		return "r", nil
+	case "ra", "read-append":
+		return "ra", nil
+	case "rw", "read-write":
+		return "rw", nil
+	default:
+		return "", fmt.Errorf("invalid access %q (must be r, ra, or rw)", value)
+	}
+}
+
+func jsonObjectFields(data []byte) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		return nil, errors.New("configuration cannot be null")
+	}
+	return fields, nil
+}
+
+func jsonObjectField(fields map[string]json.RawMessage, name string) (json.RawMessage, bool, error) {
+	var raw json.RawMessage
+	found := false
+	for key, value := range fields {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		if found {
+			return nil, false, fmt.Errorf("configuration contains multiple %q fields", name)
+		}
+		raw = value
+		found = true
+	}
+	return raw, found, nil
+}
+
+func parseJSONAccess(raw json.RawMessage) (string, error) {
+	var value *string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", errors.New("access cannot be null")
+	}
+	return normalizeAccess(*value)
+}
+
+func decodeStrictJSON(data []byte, value any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(value); err != nil {
+		return err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected data after JSON object")
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *RepoConfig) UnmarshalJSON(data []byte) error {
+	fields, err := jsonObjectFields(data)
+	if err != nil {
+		return err
+	}
+	accessRaw, hasAccess, err := jsonObjectField(fields, "access")
+	if err != nil {
+		return err
+	}
+	type plainRepoConfig RepoConfig
+	if err := decodeStrictJSON(data, (*plainRepoConfig)(r)); err != nil {
+		return err
+	}
+
+	if hasAccess {
+		access, err := parseJSONAccess(accessRaw)
+		if err != nil {
+			return err
+		}
+		r.Access = access
+	}
+	return nil
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	fields, err := jsonObjectFields(data)
+	if err != nil {
+		return err
+	}
+	accessRaw, hasAccess, err := jsonObjectField(fields, "access")
+	if err != nil {
+		return err
+	}
+	type plainConfig Config
+	if err := decodeStrictJSON(data, (*plainConfig)(c)); err != nil {
+		return err
+	}
+
+	if hasAccess {
+		access, err := parseJSONAccess(accessRaw)
+		if err != nil {
+			return err
+		}
+		c.Access = access
+	}
+	return nil
+}
+
 func (c *Config) loadFromFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	return dec.Decode(c)
+	return decodeStrictJSON(data, c)
 }
 
 func (c *Config) defaultRepo() *RepoConfig {
@@ -180,7 +294,7 @@ func parseCommandLine(args []string) (commandLineConfig, error) {
 	fs.Var(&parsed.listeners, "listen", "Address or Unix socket path to listen on, repeatable")
 	fs.BoolVar(&parsed.useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
 	fs.DurationVar(&parsed.shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
-	fs.StringVar(&parsed.access, "access", "", "access level: r/read-only, ra/read-append, rw/read-write")
+	fs.StringVar(&parsed.access, "access", "", "maximum access level for the server: r/read-only, ra/read-append, rw/read-write")
 	fs.DurationVar(&parsed.maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
 	fs.StringVar(&parsed.logFile, "log-file", "", "path to log file (default: stderr)")
 	fs.StringVar(&parsed.keyringPath, "keyring", "", "path to Ceph keyring file")
@@ -204,6 +318,13 @@ func parseCommandLine(args []string) (commandLineConfig, error) {
 	fs.Visit(func(f *flag.Flag) {
 		parsed.set[f.Name] = true
 	})
+	if parsed.set["access"] {
+		access, err := normalizeAccess(parsed.access)
+		if err != nil {
+			return commandLineConfig{}, err
+		}
+		parsed.access = access
+	}
 	return parsed, nil
 }
 
@@ -219,6 +340,9 @@ func (c *Config) applyCommandLine(parsed commandLineConfig) {
 	}
 	if parsed.set["shutdown-timeout"] {
 		c.ShutdownTimeout = Duration(parsed.shutdownTimeout)
+	}
+	if parsed.set["access"] {
+		c.Access = parsed.access
 	}
 	if parsed.set["max-idle-time"] {
 		c.MaxIdleTime = Duration(parsed.maxIdleTime)
@@ -242,15 +366,12 @@ func (c *Config) applyCommandLine(parsed commandLineConfig) {
 		c.WriteBufferSize = parsed.writeBufferSize
 	}
 
-	if parsed.set["pool"] || parsed.set["access"] || parsed.set["striper"] || parsed.set["max-object-size"] {
+	if parsed.set["pool"] || parsed.set["striper"] || parsed.set["max-object-size"] {
 		def := c.defaultRepo()
 		if parsed.set["pool"] {
 			def.poolSpecs = parsed.poolSpecs
 			def.Pools = nil
 			def.BlobPools = nil
-		}
-		if parsed.set["access"] {
-			def.Access = parsed.access
 		}
 		if parsed.set["striper"] {
 			def.Striper = &parsed.striper
@@ -263,7 +384,7 @@ func (c *Config) applyCommandLine(parsed commandLineConfig) {
 
 var envPrefixes = []string{"RESTIC_RADOS_SERVER_", "RESTIC_CEPH_SERVER_", "CEPH_RESTIC_SERVER_", "RADOS_RESTIC_SERVER_"}
 
-func getEnv(suffix string) string {
+func getPrefixedEnv(suffix string) string {
 	for _, prefix := range envPrefixes {
 		if v := os.Getenv(prefix + suffix); v != "" {
 			return v
@@ -273,7 +394,7 @@ func getEnv(suffix string) string {
 }
 
 func parseBoolEnv(suffix string) (bool, bool, error) {
-	val := getEnv(suffix)
+	val := getPrefixedEnv(suffix)
 	if val == "" {
 		return false, false, nil
 	}
@@ -287,7 +408,7 @@ func parseBoolEnv(suffix string) (bool, bool, error) {
 }
 
 func parseInt64Env(suffix string) (int64, bool) {
-	val := getEnv(suffix)
+	val := getPrefixedEnv(suffix)
 	if val == "" {
 		return 0, false
 	}
@@ -306,7 +427,7 @@ func (c *Config) loadFromEnv() error {
 	if hasVerbose {
 		c.Verbose = verbose
 	}
-	if v := getEnv("LOG_FILE"); v != "" {
+	if v := getPrefixedEnv("LOG_FILE"); v != "" {
 		c.LogFile = v
 	}
 	if v := os.Getenv("CEPH_KEYRING"); v != "" {
@@ -325,19 +446,22 @@ func (c *Config) loadFromEnv() error {
 		c.WriteBufferSize = v
 	}
 
-	envAccess := getEnv("ACCESS")
+	if envAccess := getPrefixedEnv("ACCESS"); envAccess != "" {
+		access, err := normalizeAccess(envAccess)
+		if err != nil {
+			return err
+		}
+		c.Access = access
+	}
 	striper, hasStriper, err := parseBoolEnv("STRIPER")
 	if err != nil {
 		return err
 	}
 	maxObjectSize, hasMaxObjectSize := parseInt64Env("MAX_OBJECT_SIZE")
-	envPool := getEnv("POOL")
+	envPool := getPrefixedEnv("POOL")
 
-	if envAccess != "" || hasStriper || hasMaxObjectSize || envPool != "" {
+	if hasStriper || hasMaxObjectSize || envPool != "" {
 		def := c.defaultRepo()
-		if envAccess != "" {
-			def.Access = envAccess
-		}
 		if hasStriper {
 			def.Striper = &striper
 		}
@@ -364,6 +488,7 @@ func (c *Config) loadFromEnv() error {
 func loadConfig(args []string) (Config, bool, error) {
 	config := Config{
 		ShutdownTimeout: Duration(60 * time.Second),
+		Access:          "rw",
 		ReadBufferSize:  defaultReadBufferSize,
 		WriteBufferSize: defaultWriteBufferSize,
 	}
@@ -379,7 +504,7 @@ func loadConfig(args []string) (Config, bool, error) {
 
 	configFile := commandLine.configFile
 	if configFile == "" {
-		configFile = getEnv("CONFIG")
+		configFile = getPrefixedEnv("CONFIG")
 	}
 
 	if configFile != "" {
@@ -404,6 +529,12 @@ func loadConfig(args []string) (Config, bool, error) {
 	if config.Tailscale != nil && (config.Tailscale.Port < 0 || config.Tailscale.Port > 65535) {
 		return Config{}, false, fmt.Errorf("tailscale port must be between 0 and 65535, got %d", config.Tailscale.Port)
 	}
+
+	access, err := normalizeAccess(config.Access)
+	if err != nil {
+		return Config{}, false, err
+	}
+	config.Access = access
 
 	if err := config.normalizeRepos(); err != nil {
 		return Config{}, false, err
@@ -874,16 +1005,12 @@ func (c *Config) normalizeRepos() error {
 
 		if repo.Access == "" {
 			repo.Access = "rw"
-		}
-		switch repo.Access {
-		case "r", "read-only":
-			repo.Access = "r"
-		case "ra", "read-append":
-			repo.Access = "ra"
-		case "rw", "read-write":
-			repo.Access = "rw"
-		default:
-			return fmt.Errorf("repo %q: invalid access %q (must be r, ra, or rw)", name, repo.Access)
+		} else {
+			access, err := normalizeAccess(repo.Access)
+			if err != nil {
+				return fmt.Errorf("repo %q: %w", name, err)
+			}
+			repo.Access = access
 		}
 
 		if repo.BlobPools == nil && len(repo.poolSpecs) > 0 {

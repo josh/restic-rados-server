@@ -15,10 +15,9 @@ kill server
 
 -- config.json --
 {
+	"access": "ra",
     "repos": {
-        "default": {
-            "access": "ra"
-        }
+		"default": {}
     }
 }
 -- blob-data --

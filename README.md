@@ -12,7 +12,7 @@ endpoint, from a single server process to a replicated Kubernetes deployment.
 
 - Compatible with normal restic repository operations.
 - Multiple named repositories on one endpoint.
-- Read-only, read-append, and read-write access ceilings.
+- Read-only, read-append, and read-write access levels.
 - Multiple server replicas sharing the same Ceph-backed repositories.
 - TCP, Unix socket, systemd socket activation, and Tailscale service listeners.
 - Liveness and connection-state readiness endpoints.
@@ -33,10 +33,10 @@ replicated Kubernetes deployment.
 
 > [!IMPORTANT]
 > A normal TCP listener serves plain HTTP and does not authenticate clients.
-> The repository `access` setting is an authorization ceiling, not an identity
-> check. Keep the listener private or place it behind a TLS endpoint that
-> authenticates clients. Anyone who can reach a read-write listener can alter
-> or delete repository data.
+> The `access` settings limit authorization; they do not verify identity. Keep
+> the listener private or place it behind a TLS endpoint that authenticates
+> clients. Anyone who can reach an effectively read-write endpoint can alter or
+> delete repository data.
 
 ## Use case 1: systemd service
 
@@ -247,7 +247,7 @@ When `services` is non-empty, the chart generates `config.listen` from the
 map and creates one Service per entry. The example creates
 `restic-rados-server-rw` and `restic-rados-server-ro`. Both expose port 8000,
 but they target distinct pod ports whose listeners enforce read-write and
-read-only access ceilings. Each `targetPort` must be unique. The Service
+read-only access limits. Each `targetPort` must be unique. The Service
 `port` defaults to its `targetPort`, `access` defaults to `rw`, and
 `type` defaults to `service.type`.
 
@@ -428,20 +428,23 @@ With this configuration, `rest:https://backup.example.com/laptop` uses the
 `laptop` RADOS namespace and
 `rest:https://backup.example.com/server-01` uses `server-01`.
 
-### Access ceilings
+### Access levels
 
-Each repository accepts one of three access levels:
+Static access settings accept one of three levels:
 
 - `rw` or `read-write`: normal backup, restore, forget, and prune workflows.
-- `ra` or `read-append`: reads and new objects are allowed; destructive changes
-  are blocked, except lock deletion needed for restic coordination.
+- `ra` or `read-append`: reads and creation of new objects are allowed;
+  non-lock deletion and repository purge are blocked. Lock deletion remains
+  allowed for restic coordination.
 - `r` or `read-only`: writes and deletes are blocked.
 
-The default is `rw`. These values limit what the endpoint may do; they do not
-authenticate the caller.
+The default is `rw`. The effective access is the most restrictive of the
+server-wide, repository, listener, and trusted capability settings. No setting
+can grant more access than another permits. These values limit what the
+endpoint may do; they do not authenticate the caller.
 
-Each listener can add its own access ceiling. This lets one server process
-serve separate read-only and read-write TCP ports:
+Each listener can set its own maximum access level. This lets one server
+process serve separate read-only and read-write TCP ports:
 
 ```json
 {
@@ -459,10 +462,7 @@ serve separate read-only and read-write TCP ports:
 ```
 
 Listener access accepts the same `r`/`read-only`, `ra`/`read-append`, and
-`rw`/`read-write` values. Omitting it leaves that listener without an
-additional ceiling. The effective access for a request is the most restrictive
-of the repository setting, the listener setting, and any grant from a trusted
-capability header; none of these can elevate another ceiling.
+`rw`/`read-write` values. Omitting it adds no listener-specific limit.
 
 ## Optional Tailscale service listener
 
@@ -497,8 +497,8 @@ service. Reachability still targets the service:
 }
 ```
 
-The serving nodes must carry `tag:restic`. Capability values are `r`, `ra`, or
-`rw`, keyed by repository name or `*`. See
+The serving nodes must carry `tag:restic`. Capability values are `r`, `ra`,
+`rw`, or `none`, keyed by repository name or `*`. See
 [tailscale/tailscale#19618](https://github.com/tailscale/tailscale/issues/19618)
 for the service-VIP capability-resolution behavior.
 
@@ -510,16 +510,18 @@ Run `restic-rados-server --help` for all flags. Common flags include:
 --config PATH       JSON configuration file
 --listen ADDRESS    TCP address or Unix socket; repeatable
 --pool SPEC         pool[/namespace]:types mapping for the default repository
---access LEVEL      r, ra, or rw for the default repository
+--access LEVEL      r, ra, or rw maximum access level for the server
 --ceph-conf PATH    Ceph configuration file
 --keyring PATH      Ceph keyring file
 --id ID             Ceph client ID without the client. prefix
 --verbose           enable debug logging
 ```
 
-Command-line values override environment values, and environment values
-override the JSON configuration. Flags are sufficient for a single repository,
-as shown in the systemd guide. Use JSON for multiple repositories or advanced
-mapping; the Helm chart renders that configuration automatically.
+For equivalent settings, command-line values override environment values, and
+environment values override JSON configuration. `--access` sets the maximum
+access level for the server; options such as `--pool` remain shortcuts for
+configuring the default repository. Flags are sufficient for a single
+repository, as shown in the systemd guide. Use JSON for multiple repositories
+or advanced mapping; the Helm chart renders that configuration automatically.
 
 The project is licensed under the [MIT License](LICENSE).

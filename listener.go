@@ -124,11 +124,11 @@ func (l *listenerFlags) String() string {
 }
 
 type listenerSpec struct {
-	Address              string `json:"address,omitempty"`
-	Systemd              string `json:"systemd,omitempty"`
-	Access               string `json:"access,omitempty"`
-	TrustedCapsHeader    string `json:"trusted_caps_header,omitempty"`
-	TrustedTailscaleCaps string `json:"trusted_tailscale_caps,omitempty"`
+	Address              string          `json:"address,omitempty"`
+	Systemd              string          `json:"systemd,omitempty"`
+	Access               json.RawMessage `json:"access,omitempty"`
+	TrustedCapsHeader    json.RawMessage `json:"trusted_caps_header,omitempty"`
+	TrustedTailscaleCaps json.RawMessage `json:"trusted_tailscale_caps,omitempty"`
 }
 
 func parseListenerAccess(value string) (Access, error) {
@@ -137,6 +137,23 @@ func parseListenerAccess(value string) (Access, error) {
 		return AccessNone, fmt.Errorf("invalid listener access %q (must be r, ra, or rw)", value)
 	}
 	return access, nil
+}
+
+func parseOptionalListenerString(raw json.RawMessage, name string) (string, bool, error) {
+	if raw == nil {
+		return "", false, nil
+	}
+	var value *string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false, fmt.Errorf("%s must be a string", name)
+	}
+	if value == nil {
+		return "", false, fmt.Errorf("%s cannot be null", name)
+	}
+	if *value == "" {
+		return "", false, fmt.Errorf("%s cannot be empty", name)
+	}
+	return *value, true, nil
 }
 
 func (l *listenerFlags) UnmarshalJSON(data []byte) error {
@@ -159,15 +176,30 @@ func (l *listenerFlags) UnmarshalJSON(data []byte) error {
 				return fmt.Errorf("invalid listen entry %s: address and systemd are mutually exclusive", entry)
 			}
 			var access Access
-			if spec.Access != "" {
+			if spec.Access != nil {
+				var accessValue *string
+				if err := json.Unmarshal(spec.Access, &accessValue); err != nil {
+					return fmt.Errorf("invalid listen entry %s: access must be a string", entry)
+				}
+				if accessValue == nil {
+					return fmt.Errorf("invalid listen entry %s: access cannot be null", entry)
+				}
 				var err error
-				access, err = parseListenerAccess(spec.Access)
+				access, err = parseListenerAccess(*accessValue)
 				if err != nil {
 					return fmt.Errorf("invalid listen entry %s: %w", entry, err)
 				}
 			}
+			trustedCapsHeader, hasTrustedCapsHeader, err := parseOptionalListenerString(spec.TrustedCapsHeader, "trusted_caps_header")
+			if err != nil {
+				return fmt.Errorf("invalid listen entry %s: %w", entry, err)
+			}
+			trustedTailscaleCaps, hasTrustedTailscaleCaps, err := parseOptionalListenerString(spec.TrustedTailscaleCaps, "trusted_tailscale_caps")
+			if err != nil {
+				return fmt.Errorf("invalid listen entry %s: %w", entry, err)
+			}
 			if spec.Systemd != "" {
-				if spec.TrustedCapsHeader != "" && spec.TrustedTailscaleCaps != "" {
+				if hasTrustedCapsHeader && hasTrustedTailscaleCaps {
 					return fmt.Errorf("invalid listen entry %s: only one of trusted_caps_header or trusted_tailscale_caps may be set", entry)
 				}
 				*l = append(*l, listenerConfig{
@@ -175,22 +207,22 @@ func (l *listenerFlags) UnmarshalJSON(data []byte) error {
 					address:              spec.Systemd,
 					raw:                  "systemd:" + spec.Systemd,
 					access:               access,
-					trustedCapsHeader:    spec.TrustedCapsHeader,
-					trustedTailscaleCaps: spec.TrustedTailscaleCaps,
+					trustedCapsHeader:    trustedCapsHeader,
+					trustedTailscaleCaps: trustedTailscaleCaps,
 				})
 				continue
 			}
 			if err := l.Set(spec.Address); err != nil {
 				return err
 			}
-			if spec.Access != "" {
+			if spec.Access != nil {
 				(*l)[len(*l)-1].access = access
 			}
-			if spec.TrustedCapsHeader != "" {
-				(*l)[len(*l)-1].trustedCapsHeader = spec.TrustedCapsHeader
+			if hasTrustedCapsHeader {
+				(*l)[len(*l)-1].trustedCapsHeader = trustedCapsHeader
 			}
-			if spec.TrustedTailscaleCaps != "" {
-				(*l)[len(*l)-1].trustedTailscaleCaps = spec.TrustedTailscaleCaps
+			if hasTrustedTailscaleCaps {
+				(*l)[len(*l)-1].trustedTailscaleCaps = trustedTailscaleCaps
 			}
 			if last := &(*l)[len(*l)-1]; last.trustedCapsHeader != "" && last.trustedTailscaleCaps != "" {
 				return fmt.Errorf("invalid listen entry %s: only one of trusted_caps_header or trusted_tailscale_caps may be set", entry)
