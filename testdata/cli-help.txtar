@@ -8,6 +8,7 @@ stderr 'buffer size for reading objects in bytes \(default 16777216\)'
 stderr 'buffer size for writing objects in bytes \(default 16777216\)'
 stderr 'enable librados striper for large objects \(default true\)'
 stderr 'graceful shutdown timeout for listeners \(default 1m0s\)'
+stderr 'Listener endpoint, repeatable'
 stderr '  -version'
 stderr 'print version and exit'
 ! stdout .

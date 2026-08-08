@@ -1,7 +1,9 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --listen $WORK/restic.sock?trusted-ts-caps=github.com/josh/restic-rados-server &server&
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --write-out '%{http_code}' --header 'Tailscale-App-Capabilities: {"github.com/josh/restic-rados-server":[{"*":"rw"}]}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
@@ -32,6 +34,10 @@ cmp stdout zero.txt
 
 kill server
 
+-- config.json.tmpl --
+{
+    "listen": [{"endpoint": "$WORK/restic.sock", "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"]}}]
+}
 -- config-data --
 {"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}
 -- blob-x --

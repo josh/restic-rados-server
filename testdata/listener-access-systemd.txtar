@@ -19,8 +19,8 @@ kill server
 -- config.json --
 {
     "listen": [
-        {"systemd": "read", "access": "r"},
-        {"systemd": "write", "access": "rw"}
+        {"endpoint": "systemd:read", "policy": {"access": "r"}},
+        {"endpoint": "systemd:write", "policy": {"access": "rw"}}
     ]
 }
 -- blob-data --

@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
-	"mime"
-	"net/http"
 	"strings"
 )
-
-const tailscaleCapHeader = "Tailscale-App-Capabilities"
 
 type Access int
 
@@ -36,30 +33,15 @@ func ParseAccess(s string) Access {
 
 type capGrant map[string]Access
 
-type grantContextKey struct{}
-type listenerAccessContextKey struct{}
-
-func withGrant(ctx context.Context, grant capGrant) context.Context {
-	return context.WithValue(ctx, grantContextKey{}, grant)
+type resticRequestPolicy struct {
+	access       Access
+	grant        capGrant
+	requireGrant bool
 }
 
-func withListenerAccess(ctx context.Context, access Access) context.Context {
-	return context.WithValue(ctx, listenerAccessContextKey{}, access)
-}
+type resticPolicyContextKey struct{}
 
-func listenerAccessForRequest(ctx context.Context) Access {
-	access, ok := ctx.Value(listenerAccessContextKey{}).(Access)
-	if !ok {
-		return AccessReadWrite
-	}
-	return access
-}
-
-func grantForRepo(ctx context.Context, repo string) Access {
-	grant, ok := ctx.Value(grantContextKey{}).(capGrant)
-	if !ok {
-		return AccessReadWrite
-	}
+func capGrantAccessForRepo(grant capGrant, repo string) Access {
 	if access, ok := grant[repo]; ok {
 		return access
 	}
@@ -112,17 +94,21 @@ func mergeGrantObject(grant capGrant, obj map[string]json.RawMessage) {
 	}
 }
 
+func mergeGrantRule(grant capGrant, raw []byte) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return
+	}
+	mergeGrantObject(grant, obj)
+}
+
 func mergeGrantList(grant capGrant, raw []byte) {
 	var rules []json.RawMessage
 	if err := json.Unmarshal(raw, &rules); err != nil {
 		return
 	}
 	for _, rule := range rules {
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(rule, &obj); err != nil {
-			continue
-		}
-		mergeGrantObject(grant, obj)
+		mergeGrantRule(grant, rule)
 	}
 }
 
@@ -135,65 +121,108 @@ func mergeGrantValue(grant capGrant, raw []byte) {
 		mergeGrantList(grant, trimmed)
 		return
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &obj); err != nil {
-		return
-	}
-	mergeGrantObject(grant, obj)
+	mergeGrantRule(grant, trimmed)
 }
 
-func parseTailscaleCaps(grant capGrant, headerValue, capName string) {
-	if capName == "" {
-		return
+type resticListenerPolicyJSON struct {
+	Access json.RawMessage `json:"access"`
+}
+
+func parseResticListenerPolicy(raw json.RawMessage) (Access, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return AccessReadWrite, nil
 	}
-	decoded := headerValue
-	if strings.HasPrefix(strings.TrimSpace(headerValue), "=?") {
-		if dec, err := new(mime.WordDecoder).DecodeHeader(headerValue); err == nil {
-			decoded = dec
+	var policy *resticListenerPolicyJSON
+	if err := decodeStrictJSON(raw, &policy); err != nil {
+		return AccessNone, fmt.Errorf("invalid listener policy: %w", err)
+	}
+	if policy == nil {
+		return AccessNone, fmt.Errorf("invalid listener policy: policy cannot be null")
+	}
+	if policy.Access == nil {
+		return AccessReadWrite, nil
+	}
+	var accessValue *string
+	if err := json.Unmarshal(policy.Access, &accessValue); err != nil {
+		return AccessNone, fmt.Errorf("invalid listener policy: access must be a string")
+	}
+	if accessValue == nil {
+		return AccessNone, fmt.Errorf("invalid listener policy: access cannot be null")
+	}
+	var access Access
+	switch *accessValue {
+	case "r":
+		access = AccessRead
+	case "ra":
+		access = AccessReadAppend
+	case "rw":
+		access = AccessReadWrite
+	default:
+		return AccessNone, fmt.Errorf("invalid listener policy access %q (must be r, ra, or rw)", *accessValue)
+	}
+	return access, nil
+}
+
+func validateResticListenerPolicies(configs ListenerConfigs) error {
+	for _, config := range configs {
+		info := listenerInfo(config)
+		if _, err := newResticPolicyReducer(info); err != nil {
+			return fmt.Errorf("listener %s policy: %w", info.Endpoint, err)
 		}
 	}
-	var caps map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(decoded), &caps); err != nil {
-		return
-	}
-	capRaw, ok := caps[capName]
-	if !ok {
-		return
-	}
-	mergeGrantList(grant, capRaw)
+	return nil
 }
 
-func lastHeaderValue(h http.Header, name string) string {
-	vals := h.Values(name)
-	if len(vals) == 0 {
-		return ""
+func newResticPolicyReducer(info ListenerInfo) (PolicyReducer, error) {
+	configuredAccess, err := parseResticListenerPolicy(info.Policy)
+	if err != nil {
+		return nil, err
 	}
-	return vals[len(vals)-1]
-}
-
-func enforceCaps(trustedCapsHeader, trustedTailscaleCaps string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	requireGrant := info.TrustedAppCapsHeader != "" || len(info.AcceptAppCaps) != 0
+	return func(ctx context.Context, documents []PolicyDocument) (context.Context, error) {
+		access := configuredAccess
 		grant := capGrant{}
-		if trustedCapsHeader != "" {
-			if v := lastHeaderValue(r.Header, trustedCapsHeader); v != "" {
-				mergeGrantValue(grant, []byte(v))
+		requestRequiresGrant := requireGrant
+		for _, document := range documents {
+			switch document.Origin {
+			case PolicyOriginConfigured:
+				documentAccess, err := parseResticListenerPolicy(document.Value)
+				if err != nil {
+					return ctx, err
+				}
+				if documentAccess < access {
+					access = documentAccess
+				}
+			case PolicyOriginTrustedHeader:
+				requestRequiresGrant = true
+				mergeGrantValue(grant, document.Value)
+			case PolicyOriginTailscale:
+				requestRequiresGrant = true
+				mergeGrantRule(grant, document.Value)
+			default:
+				return ctx, fmt.Errorf("unsupported policy origin %d", document.Origin)
 			}
 		}
-		if trustedTailscaleCaps != "" {
-			if v := lastHeaderValue(r.Header, tailscaleCapHeader); v != "" {
-				parseTailscaleCaps(grant, v, trustedTailscaleCaps)
-			}
+		policy := resticRequestPolicy{
+			access:       access,
+			grant:        grant,
+			requireGrant: requestRequiresGrant,
 		}
-		if trustedCapsHeader != "" {
-			r.Header.Del(trustedCapsHeader)
-		}
-		r.Header.Del(tailscaleCapHeader)
-		next.ServeHTTP(w, r.WithContext(withGrant(r.Context(), grant)))
-	})
+		return context.WithValue(ctx, resticPolicyContextKey{}, policy), nil
+	}, nil
 }
 
-func enforceListenerAccess(access Access, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r.WithContext(withListenerAccess(r.Context(), access)))
-	})
+func resticPolicyAccessForRepo(ctx context.Context, repo string) Access {
+	policy, ok := ctx.Value(resticPolicyContextKey{}).(resticRequestPolicy)
+	if !ok {
+		return AccessReadWrite
+	}
+	if !policy.requireGrant {
+		return policy.access
+	}
+	grantAccess := capGrantAccessForRepo(policy.grant, repo)
+	if grantAccess < policy.access {
+		return grantAccess
+	}
+	return policy.access
 }

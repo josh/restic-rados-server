@@ -351,8 +351,7 @@ func (h *Handler) serveRepository(w *responseWriter, r *http.Request, repo repos
 	access := minimumAccess(
 		h.access,
 		ParseAccess(repo.config.Access),
-		listenerAccessForRequest(r.Context()),
-		grantForRepo(r.Context(), repo.name),
+		resticPolicyAccessForRepo(r.Context(), repo.name),
 	)
 
 	if repo.resourcePath == "/" {

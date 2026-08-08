@@ -1,11 +1,23 @@
 tail-logs
 create-pool
 
-! exec restic-rados-server --listen 'unix:$WORK/x.sock?trusted-caps-header='
-stderr 'requires a header name'
+! exec restic-rados-server --listen {"endpoint":"$WORK/cli-object.sock"}
+stderr '--listen accepts endpoint strings only.*JSON configuration'
 
-! exec restic-rados-server --listen unix:$WORK/x.sock?trusted-caps-headers=X-Restic-Capabilities
-stderr 'unknown --listen query parameter'
+env LISTENER_ENDPOINT=unix:$WORK/x.sock
+env LISTENER_CAPS_HEADER=
+envsubst config.json.tmpl config.json
+! exec restic-rados-server --config config.json
+stderr 'trusted_app_caps_header.*empty'
+
+! exec restic-rados-server --listen 'tcp://127.0.0.1:8000?trusted-caps-header=X-Restic-Capabilities'
+stderr 'query parameters.*not supported'
+
+! exec timeout 2s restic-rados-server --listen $WORK/access.sock?access
+stderr 'query parameters.*not supported'
+
+! exec timeout 2s restic-rados-server --listen $WORK/caps.sock?trusted-caps-header
+stderr 'query parameters.*not supported'
 
 exec restic-rados-server --listen unix:$WORK/we?rd.sock &pathserver&
 wait4socket $WORK/we?rd.sock
@@ -13,14 +25,27 @@ exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/we?rd.sock --r
 stdout '200'
 kill pathserver
 
-exec restic-rados-server --listen tcp://0.0.0.0:$PORT?trusted-caps-header=X-Restic-Capabilities --log-file $WORK/warn.log &server&
+env LISTENER_ENDPOINT=tcp://0.0.0.0:$PORT
+env LISTENER_CAPS_HEADER=X-Restic-Capabilities
+envsubst config.json.tmpl config.json
+exec restic-rados-server --config config.json --log-file $WORK/warn.log &server&
 wait4socket 127.0.0.1:$PORT
 wait4log 'non-loopback' $WORK/warn.log
 kill server
 
-exec restic-rados-server --listen $WORK/caps.sock?trusted-caps-header=X-Restic-Capabilities --log-file $WORK/loopback.log &server2&
+env LISTENER_ENDPOINT=$WORK/caps.sock
+envsubst config.json.tmpl config.json
+exec restic-rados-server --config config.json --log-file $WORK/loopback.log &server2&
 wait4socket $WORK/caps.sock
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/caps.sock --request GET 'http://localhost/healthz' --output /dev/null
 stdout '200'
 ! grep 'non-loopback' $WORK/loopback.log
 kill server2
+
+-- config.json.tmpl --
+{
+    "listen": [{
+        "endpoint": "$LISTENER_ENDPOINT",
+        "trusted_app_caps_header": "$LISTENER_CAPS_HEADER"
+    }]
+}

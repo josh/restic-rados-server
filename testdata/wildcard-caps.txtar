@@ -3,7 +3,7 @@ create-pool shared
 
 envsubst config.json.tmpl config.json
 
-exec restic-rados-server --config config.json --listen $WORK/restic.sock?trusted-caps-header=X-Restic-Capabilities &server&
+exec restic-rados-server --config config.json &server&
 wait4socket $WORK/restic.sock
 
 exec curl --silent --write-out '%{http_code}' --header 'X-Restic-Capabilities: {"foo":"rw","*":"r"}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/foo/?create=true' --output /dev/null
@@ -34,6 +34,7 @@ kill server
 
 -- config.json.tmpl --
 {
+    "listen": [{"endpoint": "$WORK/restic.sock", "trusted_app_caps_header": "X-Restic-Capabilities"}],
     "repos": {
         "*": {
             "pools": {"$CEPH_POOL_SHARED/{repo}": ["*"]}
