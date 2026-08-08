@@ -101,7 +101,7 @@ type RepoConfig struct {
 
 type Config struct {
 	Verbose         bool                   `json:"verbose,omitempty"`
-	Listeners       listenerFlags          `json:"listen,omitempty"`
+	Listeners       ListenerConfigs        `json:"listen,omitempty"`
 	Stdio           bool                   `json:"-"`
 	ShutdownTimeout Duration               `json:"shutdown_timeout,omitempty"`
 	Access          string                 `json:"access,omitempty"`
@@ -112,15 +112,7 @@ type Config struct {
 	CephConf        string                 `json:"ceph_conf,omitempty"`
 	ReadBufferSize  int64                  `json:"read_buffer_size,omitempty"`
 	WriteBufferSize int64                  `json:"write_buffer_size,omitempty"`
-	Tailscale       *TailscaleConfig       `json:"tailscale,omitempty"`
 	Repos           map[string]*RepoConfig `json:"repos,omitempty"`
-}
-
-type TailscaleConfig struct {
-	Socket         string `json:"socket,omitempty"`
-	HTTPS          *bool  `json:"https,omitempty"`
-	Port           int    `json:"port,omitempty"`
-	UpstreamSocket string `json:"upstream_socket,omitempty"`
 }
 
 func normalizeAccess(value string) (string, error) {
@@ -260,7 +252,7 @@ type commandLineConfig struct {
 	showVersion     bool
 	configFile      string
 	verbose         bool
-	listeners       listenerFlags
+	listeners       ListenerConfigs
 	useStdio        bool
 	shutdownTimeout time.Duration
 	access          string
@@ -291,7 +283,7 @@ func parseCommandLine(args []string) (commandLineConfig, error) {
 	fs.StringVar(&parsed.configFile, "config", "", "path to JSON configuration file")
 	fs.BoolVar(&parsed.verbose, "v", false, "enable verbose logging")
 	fs.BoolVar(&parsed.verbose, "verbose", false, "enable verbose logging")
-	fs.Var(&parsed.listeners, "listen", "Address or Unix socket path to listen on, repeatable")
+	fs.Var(&parsed.listeners, "listen", "Listener endpoint, repeatable")
 	fs.BoolVar(&parsed.useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
 	fs.DurationVar(&parsed.shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
 	fs.StringVar(&parsed.access, "access", "", "maximum access level for the server: r/read-only, ra/read-append, rw/read-write")
@@ -524,10 +516,6 @@ func loadConfig(args []string) (Config, bool, error) {
 
 	if config.WriteBufferSize <= 0 {
 		return Config{}, false, fmt.Errorf("write-buffer-size must be positive, got %d", config.WriteBufferSize)
-	}
-
-	if config.Tailscale != nil && (config.Tailscale.Port < 0 || config.Tailscale.Port > 65535) {
-		return Config{}, false, fmt.Errorf("tailscale port must be between 0 and 65535, got %d", config.Tailscale.Port)
 	}
 
 	access, err := normalizeAccess(config.Access)

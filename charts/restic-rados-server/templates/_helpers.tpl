@@ -49,7 +49,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $listener := first .Values.config.listen -}}
 {{- $address := $listener -}}
 {{- if kindIs "map" $listener -}}
-{{- $address = get $listener "address" -}}
+{{- $address = get $listener "endpoint" -}}
 {{- end -}}
 {{- last (splitList ":" (toString $address)) -}}
 {{- end -}}
@@ -78,7 +78,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "restic-rados-server.serviceAccess" -}}
 {{- if hasKey .service "access" -}}
-{{- .service.access | toString -}}
+{{- $access := .service.access | toString -}}
+{{- get (dict "read-only" "r" "read-append" "ra" "read-write" "rw") $access | default $access -}}
 {{- else -}}
 rw
 {{- end -}}
@@ -106,7 +107,7 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- if .Values.services -}}
 {{- $listeners := list -}}
 {{- range $name, $service := .Values.services -}}
-{{- $listeners = append $listeners (dict "address" (printf "0.0.0.0:%d" (int $service.targetPort)) "access" (include "restic-rados-server.serviceAccess" (dict "service" $service))) -}}
+{{- $listeners = append $listeners (dict "endpoint" (printf "0.0.0.0:%d" (int $service.targetPort)) "policy" (dict "access" (include "restic-rados-server.serviceAccess" (dict "service" $service)))) -}}
 {{- end -}}
 {{- $_ := set $cfg "listen" $listeners -}}
 {{- end -}}
@@ -510,7 +511,7 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- fail (printf "services.%s.port must be between 1 and 65535" $name) -}}
 {{- end -}}
 {{- $access := include "restic-rados-server.serviceAccess" (dict "service" $service) -}}
-{{- if not (has $access (list "r" "read-only" "ra" "read-append" "rw" "read-write")) -}}
+{{- if not (has $access (list "r" "ra" "rw")) -}}
 {{- fail (printf "services.%s.access must be one of r, read-only, ra, read-append, rw, or read-write" $name) -}}
 {{- end -}}
 {{- $ingressFrom := dig "networkPolicy" "ingressFrom" (list) $service -}}
@@ -529,7 +530,7 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- end -}}
 {{- else -}}
 {{- if not (regexMatch "^[0-9]+$" (include "restic-rados-server.httpPort" .)) -}}
-{{- fail (printf "config.listen[0] must be a TCP host:port address, got %v" (first .Values.config.listen)) -}}
+{{- fail (printf "config.listen[0] must be a TCP host:port endpoint, got %v" (first .Values.config.listen)) -}}
 {{- end -}}
 {{- end -}}
 {{- range $name, $repo := .Values.config.repos -}}

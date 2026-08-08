@@ -92,13 +92,13 @@ The non-test `*.go` files form a strict DAG with no cycles:
 
 ```
 main.go
-├── appcap.go
+├── appcap.go             → config.go, listen.go
 ├── buffer.go
-├── config.go
+├── config.go             → listen.go
 ├── connection_manager.go  → config.go
 ├── handlers.go            → appcap.go, buffer.go, config.go, connection_manager.go, rados.go
-├── listener.go            → appcap.go, stdio_conn.go, idle.go
-├── tailscale.go           → config.go, listener.go
+├── stdio_conn.go
+├── listen.go
 ├── idle.go
 └── rados.go
 ```
@@ -106,6 +106,6 @@ main.go
 ### Design rules
 
 1. `main.go` is the only root — it depends on everything else; nothing depends on it.
-2. Leaf files have zero cross-file dependencies — `buffer.go`, `config.go`, `rados.go`, `stdio_conn.go`, and `idle.go` are self-contained.
+2. Leaves have no cross-file dependencies: `buffer.go`, `listen.go`, `rados.go`, `stdio_conn.go`, and `idle.go`.
 3. Dependencies flow in one direction — interior nodes never depend on each other in a cycle.
 4. Keep related symbols together — constants, sentinel errors, and helpers belong in the file that gives them meaning, even if other files also consume them.

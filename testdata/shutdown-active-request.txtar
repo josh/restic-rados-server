@@ -1,7 +1,7 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --shutdown-timeout 100ms --listen 127.0.0.1:$PORT &server&
+exec restic-rados-server --shutdown-timeout 0s --listen 127.0.0.1:$PORT &server&
 wait4http 200 127.0.0.1:$PORT /healthz
 
 exec curl --silent --request POST 'http://127.0.0.1:'$PORT'/?create=true'

@@ -8,5 +8,5 @@ kill server
 
 -- config.json --
 {
-    "listen": [{"systemd": "restic", "trusted_caps_header": "X-Restic-Capabilities"}]
+    "listen": [{"endpoint": "systemd:restic", "trusted_app_caps_header": "X-Restic-Capabilities"}]
 }

@@ -1,14 +1,11 @@
 tail-logs
 create-pool
 
-! exec restic-rados-server --listen '$WORK/invalid.sock?access='
-stderr 'requires an access level'
-
-! exec restic-rados-server --listen '$WORK/invalid.sock?access=bogus'
-stderr 'invalid listener access "bogus"'
+! exec restic-rados-server --config invalid-empty.json
+stderr 'invalid.*access'
 
 ! exec restic-rados-server --config invalid.json
-stderr 'invalid listener access "bogus"'
+stderr 'invalid.*access.*bogus'
 
 envsubst config.json.tmpl config.json
 
@@ -51,7 +48,10 @@ stdout '200'
 
 kill server
 
-exec restic-rados-server --listen $WORK/query.sock?access=read-only &queryserver&
+env LISTENER_ENDPOINT=$WORK/query.sock
+env LISTENER_ACCESS=r
+envsubst listener.json.tmpl listener.json
+exec restic-rados-server --config listener.json &queryserver&
 wait4socket $WORK/query.sock
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/query.sock http://localhost/config --output /dev/null
@@ -62,7 +62,10 @@ stdout '403'
 
 kill queryserver
 
-exec restic-rados-server --access r --listen $WORK/repo.sock?access=rw &reposerver&
+env LISTENER_ENDPOINT=$WORK/repo.sock
+env LISTENER_ACCESS=rw
+envsubst listener.json.tmpl listener.json
+exec restic-rados-server --config listener.json --access r &reposerver&
 wait4socket $WORK/repo.sock
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/repo.sock --request POST --data-binary @blob-data http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a --output /dev/null
@@ -73,15 +76,23 @@ kill reposerver
 -- config.json.tmpl --
 {
     "listen": [
-        {"address": "$WORK/read.sock", "access": "read-only"},
-        {"address": "$WORK/append.sock", "access": "read-append"},
-        {"address": "$WORK/write.sock", "access": "read-write"},
-        {"address": "$WORK/caps.sock", "access": "r", "trusted_caps_header": "X-Restic-Capabilities"}
+        {"endpoint": "$WORK/read.sock", "policy": {"access": "r"}},
+        {"endpoint": "$WORK/append.sock", "policy": {"access": "ra"}},
+        {"endpoint": "$WORK/write.sock", "policy": {"access": "rw"}},
+        {"endpoint": "$WORK/caps.sock", "policy": {"access": "r"}, "trusted_app_caps_header": "X-Restic-Capabilities"}
     ]
+}
+-- listener.json.tmpl --
+{
+    "listen": [{"endpoint": "$LISTENER_ENDPOINT", "policy": {"access": "$LISTENER_ACCESS"}}]
+}
+-- invalid-empty.json --
+{
+    "listen": [{"endpoint": "/tmp/invalid.sock", "policy": {"access": ""}}]
 }
 -- invalid.json --
 {
-    "listen": [{"address": "/tmp/invalid.sock", "access": "bogus"}]
+    "listen": [{"endpoint": "/tmp/invalid.sock", "policy": {"access": "bogus"}}]
 }
 -- config-data --
 {"version":2,"id":"test","chunker_polynomial":"25b468838dcb75ea"}

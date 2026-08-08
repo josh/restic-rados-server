@@ -17,7 +17,7 @@ kill server
 
 -- config.json --
 {
-    "listen": [{"systemd": "restic", "trusted_tailscale_caps": "github.com/josh/restic-rados-server"}]
+    "listen": [{"endpoint": "systemd:restic", "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"]}}]
 }
 -- blob-data --
 test blob content

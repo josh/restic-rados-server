@@ -5,16 +5,16 @@ create-pool
 grep 'no matching inherited socket' $RESTIC_RADOS_SERVER_LOG_FILE
 
 ! exec restic-rados-server --config dup.json
-grep 'duplicate systemd caps policy' $RESTIC_RADOS_SERVER_LOG_FILE
+grep 'duplicate.*systemd:web' $RESTIC_RADOS_SERVER_LOG_FILE
 
 -- unmatched.json --
 {
-    "listen": [{"systemd": "restic", "trusted_caps_header": "X-Restic-Capabilities"}]
+    "listen": [{"endpoint": "systemd:restic", "trusted_app_caps_header": "X-Restic-Capabilities"}]
 }
 -- dup.json --
 {
     "listen": [
-        {"systemd": "web", "trusted_caps_header": "X-Restic-Capabilities"},
-        {"systemd": "web", "trusted_caps_header": "X-Company-Auth"}
+        {"endpoint": "systemd:web", "trusted_app_caps_header": "X-Restic-Capabilities"},
+        {"endpoint": "systemd:web", "trusted_app_caps_header": "X-Company-Auth"}
     ]
 }

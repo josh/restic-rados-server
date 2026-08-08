@@ -1,7 +1,9 @@
 tail-logs
 create-pool
 
-exec restic-rados-server --listen $WORK/generic.sock?trusted-caps-header=X-Restic-Capabilities --listen $WORK/ts.sock?trusted-ts-caps=github.com/josh/restic-rados-server &server&
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json &server&
 wait4socket $WORK/generic.sock
 wait4socket $WORK/ts.sock
 
@@ -19,5 +21,12 @@ stdout '200'
 
 kill server
 
+-- config.json.tmpl --
+{
+    "listen": [
+        {"endpoint": "$WORK/generic.sock", "trusted_app_caps_header": "X-Restic-Capabilities"},
+        {"endpoint": "$WORK/ts.sock", "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"]}}
+    ]
+}
 -- blob-data --
 test blob content

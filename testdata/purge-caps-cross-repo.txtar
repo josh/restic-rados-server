@@ -3,7 +3,7 @@ create-pool shared
 
 envsubst config.json.tmpl config.json
 
-exec restic-rados-server --config config.json --listen $WORK/open.sock --listen $WORK/trusted.sock?trusted-caps-header=X-Restic-Capabilities &server&
+exec restic-rados-server --config config.json &server&
 wait4socket $WORK/open.sock
 wait4socket $WORK/trusted.sock
 
@@ -48,6 +48,10 @@ kill server
 
 -- config.json.tmpl --
 {
+    "listen": [
+        "$WORK/open.sock",
+        {"endpoint": "$WORK/trusted.sock", "trusted_app_caps_header": "X-Restic-Capabilities"}
+    ],
     "repos": {
         "repoa": {
             "pools": {"$CEPH_POOL_SHARED/nsa": ["*"]}
