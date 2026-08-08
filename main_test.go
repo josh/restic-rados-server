@@ -37,7 +37,17 @@ func TestMain(m *testing.M) {
 	})
 }
 
-const timeoutGracePeriod = 2 * time.Second
+const (
+	timeoutGracePeriod  = 2 * time.Second
+	testECProfileName   = "k2m1"
+	testECCrushRuleName = "test-k2m1"
+
+	// testECCrushRuleKeepalivePoolName names an otherwise unused pool that keeps
+	// testECCrushRuleName referenced for the test cluster's lifetime. Newer Ceph
+	// releases delete an erasure CRUSH rule with its last pool, which can race
+	// with parallel creation of another pool using the rule.
+	testECCrushRuleKeepalivePoolName = "test-k2m1-rule-keepalive"
+)
 
 func TestScript(t *testing.T) {
 	ctx := t.Context()
@@ -275,6 +285,12 @@ func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string,
 	}
 
 	if err := createECProfile(startupCtx, confPath); err != nil {
+		return "", err
+	}
+	if err := createECCrushRule(startupCtx, confPath); err != nil {
+		return "", err
+	}
+	if err := createECCrushRuleKeepalivePool(startupCtx, confPath); err != nil {
 		return "", err
 	}
 
@@ -516,12 +532,40 @@ func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context,
 func createECProfile(ctx context.Context, confPath string) error {
 	cmd := exec.CommandContext(ctx,
 		"ceph", "--conf", confPath,
-		"osd", "erasure-code-profile", "set", "k2m1",
+		"osd", "erasure-code-profile", "set", testECProfileName,
 		"k=2", "m=1", "crush-failure-domain=osd")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create EC profile k2m1: %w, output: %s", err, output)
+		return fmt.Errorf("failed to create EC profile %s: %w, output: %s", testECProfileName, err, output)
+	}
+
+	return nil
+}
+
+func createECCrushRule(ctx context.Context, confPath string) error {
+	cmd := exec.CommandContext(ctx,
+		"ceph", "--conf", confPath,
+		"osd", "crush", "rule", "create-erasure", testECCrushRuleName, testECProfileName)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create EC CRUSH rule %s: %w, output: %s", testECCrushRuleName, err, output)
+	}
+
+	return nil
+}
+
+// createECCrushRuleKeepalivePool creates the empty pool that keeps the shared
+// erasure CRUSH rule in use while testscript creates temporary pools.
+func createECCrushRuleKeepalivePool(ctx context.Context, confPath string) error {
+	cmd := exec.CommandContext(ctx,
+		"ceph", "--conf", confPath,
+		"osd", "pool", "create", testECCrushRuleKeepalivePoolName, "1", "1", "erasure", testECProfileName, testECCrushRuleName)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create EC CRUSH rule keepalive pool %s: %w, output: %s", testECCrushRuleKeepalivePoolName, err, output)
 	}
 
 	return nil
@@ -1297,7 +1341,7 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 
 			case "erasure":
 				cmd = exec.CommandContext(ctx, "ceph", "--conf", confPath,
-					"osd", "pool", "create", poolName, "8", "8", "erasure", "k2m1")
+					"osd", "pool", "create", poolName, "8", "8", "erasure", testECProfileName, testECCrushRuleName)
 			}
 
 			output, lastCreateErr = cmd.CombinedOutput()
