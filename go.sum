@@ -84,5 +84,5 @@ golang.zx2c4.com/wireguard/windows v0.5.3 h1:On6j2Rpn3OEMXqBq00QEDC7bWSZrPIHKIus
 golang.zx2c4.com/wireguard/windows v0.5.3/go.mod h1:9TEe8TJmtwyQebdFwAkEWOPr3prrtqm+REGFifP60hI=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
-tailscale.com v1.102.0 h1:yAYrykMZWlgp7Qq2ECDrDnxeySWBhNXNMkXdDmVMyrE=
-tailscale.com v1.102.0/go.mod h1:NdndXfkSklVPbRUZMAzzRuDNaR5B+YWGbAyE1HpSQZg=
+tailscale.com v1.102.1 h1:l5ZttM2aHXwcVsMdbQnGuLiAQCvkK8HHy0VI2yHlAys=
+tailscale.com v1.102.1/go.mod h1:ynxKzc9hDxwGLHORQE0qrTH1b8NBRrIsXcnfnug/3dg=
