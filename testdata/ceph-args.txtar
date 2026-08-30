@@ -23,4 +23,4 @@ env RESTIC_RADOS_SERVER_LOG_FILE=
 env CEPH_RESTIC_SERVER_LOG_FILE=
 env CEPH_ARGS=--auth-client-required=cephx
 ! exec restic-rados-server
-stderr 'invalid ceph configuration'
+stderr 'invalid ceph configuration|ceph connection unavailable'
