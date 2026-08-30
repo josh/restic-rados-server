@@ -1,0 +1,38 @@
+! exec restic-rados-server --config bogus-path.json
+stderr 'invalid metrics value'
+
+! exec restic-rados-server --config bool-value.json
+stderr 'invalid metrics value'
+
+! exec restic-rados-server --config trailing-slash.json
+stderr 'invalid metrics value'
+
+! exec restic-rados-server --config healthz-path.json
+stderr 'conflicts with health endpoint'
+
+! exec restic-rados-server --config repo-collision.json
+stderr 'repo name "metrics" conflicts with metrics path "/metrics"'
+
+-- bogus-path.json --
+{
+    "listen": [{"endpoint": "ignored.sock", "metrics": "bogus"}]
+}
+-- bool-value.json --
+{
+    "listen": [{"endpoint": "ignored.sock", "metrics": true}]
+}
+-- trailing-slash.json --
+{
+    "listen": [{"endpoint": "ignored.sock", "metrics": "/metrics/"}]
+}
+-- healthz-path.json --
+{
+    "listen": [{"endpoint": "ignored.sock", "metrics": "/healthz"}]
+}
+-- repo-collision.json --
+{
+    "listen": [{"endpoint": "ignored.sock", "metrics": "/metrics"}],
+    "repos": {
+        "metrics": {"pools": {"my-pool": ["*"]}}
+    }
+}

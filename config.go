@@ -103,6 +103,7 @@ type Config struct {
 	Verbose         bool                   `json:"verbose,omitempty"`
 	Listeners       ListenerConfigs        `json:"listen,omitempty"`
 	Stdio           bool                   `json:"-"`
+	Metrics         bool                   `json:"-"`
 	ShutdownTimeout Duration               `json:"shutdown_timeout,omitempty"`
 	Access          string                 `json:"access,omitempty"`
 	MaxIdleTime     Duration               `json:"max_idle_time,omitempty"`
@@ -254,6 +255,7 @@ type commandLineConfig struct {
 	verbose         bool
 	listeners       ListenerConfigs
 	useStdio        bool
+	metrics         bool
 	shutdownTimeout time.Duration
 	access          string
 	maxIdleTime     time.Duration
@@ -285,6 +287,7 @@ func parseCommandLine(args []string) (commandLineConfig, error) {
 	fs.BoolVar(&parsed.verbose, "verbose", false, "enable verbose logging")
 	fs.Var(&parsed.listeners, "listen", "Listener endpoint, repeatable")
 	fs.BoolVar(&parsed.useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
+	fs.BoolVar(&parsed.metrics, "metrics", false, "serve Prometheus metrics at /metrics on every listener")
 	fs.DurationVar(&parsed.shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
 	fs.StringVar(&parsed.access, "access", "", "maximum access level for the server: r/read-only, ra/read-append, rw/read-write")
 	fs.DurationVar(&parsed.maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
@@ -329,6 +332,9 @@ func (c *Config) applyCommandLine(parsed commandLineConfig) {
 	}
 	if parsed.set["stdio"] {
 		c.Stdio = parsed.useStdio
+	}
+	if parsed.set["metrics"] {
+		c.Metrics = parsed.metrics
 	}
 	if parsed.set["shutdown-timeout"] {
 		c.ShutdownTimeout = Duration(parsed.shutdownTimeout)
@@ -510,6 +516,10 @@ func loadConfig(args []string) (Config, bool, error) {
 	}
 	config.applyCommandLine(commandLine)
 
+	if config.Metrics && config.Stdio {
+		return Config{}, false, errors.New("--metrics is not supported in stdio mode")
+	}
+
 	if config.ReadBufferSize <= 0 {
 		return Config{}, false, fmt.Errorf("read-buffer-size must be positive, got %d", config.ReadBufferSize)
 	}
@@ -528,7 +538,36 @@ func loadConfig(args []string) (Config, bool, error) {
 		return Config{}, false, err
 	}
 
+	if err := config.validateMetricsPaths(); err != nil {
+		return Config{}, false, err
+	}
+
 	return config, false, nil
+}
+
+func (c *Config) validateMetricsPaths() error {
+	if c.Metrics {
+		if err := c.validateMetricsPathRepos(defaultMetricsPath); err != nil {
+			return err
+		}
+	}
+	for _, listener := range c.Listeners {
+		if listener.metricsPath == "" {
+			continue
+		}
+		if err := c.validateMetricsPathRepos(listener.metricsPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateMetricsPathRepos(path string) error {
+	segment, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	if c.Repos[segment] != nil && !strings.Contains(segment, "*") {
+		return fmt.Errorf("repo name %q conflicts with metrics path %q", segment, path)
+	}
+	return nil
 }
 
 func isReservedRepoName(name string) bool {

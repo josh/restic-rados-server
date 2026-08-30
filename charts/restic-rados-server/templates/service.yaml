@@ -1,5 +1,6 @@
 {{- if .Values.services }}
-{{- range $name, $service := .Values.services }}
+{{- $services := include "restic-rados-server.services" . | fromJson }}
+{{- range $name, $service := $services }}
 ---
 apiVersion: v1
 kind: Service
@@ -7,6 +8,9 @@ metadata:
   name: {{ include "restic-rados-server.serviceName" (dict "root" $ "name" $name) }}
   labels:
     {{- include "restic-rados-server.labels" $ | nindent 4 }}
+    {{- if hasKey $service "metrics" }}
+    app.kubernetes.io/component: metrics
+    {{- end }}
   {{- with $service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -35,4 +39,22 @@ spec:
       targetPort: http
   selector:
     {{- include "restic-rados-server.selectorLabels" . | nindent 4 }}
+{{- if eq (include "restic-rados-server.metricsEnabled" .) "true" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "restic-rados-server.serviceName" (dict "root" . "name" "metrics") }}
+  labels:
+    {{- include "restic-rados-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ include "restic-rados-server.metricsPort" . }}
+      targetPort: {{ include "restic-rados-server.metricsPort" . }}
+  selector:
+    {{- include "restic-rados-server.selectorLabels" . | nindent 4 }}
+{{- end }}
 {{- end }}

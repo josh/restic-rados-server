@@ -7,6 +7,12 @@
 {{- $ports := list (dict "protocol" "TCP" "port" (include "restic-rados-server.httpPort" $ | int)) }}
 {{- $ingress = append $ingress (dict "from" . "ports" $ports) }}
 {{- end }}
+{{- if eq (include "restic-rados-server.metricsEnabled" .) "true" }}
+{{- with dig "networkPolicy" "ingressFrom" (list) (.Values.metrics | default dict) }}
+{{- $ports := list (dict "protocol" "TCP" "port" (include "restic-rados-server.metricsPort" $ | int)) }}
+{{- $ingress = append $ingress (dict "from" . "ports" $ports) }}
+{{- end }}
+{{- end }}
 {{- $rawIngress := dig "ingress" (list) .Values.networkPolicy }}
 {{- $ingress = concat $ingress $rawIngress }}
 {{- end }}
@@ -78,7 +84,7 @@ spec:
   egress: []
   {{- end }}
   {{- end }}
-{{- range $name, $service := .Values.services }}
+{{- range $name, $service := include "restic-rados-server.services" . | fromJson }}
 {{- $ingressFrom := dig "networkPolicy" "ingressFrom" (list) $service }}
 {{- with $ingressFrom }}
 ---

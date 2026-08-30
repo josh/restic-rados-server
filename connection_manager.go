@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -141,6 +140,7 @@ func (m *ConnectionManager) Shutdown() {
 		m.poolConfigs = nil
 		m.patterns = nil
 		conn := m.retireConnectionLocked(current)
+		serverMetrics.cephConnected.set(0)
 		m.mu.Unlock()
 
 		if conn != nil {
@@ -296,6 +296,7 @@ func (m *ConnectionManager) retryConnection() {
 			conn.Shutdown()
 			return
 		}
+		serverMetrics.cephReconnects.add(1)
 		slog.Info("successfully reconnected to ceph")
 		return
 	}
@@ -311,6 +312,7 @@ func (m *ConnectionManager) publishConnection(conn *rados.Conn, poolConfigs map[
 	m.poolConfigs = poolConfigs
 	m.patterns = patterns
 	m.retrying = false
+	serverMetrics.cephConnected.set(1)
 	return true
 }
 
@@ -480,6 +482,8 @@ func (m *ConnectionManager) reconnectAfterError(connection *connectionState, err
 		m.patterns = nil
 		conn = m.retireConnectionLocked(connection)
 		retry = m.startRetryLocked()
+		serverMetrics.cephConnected.set(0)
+		serverMetrics.cephLosses.add(1)
 	}
 	m.mu.Unlock()
 
@@ -591,10 +595,9 @@ func isTransientConnectionError(err error) bool {
 
 func openNamespaceContext(conn *rados.Conn, pool, namespace string, radosCalls *uint64) (*rados.IOContext, error) {
 	slog.Debug("rados.OpenIOContext", "pool", pool, "namespace", namespace)
-	if radosCalls != nil {
-		atomic.AddUint64(radosCalls, 1)
-	}
+	done := radosObserve("open_ioctx", radosCalls)
 	ioctx, err := conn.OpenIOContext(pool)
+	done(err)
 	if err != nil {
 		return nil, err
 	}

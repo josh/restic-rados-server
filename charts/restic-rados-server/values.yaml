@@ -51,6 +51,38 @@ service:
   type: ClusterIP
   port: 8000
 
+# Prometheus metrics, off by default. Setting enabled: true adds a
+# chart-managed internal `metrics` ClusterIP Service: a listener on `port`
+# that serves /metrics plus the repo API at read-only access, with
+# reachability governed by NetworkPolicy (add your monitoring namespace to
+# networkPolicy.ingressFrom). A services entry can instead mount metrics on
+# its own listener by setting `metrics: /metrics`; any entry that configures
+# metrics itself (or is named `metrics`) replaces the chart-managed one.
+metrics:
+  enabled: false
+  port: 9925
+  networkPolicy:
+    ingressFrom: []
+
+# Annotate the pod with prometheus.io/scrape and prometheus.io/port (and
+# prometheus.io/path for a non-default path) whenever metrics are served.
+prometheusScrape: false
+
+# Requires the Prometheus Operator CRDs and served metrics. The instance label
+# is set to the release name so several releases can share one dashboard.
+# jobLabel names a Service label to use for the Prometheus job; empty uses the
+# Operator's Service-name default. Selects Services labeled
+# app.kubernetes.io/component: metrics, which the chart applies to every
+# metrics-serving Service it renders.
+serviceMonitor:
+  enabled: false
+  jobLabel: app.kubernetes.io/name
+  interval: ""
+  scrapeTimeout: ""
+  labels: {}
+  relabelings: []
+  metricRelabelings: []
+
 # Optional chart-managed listeners and Services. When non-empty, this map
 # replaces config.listen in the rendered server configuration. Each key is
 # appended to the release fullname and must be a DNS label no longer than 61

@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/ceph/go-ceph/rados"
@@ -119,8 +118,9 @@ func (s *striperIOContextWrapper) getObjectID(soid string, objectno uint64) stri
 func (s *striperIOContextWrapper) getXattrUint(object, name string) (uint64, error) {
 	attr := make([]byte, 32)
 	slog.Debug("rados.GetXattr", "object", object, "xattr", name)
-	atomic.AddUint64(s.radosCalls, 1)
+	done := radosObserve("get_xattr", s.radosCalls)
 	n, err := s.ioctx.GetXattr(object, name, attr)
+	done(err)
 	if err != nil {
 		return 0, fmt.Errorf("get %s xattr: %w", name, err)
 	}
@@ -156,8 +156,9 @@ func (s *striperIOContextWrapper) stripeObjectSize(firstObjID string) (uint64, e
 func (r *radosIOContextWrapper) Stat(object string) (StatInfo, error) {
 	object = r.prefix + object
 	slog.Debug("rados.Stat", "object", object)
-	atomic.AddUint64(r.radosCalls, 1)
+	done := radosObserve("stat", r.radosCalls)
 	stat, err := r.ioctx.Stat(object)
+	done(err)
 	return StatInfo{Size: stat.Size, ModTime: stat.ModTime}, err
 }
 
@@ -166,8 +167,9 @@ func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
 	firstObjID := s.getObjectID(object, 0)
 
 	slog.Debug("rados.Stat", "object", firstObjID)
-	atomic.AddUint64(s.radosCalls, 1)
+	done := radosObserve("stat", s.radosCalls)
 	stat, err := s.ioctx.Stat(firstObjID)
+	done(err)
 	if err != nil {
 		return StatInfo{}, err
 	}
@@ -187,8 +189,10 @@ func (s *striperIOContextWrapper) Stat(object string) (StatInfo, error) {
 func (r *radosIOContextWrapper) Remove(object string) error {
 	object = r.prefix + object
 	slog.Debug("rados.Remove", "object", object)
-	atomic.AddUint64(r.radosCalls, 1)
-	return r.ioctx.Delete(object)
+	done := radosObserve("remove", r.radosCalls)
+	err := r.ioctx.Delete(object)
+	done(err)
+	return err
 }
 
 func (s *striperIOContextWrapper) Remove(object string) error {
@@ -212,16 +216,18 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 	for i := int64(numObjects - 1); i >= 1; i-- {
 		objectID := s.getObjectID(object, uint64(i))
 		slog.Debug("rados.Delete", "object", objectID)
-		atomic.AddUint64(s.radosCalls, 1)
+		done := radosObserve("remove", s.radosCalls)
 		err := s.ioctx.Delete(objectID)
+		done(err)
 		if err != nil && !errors.Is(err, rados.ErrNotFound) {
 			return fmt.Errorf("delete object %d: %w", i, err)
 		}
 	}
 
 	slog.Debug("rados.Delete", "object", firstObjID)
-	atomic.AddUint64(s.radosCalls, 1)
+	done := radosObserve("remove", s.radosCalls)
 	err = s.ioctx.Delete(firstObjID)
+	done(err)
 	if err != nil && !errors.Is(err, rados.ErrNotFound) {
 		return fmt.Errorf("delete first object: %w", err)
 	}
@@ -229,8 +235,9 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 	for i := numObjects; ; i++ {
 		objectID := s.getObjectID(object, i)
 		slog.Debug("rados.Stat", "object", objectID)
-		atomic.AddUint64(s.radosCalls, 1)
+		doneStat := radosObserve("stat", s.radosCalls)
 		_, err := s.ioctx.Stat(objectID)
+		doneStat(err)
 		if errors.Is(err, rados.ErrNotFound) {
 			break
 		}
@@ -238,8 +245,10 @@ func (s *striperIOContextWrapper) Remove(object string) error {
 			return fmt.Errorf("scan orphaned object %d: %w", i, err)
 		}
 		slog.Debug("rados.Delete", "object", objectID, "orphaned", true)
-		atomic.AddUint64(s.radosCalls, 1)
-		if delErr := s.ioctx.Delete(objectID); delErr != nil && !errors.Is(delErr, rados.ErrNotFound) {
+		doneDelete := radosObserve("remove", s.radosCalls)
+		delErr := s.ioctx.Delete(objectID)
+		doneDelete(delErr)
+		if delErr != nil && !errors.Is(delErr, rados.ErrNotFound) {
 			return fmt.Errorf("delete orphaned object %d: %w", i, delErr)
 		}
 	}
@@ -264,8 +273,9 @@ func (r *radosIOContextWrapper) ReadObject(object string, offset, length int64, 
 		}
 
 		slog.Debug("rados.Read", "object", object, "offset", currentOffset, "size", toRead)
-		atomic.AddUint64(r.radosCalls, 1)
+		done := radosObserve("read", r.radosCalls)
 		n, err := r.ioctx.Read(object, buffer[:toRead], uint64(currentOffset))
+		done(err)
 		if err != nil && err != io.EOF {
 			return totalWritten, [32]byte{}, fmt.Errorf("read %s at offset %d: %w", object, currentOffset, err)
 		}
@@ -297,8 +307,9 @@ func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64
 	firstObjID := s.getObjectID(object, 0)
 
 	slog.Debug("rados.Stat", "object", firstObjID)
-	atomic.AddUint64(s.radosCalls, 1)
+	done := radosObserve("stat", s.radosCalls)
 	_, err = s.ioctx.Stat(firstObjID)
+	done(err)
 	if err != nil {
 		return 0, [32]byte{}, err
 	}
@@ -345,8 +356,9 @@ func (s *striperIOContextWrapper) ReadObject(object string, offset, length int64
 
 		objectID := s.getObjectID(object, objectNo)
 		slog.Debug("rados.Read", "object", objectID, "offset", objectOffset, "size", toRead)
-		atomic.AddUint64(s.radosCalls, 1)
+		done := radosObserve("read", s.radosCalls)
 		rn, err := s.ioctx.Read(objectID, buffer[:toRead], objectOffset)
+		done(err)
 		if err != nil && err != io.EOF {
 			return totalWritten, [32]byte{}, fmt.Errorf("read %s at offset %d: %w", object, currentOffset, err)
 		}
@@ -381,8 +393,10 @@ func createExclusive(ioctx *rados.IOContext, object string, xattrs [][2]string, 
 		op.SetXattr(xattr[0], []byte(xattr[1]))
 	}
 	slog.Debug("rados.CreateWriteOp", "object", object)
-	atomic.AddUint64(radosCalls, 1)
-	if err := op.Operate(ioctx, object, rados.OperationNoFlag); err != nil {
+	done := radosObserve("create", radosCalls)
+	err := op.Operate(ioctx, object, rados.OperationNoFlag)
+	done(err)
+	if err != nil {
 		if errors.Is(err, rados.ErrObjectExists) {
 			return errObjectExists
 		}
@@ -428,8 +442,10 @@ func (r *radosIOContextWrapper) WriteObject(object string, rd io.Reader) (n int6
 			hasher.Write(data)
 
 			slog.Debug("rados.Append", "object", object, "size", len(data))
-			atomic.AddUint64(r.radosCalls, 1)
-			if err := r.ioctx.Append(object, data); err != nil {
+			done := radosObserve("append", r.radosCalls)
+			err := r.ioctx.Append(object, data)
+			done(err)
+			if err != nil {
 				return totalRead, [32]byte{}, fmt.Errorf("append: %w", err)
 			}
 
@@ -503,8 +519,10 @@ func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n in
 
 				objectID := s.getObjectID(object, objectNo)
 				slog.Debug("rados.Append", "object", objectID, "size", toWrite)
-				atomic.AddUint64(s.radosCalls, 1)
-				if err := s.ioctx.Append(objectID, data[:toWrite]); err != nil {
+				done := radosObserve("append", s.radosCalls)
+				err := s.ioctx.Append(objectID, data[:toWrite])
+				done(err)
+				if err != nil {
 					return totalRead, [32]byte{}, fmt.Errorf("append to %s: %w", objectID, err)
 				}
 
@@ -522,8 +540,10 @@ func (s *striperIOContextWrapper) WriteObject(object string, rd io.Reader) (n in
 
 		if isEOF {
 			slog.Debug("rados.SetXattr", "object", firstObjID, "xattr", xattrSize)
-			atomic.AddUint64(s.radosCalls, 1)
-			if err := s.ioctx.SetXattr(firstObjID, xattrSize, []byte(strconv.FormatUint(totalWritten, 10))); err != nil {
+			done := radosObserve("set_xattr", s.radosCalls)
+			err := s.ioctx.SetXattr(firstObjID, xattrSize, []byte(strconv.FormatUint(totalWritten, 10)))
+			done(err)
+			if err != nil {
 				return totalRead, [32]byte{}, fmt.Errorf("set size xattr: %w", err)
 			}
 			return totalRead, [32]byte(hasher.Sum(nil)), nil

@@ -14,6 +14,14 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ print (include "restic-rados-server.cephConf" .) (include "restic-rados-server.configJson" .) | sha256sum }}
+        {{- if and .Values.prometheusScrape (eq (include "restic-rados-server.metricsServed" .) "true") }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ include "restic-rados-server.metricsScrapePort" . | quote }}
+        {{- $path := include "restic-rados-server.metricsScrapePath" . }}
+        {{- if ne $path "/metrics" }}
+        prometheus.io/path: {{ $path | quote }}
+        {{- end }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -37,13 +45,17 @@ spec:
             - /etc/restic-rados-server/restic-rados-server.json
           ports:
             {{- if .Values.services }}
-            {{- range $name, $service := .Values.services }}
+            {{- range $name, $service := include "restic-rados-server.services" . | fromJson }}
             - containerPort: {{ int $service.targetPort }}
               protocol: TCP
             {{- end }}
             {{- else }}
             - name: http
               containerPort: {{ include "restic-rados-server.httpPort" . }}
+            {{- if eq (include "restic-rados-server.metricsEnabled" .) "true" }}
+            - name: metrics
+              containerPort: {{ include "restic-rados-server.metricsPort" . }}
+            {{- end }}
             {{- end }}
           livenessProbe:
             httpGet:
