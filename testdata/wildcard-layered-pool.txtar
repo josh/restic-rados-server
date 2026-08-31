@@ -12,8 +12,8 @@ exec curl --silent --unix-socket $WORK/seed.sock --request POST --header 'Conten
 
 kill seedserver
 
-exec rados --pool $CEPH_POOL_SHARED --namespace foo ls
-stdout 'cold/data/d17be851ca90f3818f3bf5d72d6f097a4a09349e4ebed0d8a2a9fa9cec7dae1a'
+exec rados --pool $CEPH_POOL_SHARED --namespace cold-foo ls
+stdout 'data/d17be851ca90f3818f3bf5d72d6f097a4a09349e4ebed0d8a2a9fa9cec7dae1a'
 
 exec restic-rados-server --config layered.json --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock
@@ -23,9 +23,11 @@ cmp stdout old-data
 
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @new-data 'http://localhost/foo/data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
 
-exec rados --pool $CEPH_POOL_SHARED --namespace foo ls
-stdout 'hot/data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
-! stdout 'cold/data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
+exec rados --pool $CEPH_POOL_SHARED --namespace hot-foo ls
+stdout 'data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
+
+exec rados --pool $CEPH_POOL_SHARED --namespace cold-foo ls
+! stdout 'data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
 
 exec curl --silent --unix-socket $WORK/restic.sock 'http://localhost/foo/data/aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
 cmp stdout new-data
@@ -37,10 +39,10 @@ stdout 'aded7777eeac966af185f2b048d53fda75c4b4eac1950590e3c7ceb178671691'
 exec curl --silent --unix-socket $WORK/restic.sock --request POST 'http://localhost/bar/?create=true'
 exec curl --silent --unix-socket $WORK/restic.sock --request POST --header 'Content-Type: application/octet-stream' --data-binary @bar-data 'http://localhost/bar/data/18e38ed9f5785a0a507a30eca1022bce5c7f381d831d78e481cd8bafdaff4aa9'
 
-exec rados --pool $CEPH_POOL_SHARED --namespace bar ls
-stdout 'hot/data/18e38ed9f5785a0a507a30eca1022bce5c7f381d831d78e481cd8bafdaff4aa9'
+exec rados --pool $CEPH_POOL_SHARED --namespace hot-bar ls
+stdout 'data/18e38ed9f5785a0a507a30eca1022bce5c7f381d831d78e481cd8bafdaff4aa9'
 
-exec rados --pool $CEPH_POOL_SHARED --namespace foo ls
+exec rados --pool $CEPH_POOL_SHARED --namespace hot-foo ls
 ! stdout '18e38ed9f5785a0a507a30eca1022bce5c7f381d831d78e481cd8bafdaff4aa9'
 
 exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/bar/data/d17be851ca90f3818f3bf5d72d6f097a4a09349e4ebed0d8a2a9fa9cec7dae1a' --output /dev/null
@@ -58,7 +60,7 @@ kill server
                 "locks": {"pool": "$CEPH_POOL_SHARED", "namespace": "{repo}"},
                 "snapshots": {"pool": "$CEPH_POOL_SHARED", "namespace": "{repo}"},
                 "index": {"pool": "$CEPH_POOL_SHARED", "namespace": "{repo}"},
-                "data": {"pool": "$CEPH_POOL_SHARED", "namespace": "{repo}", "prefix": "cold/"}
+                "data": {"pool": "$CEPH_POOL_SHARED", "namespace": "cold-{repo}"}
             }
         }
     }
@@ -74,8 +76,8 @@ kill server
                 "snapshots": {"pool": "$CEPH_POOL_SHARED", "namespace": "{repo}"},
                 "index": {"pool": "$CEPH_POOL_SHARED", "namespace": "{repo}"},
                 "data": {
-                    "upper": {"pool": "$CEPH_POOL_SHARED", "namespace": "{repo}", "prefix": "hot/"},
-                    "lower": {"pool": "$CEPH_POOL_SHARED", "namespace": "{repo}", "prefix": "cold/"}
+                    "upper": {"pool": "$CEPH_POOL_SHARED", "namespace": "hot-{repo}"},
+                    "lower": {"pool": "$CEPH_POOL_SHARED", "namespace": "cold-{repo}"}
                 }
             }
         }

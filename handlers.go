@@ -169,25 +169,11 @@ type listedBlob struct {
 	Size uint64 `json:"size"`
 }
 
-type purgeScope struct {
-	layer     string
-	pool      string
-	namespace string
-	prefix    string
-	types     map[BlobType]bool
-}
-
 type purgeTarget struct {
-	pool      string
-	namespace string
-	scopes    []*purgeScope
-}
-
-type purgeScopeKey struct {
 	layer     string
 	pool      string
 	namespace string
-	prefix    string
+	types     map[BlobType]bool
 }
 
 type purgeTargetKey struct {
@@ -733,11 +719,11 @@ func (hctx *HandlerContext) reportError(err error) {
 }
 
 func plainBackend(layer storageLayer, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
-	return NewRadosIO(layer.ioctx, layer.config.Prefix, layer.config.Alignment, readBuf, writeBuf, radosCalls)
+	return NewRadosIO(layer.ioctx, layer.config.Alignment, readBuf, writeBuf, radosCalls)
 }
 
 func stripedBackend(layer storageLayer, readBuf, writeBuf []byte, radosCalls *uint64) RadosIOContext {
-	return NewStripedIO(layer.ioctx, layer.config.Prefix, uint64(layer.config.MaxObjectSize), layer.config.Alignment, readBuf, writeBuf, radosCalls)
+	return NewStripedIO(layer.ioctx, uint64(layer.config.MaxObjectSize), layer.config.Alignment, readBuf, writeBuf, radosCalls)
 }
 
 func probeLayer(layer storageLayer, name string, readBuf, writeBuf []byte, radosCalls *uint64) (storedObject, bool, error) {
@@ -1031,7 +1017,7 @@ func (h *Handler) listObjects(repo string, blobType BlobType, v2 bool, radosCall
 	blobs := make([]listedBlob, 0)
 	for _, layer := range hctx.layers {
 		candidates := make(map[string]blobRepresentations)
-		prefix := layer.config.Prefix + string(blobType) + "/"
+		prefix := string(blobType) + "/"
 		err := visitPhysicalObjects(layer.ioctx, layer.config.Pool, layer.config.Namespace, radosCalls, func(object string) error {
 			if !strings.HasPrefix(object, prefix) {
 				return nil
@@ -1169,11 +1155,10 @@ func visitPhysicalObjects(ioctx *rados.IOContext, pool, namespace string, radosC
 }
 
 func (h *Handler) purgeRepository(ctx context.Context, repo string, radosCalls *uint64) error {
-	scopes, err := h.purgeScopes(repo)
+	targets, err := h.purgeTargets(repo)
 	if err != nil {
 		return err
 	}
-	targets := collectPurgeTargets(scopes)
 
 	for _, target := range targets {
 		if err := h.checkPurgeGate(target, radosCalls); err != nil {
@@ -1199,23 +1184,15 @@ func (h *Handler) purgeRepository(ctx context.Context, repo string, radosCalls *
 }
 
 func (h *Handler) checkPurgeGate(target *purgeTarget, radosCalls *uint64) error {
-	guarded := false
-	for _, scope := range target.scopes {
-		if scope.types[BlobTypeSnapshots] || scope.types[BlobTypeLocks] {
-			guarded = true
-		}
-	}
-	if !guarded {
+	if !target.types[BlobTypeSnapshots] && !target.types[BlobTypeLocks] {
 		return nil
 	}
 	return h.visitPurgeTarget(target, radosCalls, func(object string) error {
-		for _, scope := range target.scopes {
-			if scope.types[BlobTypeSnapshots] && purgeTypeOwns(scope.prefix, BlobTypeSnapshots, object) {
-				return errRepositoryHasSnap
-			}
-			if scope.types[BlobTypeLocks] && purgeTypeOwns(scope.prefix, BlobTypeLocks, object) {
-				return errRepositoryLocked
-			}
+		if target.types[BlobTypeSnapshots] && purgeTypeOwns(BlobTypeSnapshots, object) {
+			return errRepositoryHasSnap
+		}
+		if target.types[BlobTypeLocks] && purgeTypeOwns(BlobTypeLocks, object) {
+			return errRepositoryLocked
 		}
 		return nil
 	})
@@ -1262,12 +1239,11 @@ func (h *Handler) purgeTargetObjects(ctx context.Context, repo string, target *p
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			owner := purgeTargetOwner(target, object)
-			if owner == nil {
+			if !targetOwns(target, object) {
 				foreign++
 				return nil
 			}
-			slog.Debug("purging object", "repo", repo, "object", object, "layer", owner.layer)
+			slog.Debug("purging object", "repo", repo, "object", object, "layer", target.layer)
 			names <- object
 			return nil
 		})
@@ -1284,34 +1260,31 @@ func (h *Handler) purgeTargetObjects(ctx context.Context, repo string, target *p
 	return int(deleted.Load()), foreign, err
 }
 
-func purgeTargetOwner(target *purgeTarget, object string) *purgeScope {
-	for _, scope := range target.scopes {
-		if purgeScopeOwns(scope, object) {
-			return scope
+func targetOwns(target *purgeTarget, object string) bool {
+	for blobType := range target.types {
+		if purgeTypeOwns(blobType, object) {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
-func (h *Handler) purgeScopes(repo string) ([]*purgeScope, error) {
-	byKey := make(map[purgeScopeKey]*purgeScope)
-	var missingPool error
+func (h *Handler) purgeTargets(repo string) ([]*purgeTarget, error) {
+	byKey := make(map[purgeTargetKey]*purgeTarget)
+	var targets []*purgeTarget
 	add := func(layer string, config *BlobPool, blobType BlobType) {
-		key := purgeScopeKey{layer: layer, pool: config.Pool, namespace: config.Namespace, prefix: config.Prefix}
-		scope := byKey[key]
-		if scope == nil {
-			scope = &purgeScope{
-				layer:     layer,
-				pool:      config.Pool,
-				namespace: config.Namespace,
-				prefix:    config.Prefix,
-				types:     make(map[BlobType]bool),
-			}
-			byKey[key] = scope
+		key := purgeTargetKey{pool: config.Pool, namespace: config.Namespace}
+		target := byKey[key]
+		if target == nil {
+			target = &purgeTarget{layer: layer, pool: config.Pool, namespace: config.Namespace, types: make(map[BlobType]bool)}
+			byKey[key] = target
+			targets = append(targets, target)
 		}
-		scope.types[blobType] = true
+		target.types[blobType] = true
 	}
 
+	pools := make(map[BlobType]*BlobPool)
+	var missingPool error
 	for _, blobType := range AllBlobTypes {
 		config, err := h.connections.GetBlobPoolForRepo(repo, blobType)
 		if err != nil {
@@ -1323,48 +1296,22 @@ func (h *Handler) purgeScopes(repo string) ([]*purgeScope, error) {
 			}
 			return nil, err
 		}
-		if config.Lower != nil {
+		pools[blobType] = config
+	}
+	for _, blobType := range AllBlobTypes {
+		if config := pools[blobType]; config != nil && config.Lower != nil {
 			add("lower", config.Lower, blobType)
 		}
-		add("upper", config, blobType)
 	}
-	if len(byKey) == 0 && missingPool != nil {
+	for _, blobType := range AllBlobTypes {
+		if config := pools[blobType]; config != nil {
+			add("upper", config, blobType)
+		}
+	}
+	if len(targets) == 0 && missingPool != nil {
 		return nil, missingPool
 	}
-
-	scopes := make([]*purgeScope, 0, len(byKey))
-	for _, scope := range byKey {
-		scopes = append(scopes, scope)
-	}
-	sort.Slice(scopes, func(i, j int) bool {
-		if scopes[i].layer != scopes[j].layer {
-			return scopes[i].layer == "lower"
-		}
-		if scopes[i].pool != scopes[j].pool {
-			return scopes[i].pool < scopes[j].pool
-		}
-		if scopes[i].namespace != scopes[j].namespace {
-			return scopes[i].namespace < scopes[j].namespace
-		}
-		return scopes[i].prefix < scopes[j].prefix
-	})
-	return scopes, nil
-}
-
-func collectPurgeTargets(scopes []*purgeScope) []*purgeTarget {
-	byKey := make(map[purgeTargetKey]*purgeTarget)
-	var targets []*purgeTarget
-	for _, scope := range scopes {
-		key := purgeTargetKey{pool: scope.pool, namespace: scope.namespace}
-		target := byKey[key]
-		if target == nil {
-			target = &purgeTarget{pool: scope.pool, namespace: scope.namespace}
-			byKey[key] = target
-			targets = append(targets, target)
-		}
-		target.scopes = append(target.scopes, scope)
-	}
-	return targets
+	return targets, nil
 }
 
 func (h *Handler) withPurgeTarget(target *purgeTarget, radosCalls *uint64, fn func(*rados.IOContext) error) error {
@@ -1388,21 +1335,11 @@ func (h *Handler) visitPurgeTarget(target *purgeTarget, radosCalls *uint64, visi
 	})
 }
 
-func purgeScopeOwns(scope *purgeScope, object string) bool {
-	for blobType := range scope.types {
-		if purgeTypeOwns(scope.prefix, blobType, object) {
-			return true
-		}
-	}
-	return false
-}
-
-func purgeTypeOwns(prefix string, blobType BlobType, object string) bool {
+func purgeTypeOwns(blobType BlobType, object string) bool {
 	if blobType == BlobTypeConfig {
-		name := prefix + "config"
-		return object == name || strings.HasPrefix(object, name) && isStripeSuffix(object[len(name):])
+		return object == "config" || strings.HasPrefix(object, "config") && isStripeSuffix(object[len("config"):])
 	}
-	return strings.HasPrefix(object, prefix+string(blobType)+"/")
+	return strings.HasPrefix(object, string(blobType)+"/")
 }
 
 func (h *Handler) respondError(w *responseWriter, r *http.Request, err error) {
