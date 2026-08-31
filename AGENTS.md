@@ -95,17 +95,18 @@ main.go
 ├── appcap.go             → config.go, listen.go
 ├── buffer.go
 ├── config.go             → listen.go
-├── connection_manager.go  → config.go
-├── handlers.go            → appcap.go, buffer.go, config.go, connection_manager.go, rados.go
+├── connection_manager.go  → config.go, metrics.go
+├── handlers.go            → appcap.go, buffer.go, config.go, connection_manager.go, metrics.go, rados.go
 ├── stdio_conn.go
 ├── listen.go
 ├── idle.go
-└── rados.go
+├── metrics.go
+└── rados.go              → metrics.go
 ```
 
 ### Design rules
 
 1. `main.go` is the only root — it depends on everything else; nothing depends on it.
-2. Leaves have no cross-file dependencies: `buffer.go`, `listen.go`, `rados.go`, `stdio_conn.go`, and `idle.go`.
+2. Leaves have no cross-file dependencies: `buffer.go`, `listen.go`, `metrics.go`, `stdio_conn.go`, and `idle.go`.
 3. Dependencies flow in one direction — interior nodes never depend on each other in a cycle.
 4. Keep related symbols together — constants, sentinel errors, and helpers belong in the file that gives them meaning, even if other files also consume them.

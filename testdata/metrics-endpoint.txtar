@@ -1,0 +1,69 @@
+tail-logs
+create-pool
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json &server&
+wait4socket $WORK/restic.sock $WORK/metrics.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST 'http://localhost/?create=true' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock --request POST --data-binary @blob-data 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/data/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/metrics.sock 'http://localhost/-/metrics' --output metrics-out
+stdout '200'
+
+grep 'restic_rados_http_requests_total\{repo="default",op="root",type="",method="POST",status="200"\}' metrics-out
+grep 'restic_rados_http_requests_total\{repo="default",op="blob",type="data",method="POST",status="200"\}' metrics-out
+grep 'restic_rados_http_requests_total\{repo="default",op="blob",type="data",method="GET",status="200"\}' metrics-out
+grep 'restic_rados_http_requests_total\{repo="default",op="blob",type="data",method="GET",status="404"\}' metrics-out
+grep 'restic_rados_http_request_duration_seconds_bucket\{op="blob",method="POST",le="\+Inf"\}' metrics-out
+grep 'restic_rados_http_time_to_first_byte_seconds_bucket\{op="blob",le="\+Inf"\}' metrics-out
+grep 'restic_rados_http_request_bytes_total\{op="blob"\}' metrics-out
+grep 'restic_rados_http_response_bytes_total\{op="blob"\}' metrics-out
+grep 'restic_rados_http_rados_calls_count [1-9]' metrics-out
+grep 'restic_rados_rados_ops_total\{op="append",outcome="success"\} [1-9]' metrics-out
+grep 'restic_rados_rados_ops_total\{op="stat",outcome="not_found"\} [1-9]' metrics-out
+grep 'restic_rados_rados_op_duration_seconds_count\{op="append"\} [1-9]' metrics-out
+grep 'restic_rados_ceph_connected 1' metrics-out
+grep 'restic_rados_build_info\{version="' metrics-out
+grep 'go_goroutines ' metrics-out
+grep 'process_cpu_seconds_total ' metrics-out
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/metrics.sock 'http://localhost/healthz' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/metrics.sock 'http://localhost/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/metrics.sock --request POST 'http://localhost/-/metrics' --output /dev/null
+stdout '405'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/metrics.sock 'http://localhost/-%2Fmetrics' --output /dev/null
+stdout '404'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/metrics' --output /dev/null
+stdout '307'
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/-/metrics' --output /dev/null
+stdout '404'
+
+kill server
+
+-- config.json.tmpl --
+{
+    "listen": [
+        "$WORK/restic.sock",
+        {"endpoint": "$WORK/metrics.sock", "metrics": "/-/metrics"}
+    ]
+}
+-- blob-data --
+test blob content

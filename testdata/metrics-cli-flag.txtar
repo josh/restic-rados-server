@@ -1,0 +1,46 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen $WORK/restic.sock --metrics &server&
+wait4socket $WORK/restic.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/metrics' --output metrics-out
+stdout '200'
+grep 'restic_rados_build_info\{version="' metrics-out
+grep 'restic_rados_ceph_connected 1' metrics-out
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/restic.sock 'http://localhost/healthz' --output /dev/null
+stdout '200'
+
+kill server
+! wait4socket $WORK/restic.sock
+
+envsubst config.json.tmpl config.json
+
+exec restic-rados-server --config config.json --metrics &configured&
+wait4socket $WORK/other.sock
+
+exec curl --silent --write-out '%{http_code}' --unix-socket $WORK/other.sock 'http://localhost/metrics' --output /dev/null
+stdout '200'
+
+kill configured
+
+! exec restic-rados-server --stdio --metrics
+stderr '--metrics is not supported in stdio mode'
+
+! exec restic-rados-server --metrics
+stderr '--metrics requires listeners'
+
+exec systemd-socket-activate --fdname=restic --setenv=RESTIC_RADOS_SERVER_POOL --setenv=CEPH_CONF --setenv=RESTIC_RADOS_SERVER_VERBOSE --setenv=RESTIC_RADOS_SERVER_LOG_FILE --listen=127.0.0.1:$PORT restic-rados-server --metrics &systemd&
+wait4socket 127.0.0.1:$PORT
+
+exec curl --silent --write-out '%{http_code}' http://127.0.0.1:$PORT/metrics --output systemd-metrics-out
+stdout '200'
+grep 'restic_rados_build_info\{version="' systemd-metrics-out
+
+kill systemd
+
+-- config.json.tmpl --
+{
+    "listen": ["$WORK/other.sock"]
+}

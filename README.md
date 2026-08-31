@@ -316,6 +316,11 @@ restic backup /path/to/data
 - `/healthz` is the liveness endpoint. `/readyz` reports cached Ceph connection
   state rather than actively probing the cluster. The chart configures both
   probes.
+- Setting `metrics.enabled: true` adds an internal metrics Service serving
+  Prometheus metrics at `/metrics` on its own port; add your monitoring
+  namespace to `metrics.networkPolicy.ingressFrom` to allow scraping.
+  `prometheusScrape: true` annotates the pod for `prometheus.io` scraping, and
+  `serviceMonitor.enabled` renders a Prometheus Operator ServiceMonitor.
 - Changes to rendered server or Ceph configuration update the pod-template
   checksum, causing a Deployment rollout.
 - Pin and review chart and image versions together. The chart defaults the
@@ -500,6 +505,7 @@ Run `restic-rados-server --help` for all flags. Common flags include:
 ```text
 --config PATH       JSON configuration file
 --listen ENDPOINT   listener endpoint; repeatable
+--metrics           serve Prometheus metrics at /metrics on every listener
 --pool SPEC         pool[/namespace]:types mapping for the default repository
 --access LEVEL      r, ra, or rw maximum access level for the server
 --ceph-conf PATH    Ceph configuration file

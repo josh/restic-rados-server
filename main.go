@@ -93,6 +93,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	serverMetrics.recordBuildInfo(version)
+
 	if len(config.Repos) == 0 {
 		fmt.Fprintln(os.Stderr, "pool not set (use --pool, RESTIC_RADOS_SERVER_POOL, or config file)")
 		os.Exit(1)
@@ -169,11 +171,17 @@ func main() {
 		}()
 	}
 
+	metricsPath := ""
+	if config.Metrics {
+		metricsPath = defaultMetricsPath
+	}
 	listeners, err := PrepareListeners(ctx, config.Listeners, newResticPolicyReducer, ListenOptions{
 		ShutdownTimeout:       time.Duration(config.ShutdownTimeout),
 		TailscaleDrainTimeout: tailscaleDrainTimeout,
 		RuntimeName:           "restic-rados-server",
 		ConnState:             connState,
+		MetricsHandler:        newMetricsHandler(),
+		MetricsPath:           metricsPath,
 	})
 	if err != nil {
 		slog.Error("failed to prepare listeners", "error", err)
@@ -189,6 +197,11 @@ func main() {
 	if config.Stdio && listeners.Len() > 0 {
 		closeListeners()
 		slog.Error("--stdio cannot be combined with inherited systemd listeners")
+		os.Exit(1)
+	}
+	if config.Metrics && listeners.Len() == 0 {
+		closeListeners()
+		fmt.Fprintln(os.Stderr, "--metrics requires listeners")
 		os.Exit(1)
 	}
 	if !config.Stdio && listeners.Len() == 0 {

@@ -90,6 +90,71 @@ rw
 {{- int (index .Values.services $name).targetPort -}}
 {{- end -}}
 
+{{- define "restic-rados-server.metricsEnabled" -}}
+{{- ternary "true" "" (dig "enabled" false (.Values.metrics | default dict)) -}}
+{{- end -}}
+
+{{- define "restic-rados-server.metricsPort" -}}
+{{- int (dig "port" 9925 (.Values.metrics | default dict)) -}}
+{{- end -}}
+
+{{- define "restic-rados-server.metricsInjected" -}}
+{{- if and .Values.services (eq (include "restic-rados-server.metricsEnabled" .) "true") -}}
+{{- $declared := false -}}
+{{- range $name, $service := .Values.services -}}
+{{- if or (eq $name "metrics") (and (kindIs "map" $service) (hasKey $service "metrics")) -}}
+{{- $declared = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $declared -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* The services map plus the default metrics entry injected in services
+mode; a services entry that configures metrics itself takes its place. */ -}}
+{{- define "restic-rados-server.services" -}}
+{{- $services := deepCopy (.Values.services | default dict) -}}
+{{- if eq (include "restic-rados-server.metricsInjected" .) "true" -}}
+{{- $metrics := .Values.metrics | default dict -}}
+{{- $entry := dict "targetPort" (include "restic-rados-server.metricsPort" . | int) "access" "r" "metrics" "/metrics" "type" "ClusterIP" -}}
+{{- with dig "networkPolicy" "ingressFrom" (list) $metrics -}}
+{{- $_ := set $entry "networkPolicy" (dict "ingressFrom" .) -}}
+{{- end -}}
+{{- $_ := set $services "metrics" $entry -}}
+{{- end -}}
+{{- toJson $services -}}
+{{- end -}}
+
+{{- /* The path and port serving Prometheus metrics as JSON, or {} when none
+is served; the alphabetically first metrics-serving services entry wins. */ -}}
+{{- define "restic-rados-server.metricsScrapeTarget" -}}
+{{- $target := dict -}}
+{{- if .Values.services -}}
+{{- range $name, $service := include "restic-rados-server.services" . | fromJson -}}
+{{- if and (not $target) (kindIs "map" $service) (hasKey $service "metrics") -}}
+{{- $target = dict "path" $service.metrics "port" (int $service.targetPort) -}}
+{{- end -}}
+{{- end -}}
+{{- else if eq (include "restic-rados-server.metricsEnabled" .) "true" -}}
+{{- $target = dict "path" "/metrics" "port" (include "restic-rados-server.metricsPort" . | int) -}}
+{{- end -}}
+{{- toJson $target -}}
+{{- end -}}
+
+{{- define "restic-rados-server.metricsScrapePath" -}}
+{{- dig "path" "" (include "restic-rados-server.metricsScrapeTarget" . | fromJson) -}}
+{{- end -}}
+
+{{- define "restic-rados-server.metricsServed" -}}
+{{- if include "restic-rados-server.metricsScrapePath" . -}}true{{- end -}}
+{{- end -}}
+
+{{- define "restic-rados-server.metricsScrapePort" -}}
+{{- with dig "port" "" (include "restic-rados-server.metricsScrapeTarget" . | fromJson) -}}
+{{- int . -}}
+{{- end -}}
+{{- end -}}
+
 {{- /* Render ceph.conf from the ceph block. */ -}}
 {{- define "restic-rados-server.cephConf" -}}
 [global]
@@ -105,10 +170,22 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- define "restic-rados-server.configJson" -}}
 {{- $cfg := deepCopy .Values.config -}}
 {{- if .Values.services -}}
+{{- $services := include "restic-rados-server.services" . | fromJson -}}
 {{- $listeners := list -}}
-{{- range $name, $service := .Values.services -}}
-{{- $listeners = append $listeners (dict "endpoint" (printf "0.0.0.0:%d" (int $service.targetPort)) "policy" (dict "access" (include "restic-rados-server.serviceAccess" (dict "service" $service)))) -}}
+{{- range $name, $service := $services -}}
+{{- $listener := dict "endpoint" (printf "0.0.0.0:%d" (int $service.targetPort)) "policy" (dict "access" (include "restic-rados-server.serviceAccess" (dict "service" $service))) -}}
+{{- if hasKey $service "metrics" -}}
+{{- $_ := set $listener "metrics" $service.metrics -}}
 {{- end -}}
+{{- $listeners = append $listeners $listener -}}
+{{- end -}}
+{{- $_ := set $cfg "listen" $listeners -}}
+{{- else if eq (include "restic-rados-server.metricsEnabled" .) "true" -}}
+{{- $listeners := list -}}
+{{- range $entry := .Values.config.listen -}}
+{{- $listeners = append $listeners $entry -}}
+{{- end -}}
+{{- $listeners = append $listeners (dict "endpoint" (printf "0.0.0.0:%d" (include "restic-rados-server.metricsPort" . | int)) "policy" (dict "access" "r") "metrics" "/metrics") -}}
 {{- $_ := set $cfg "listen" $listeners -}}
 {{- end -}}
 {{- $_ := set $cfg "ceph_conf" "/etc/ceph/ceph.conf" -}}
@@ -281,6 +358,102 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- define "restic-rados-server.validate" -}}
 {{- if and (not .Values.services) (not .Values.config.listen) -}}
 {{- fail "config.listen must not be empty" -}}
+{{- end -}}
+{{- $metricsConfig := .Values.metrics | default dict -}}
+{{- if not (kindIs "map" $metricsConfig) -}}
+{{- fail "metrics must be an object" -}}
+{{- end -}}
+{{- range $field := keys $metricsConfig -}}
+{{- if not (has $field (list "enabled" "networkPolicy" "port")) -}}
+{{- fail (printf "metrics has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $metricsConfig "enabled") (not (kindIs "bool" $metricsConfig.enabled)) -}}
+{{- fail "metrics.enabled must be a boolean" -}}
+{{- end -}}
+{{- if hasKey $metricsConfig "port" -}}
+{{- if not (regexMatch "^[0-9]+$" (toString $metricsConfig.port)) -}}
+{{- fail "metrics.port must be an integer" -}}
+{{- end -}}
+{{- $metricsPort := int $metricsConfig.port -}}
+{{- if or (lt $metricsPort 1) (gt $metricsPort 65535) -}}
+{{- fail "metrics.port must be between 1 and 65535" -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $metricsConfig "networkPolicy" -}}
+{{- if not (kindIs "map" $metricsConfig.networkPolicy) -}}
+{{- fail "metrics.networkPolicy must be an object" -}}
+{{- end -}}
+{{- range $field := keys $metricsConfig.networkPolicy -}}
+{{- if ne $field "ingressFrom" -}}
+{{- fail (printf "metrics.networkPolicy has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- $metricsIngressFrom := dig "networkPolicy" "ingressFrom" (list) $metricsConfig -}}
+{{- if not (kindIs "slice" $metricsIngressFrom) -}}
+{{- fail "metrics.networkPolicy.ingressFrom must be a list" -}}
+{{- end -}}
+{{- if .Values.networkPolicy.enabled -}}
+{{- include "restic-rados-server.validateNetworkPolicyPeers" (dict "path" "metrics.networkPolicy.ingressFrom" "peers" $metricsIngressFrom) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "bool" .Values.prometheusScrape) -}}
+{{- fail "prometheusScrape must be a boolean" -}}
+{{- end -}}
+{{- $serviceMonitor := .Values.serviceMonitor | default dict -}}
+{{- if not (kindIs "map" $serviceMonitor) -}}
+{{- fail "serviceMonitor must be an object" -}}
+{{- end -}}
+{{- range $field := keys $serviceMonitor -}}
+{{- if not (has $field (list "enabled" "interval" "jobLabel" "labels" "metricRelabelings" "relabelings" "scrapeTimeout")) -}}
+{{- fail (printf "serviceMonitor has unknown field %q" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $serviceMonitor "enabled") (not (kindIs "bool" $serviceMonitor.enabled)) -}}
+{{- fail "serviceMonitor.enabled must be a boolean" -}}
+{{- end -}}
+{{- if and (dig "enabled" false $serviceMonitor) (ne (include "restic-rados-server.metricsServed" .) "true") -}}
+{{- fail "serviceMonitor.enabled requires served metrics; enable metrics or add a metrics path to a services entry" -}}
+{{- end -}}
+{{- if and (dig "enabled" false $serviceMonitor) .Values.services -}}
+{{- $metricsPaths := dict -}}
+{{- range $name, $service := include "restic-rados-server.services" . | fromJson -}}
+{{- if and (kindIs "map" $service) (hasKey $service "metrics") -}}
+{{- $_ := set $metricsPaths (toString $service.metrics) $name -}}
+{{- end -}}
+{{- end -}}
+{{- if gt (len (keys $metricsPaths)) 1 -}}
+{{- fail "serviceMonitor requires a single metrics path across services; align services.*.metrics or disable serviceMonitor" -}}
+{{- end -}}
+{{- end -}}
+{{- if and (not .Values.services) (eq (include "restic-rados-server.metricsEnabled" .) "true") -}}
+{{- $metricsPortValue := include "restic-rados-server.metricsPort" . -}}
+{{- range $entry := .Values.config.listen -}}
+{{- $address := $entry -}}
+{{- if kindIs "map" $entry -}}
+{{- $address = get $entry "endpoint" -}}
+{{- end -}}
+{{- if eq (last (splitList ":" (toString $address))) $metricsPortValue -}}
+{{- fail (printf "metrics.port %s is already used by a config.listen endpoint; change metrics.port" $metricsPortValue) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and (eq (include "restic-rados-server.metricsEnabled" .) "true") .Values.services (hasKey .Values.services "metrics") -}}
+{{- $metricsEntry := get .Values.services "metrics" -}}
+{{- if and (kindIs "map" $metricsEntry) (not (hasKey $metricsEntry "metrics")) -}}
+{{- fail "services.metrics replaces the chart-managed metrics entry and must set a metrics path when metrics.enabled is true" -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.services (dig "networkPolicy" "ingressFrom" (list) $metricsConfig) (ne (include "restic-rados-server.metricsInjected" .) "true") -}}
+{{- $declaredMetrics := false -}}
+{{- range $name, $service := .Values.services -}}
+{{- if or (eq $name "metrics") (and (kindIs "map" $service) (hasKey $service "metrics")) -}}
+{{- $declaredMetrics = true -}}
+{{- end -}}
+{{- end -}}
+{{- if $declaredMetrics -}}
+{{- fail "metrics.networkPolicy.ingressFrom is ignored when a services entry provides metrics; set services.<name>.networkPolicy.ingressFrom instead" -}}
+{{- end -}}
 {{- end -}}
 {{- if not (kindIs "map" .Values.networkPolicy) -}}
 {{- fail "networkPolicy must be an object" -}}
@@ -468,8 +641,13 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- fail (printf "services.%s must be an object" $name) -}}
 {{- end -}}
 {{- range $field := keys $service -}}
-{{- if not (has $field (list "access" "annotations" "networkPolicy" "port" "targetPort" "type")) -}}
+{{- if not (has $field (list "access" "annotations" "metrics" "networkPolicy" "port" "targetPort" "type")) -}}
 {{- fail (printf "services.%s has unknown field %q" $name $field) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $service "metrics" -}}
+{{- if or (not (kindIs "string" $service.metrics)) (not (hasPrefix "/" $service.metrics)) (eq $service.metrics "/") (hasSuffix "/" $service.metrics) (has $service.metrics (list "/healthz" "/readyz")) -}}
+{{- fail (printf "services.%s.metrics must be a path starting with \"/\"" $name) -}}
 {{- end -}}
 {{- end -}}
 {{- if and (hasKey $service "annotations") (not (kindIs "map" $service.annotations)) -}}
@@ -526,6 +704,12 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- fail (printf "services.%s NetworkPolicy name %q conflicts with %s" $name $resourceName (get $networkPolicyNames $resourceName)) -}}
 {{- end -}}
 {{- $_ := set $networkPolicyNames $resourceName (printf "services.%s" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if eq (include "restic-rados-server.metricsInjected" .) "true" -}}
+{{- $metricsPortKey := include "restic-rados-server.metricsPort" . -}}
+{{- if hasKey $targetPorts $metricsPortKey -}}
+{{- fail (printf "metrics.port %s is already used by services.%s; change metrics.port or set metrics.enabled: false" $metricsPortKey (get $targetPorts $metricsPortKey)) -}}
 {{- end -}}
 {{- end -}}
 {{- else -}}

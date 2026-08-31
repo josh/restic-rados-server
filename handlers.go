@@ -54,6 +54,7 @@ type responseWriter struct {
 	statusCode    int
 	bytesWritten  int64
 	headerWritten bool
+	firstByte     time.Time
 }
 
 func (w *responseWriter) WriteHeader(code int) {
@@ -62,6 +63,9 @@ func (w *responseWriter) WriteHeader(code int) {
 	}
 	w.statusCode = code
 	w.headerWritten = true
+	if w.firstByte.IsZero() {
+		w.firstByte = time.Now()
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
@@ -70,6 +74,9 @@ func (w *responseWriter) Write(data []byte) (int, error) {
 		w.statusCode = http.StatusOK
 		w.headerWritten = true
 	}
+	if w.firstByte.IsZero() {
+		w.firstByte = time.Now()
+	}
 	n, err := w.ResponseWriter.Write(data)
 	w.bytesWritten += int64(n)
 	return n, err
@@ -77,6 +84,17 @@ func (w *responseWriter) Write(data []byte) (int, error) {
 
 func (w *responseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+type countingBody struct {
+	io.ReadCloser
+	bytesRead int64
+}
+
+func (b *countingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.bytesRead += int64(n)
+	return n, err
 }
 
 func (w *responseWriter) FlushError() error {
@@ -88,6 +106,7 @@ func (w *responseWriter) FlushError() error {
 
 type repositoryRoute struct {
 	name         string
+	configKey    string
 	config       *RepoConfig
 	resourcePath string
 	patternMatch bool
@@ -212,6 +231,8 @@ func (h *Handler) serveRequest(w *responseWriter, r *http.Request, path string, 
 	started := time.Now()
 	repoName := ""
 	logPath := r.URL.Path
+	body := &countingBody{ReadCloser: r.Body}
+	r.Body = body
 
 	repo, ok := h.resolveRepository(path)
 	if ok {
@@ -225,6 +246,12 @@ func (h *Handler) serveRequest(w *responseWriter, r *http.Request, path string, 
 	slog.Debug("request-start", "method", r.Method, "path", logPath)
 	defer func() {
 		logRequest(repoName, r.Method, logPath, w.statusCode, time.Since(started), r.ContentLength, w.bytesWritten, atomic.LoadUint64(radosCalls))
+		repoKey, op, blobType := classifyRequestRoute(ok, repo)
+		ttfb := time.Duration(-1)
+		if !w.firstByte.IsZero() {
+			ttfb = w.firstByte.Sub(started)
+		}
+		recordHTTPRequest(repoKey, op, blobType, r.Method, w.statusCode, time.Since(started), ttfb, body.bytesRead, w.bytesWritten, atomic.LoadUint64(radosCalls))
 	}()
 
 	if !ok {
@@ -258,6 +285,37 @@ func logRequest(repo, method, path string, status int, duration time.Duration, r
 	slog.Info("request", attrs...)
 }
 
+func classifyRequestRoute(resolved bool, repo repositoryRoute) (repoKey, op, blobType string) {
+	if !resolved {
+		return "", "other", ""
+	}
+	repoKey = repo.configKey
+	switch repo.resourcePath {
+	case "":
+		return repoKey, "redirect", ""
+	case "/":
+		return repoKey, "root", ""
+	case "/config":
+		return repoKey, "config", ""
+	}
+	route, ok := parseBlobRoute(repo.resourcePath)
+	if !ok {
+		return repoKey, "other", ""
+	}
+	if isBlobType(route.blobType) {
+		blobType = string(route.blobType)
+	}
+	switch route.kind {
+	case blobRouteRedirect:
+		return repoKey, "redirect", blobType
+	case blobRouteList:
+		return repoKey, "list", blobType
+	case blobRouteObject:
+		return repoKey, "blob", blobType
+	}
+	return repoKey, "other", ""
+}
+
 func requestRoutePath(r *http.Request) (string, bool) {
 	escaped := r.URL.EscapedPath()
 	for i := 0; i+2 < len(escaped); i++ {
@@ -276,21 +334,21 @@ func redirectWithTrailingSlash(w http.ResponseWriter, r *http.Request, status in
 func (h *Handler) resolveRepository(path string) (repositoryRoute, bool) {
 	defaultConfig := h.repos["default"]
 	if defaultConfig != nil && (path == "/" || isDefaultRepositoryPath(path)) {
-		return repositoryRoute{name: "default", config: defaultConfig, resourcePath: path}, true
+		return repositoryRoute{name: "default", configKey: "default", config: defaultConfig, resourcePath: path}, true
 	}
 
 	trimmed := strings.TrimPrefix(path, "/")
 	name, remainder, hasSlash := strings.Cut(trimmed, "/")
 	if name != "" && name != "default" && !isReservedRepoName(name) && isValidRepoName(name) {
-		if config, patternMatch := h.resolveNamedRepository(name); config != nil {
+		if config, configKey, patternMatch := h.resolveNamedRepository(name); config != nil {
 			if !hasSlash {
-				return repositoryRoute{name: name, config: config, patternMatch: patternMatch}, true
+				return repositoryRoute{name: name, configKey: configKey, config: config, patternMatch: patternMatch}, true
 			}
-			return repositoryRoute{name: name, config: config, resourcePath: "/" + remainder, patternMatch: patternMatch}, true
+			return repositoryRoute{name: name, configKey: configKey, config: config, resourcePath: "/" + remainder, patternMatch: patternMatch}, true
 		}
 	}
 	if defaultConfig != nil {
-		return repositoryRoute{name: "default", config: defaultConfig, resourcePath: path}, true
+		return repositoryRoute{name: "default", configKey: "default", config: defaultConfig, resourcePath: path}, true
 	}
 	return repositoryRoute{}, false
 }
@@ -311,16 +369,16 @@ func isDefaultRepositoryPath(path string) bool {
 	return false
 }
 
-func (h *Handler) resolveNamedRepository(name string) (*RepoConfig, bool) {
+func (h *Handler) resolveNamedRepository(name string) (*RepoConfig, string, bool) {
 	if config := h.repos[name]; config != nil && !strings.Contains(name, "*") {
-		return config, false
+		return config, name, false
 	}
 	for _, pattern := range h.patterns {
 		if _, ok := pattern.match(name); ok {
-			return h.repos[pattern.key], true
+			return h.repos[pattern.key], pattern.key, true
 		}
 	}
-	return nil, false
+	return nil, "", false
 }
 
 func (h *Handler) serveHealth(w http.ResponseWriter, r *http.Request) {
@@ -345,6 +403,21 @@ func (h *Handler) serveReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeHealthBody(w)
+}
+
+func newMetricsHandler() http.Handler {
+	exposition := metricsExposition()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			methodNotAllowed(w, http.MethodGet, http.MethodHead)
+			return
+		}
+		if resticPolicyAccessForRepo(r.Context(), "metrics") < AccessRead {
+			accessDenied(w)
+			return
+		}
+		exposition.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) serveRepository(w *responseWriter, r *http.Request, repo repositoryRoute, radosCalls *uint64) {
@@ -1074,18 +1147,22 @@ func isStripeSuffix(suffix string) bool {
 
 func visitPhysicalObjects(ioctx *rados.IOContext, pool, namespace string, radosCalls *uint64, visit func(string) error) error {
 	slog.Debug("rados.Iter", "pool", pool, "namespace", namespace)
-	atomic.AddUint64(radosCalls, 1)
+	done := radosObserve("iter", radosCalls)
 	iter, err := ioctx.Iter()
 	if err != nil {
+		done(err)
 		return fmt.Errorf("list objects: %w", err)
 	}
 	defer iter.Close()
 	for iter.Next() {
 		if err := visit(iter.Value()); err != nil {
+			done(nil)
 			return err
 		}
 	}
-	if err := iter.Err(); err != nil {
+	err = iter.Err()
+	done(err)
+	if err != nil {
 		return fmt.Errorf("iterate objects: %w", err)
 	}
 	return nil
@@ -1162,8 +1239,10 @@ func (h *Handler) purgeTargetObjects(ctx context.Context, repo string, target *p
 						continue
 					}
 					slog.Debug("rados.Delete", "object", object)
-					atomic.AddUint64(radosCalls, 1)
-					if err := ioctx.Delete(object); err != nil && !errors.Is(err, rados.ErrNotFound) {
+					done := radosObserve("remove", radosCalls)
+					err := ioctx.Delete(object)
+					done(err)
+					if err != nil && !errors.Is(err, rados.ErrNotFound) {
 						stopped.Store(true)
 						select {
 						case failures <- fmt.Errorf("delete object %s: %w", object, err):

@@ -59,6 +59,8 @@ type ListenOptions struct {
 	TailscaleDrainTimeout time.Duration
 	RuntimeName           string
 	ConnState             func(net.Conn, http.ConnState)
+	MetricsHandler        http.Handler
+	MetricsPath           string
 }
 
 type listenerKind uint8
@@ -92,6 +94,7 @@ type listenerConfig struct {
 	serviceName          string
 	policy               json.RawMessage
 	trustedAppCapsHeader string
+	metricsPath          string
 	tailscale            tailscaleListenerOptions
 	systemdFile          *os.File
 	raw                  string
@@ -103,6 +106,7 @@ type listenerSpec struct {
 	Endpoint             string          `json:"endpoint"`
 	Policy               json.RawMessage `json:"policy"`
 	TrustedAppCapsHeader json.RawMessage `json:"trusted_app_caps_header"`
+	Metrics              json.RawMessage `json:"metrics"`
 	Options              json.RawMessage `json:"options"`
 }
 
@@ -339,6 +343,11 @@ func parseStructuredListener(data []byte) (listenerConfig, error) {
 		}
 		config.trustedAppCapsHeader = header
 	}
+	metricsPath, err := parseListenerMetricsPath(spec.Metrics)
+	if err != nil {
+		return listenerConfig{}, err
+	}
+	config.metricsPath = metricsPath
 	options, err := parseTailscaleListenerOptions(spec.Options)
 	if err != nil {
 		return listenerConfig{}, err
@@ -348,6 +357,36 @@ func parseStructuredListener(data []byte) (listenerConfig, error) {
 	}
 	config.tailscale = options
 	return config, nil
+}
+
+const defaultMetricsPath = "/metrics"
+
+func metricsMountHandler(path string, metrics, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == path && !strings.Contains(strings.ToLower(r.URL.EscapedPath()), "%2f") {
+			metrics.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func parseListenerMetricsPath(raw json.RawMessage) (string, error) {
+	if raw == nil {
+		return "", nil
+	}
+	var value *string
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return "", fmt.Errorf("invalid metrics value %s (must be a path starting with \"/\")", bytes.TrimSpace(raw))
+	}
+	path := *value
+	if !strings.HasPrefix(path, "/") || path == "/" || strings.HasSuffix(path, "/") {
+		return "", fmt.Errorf("invalid metrics value %q (must be a path starting with \"/\")", path)
+	}
+	if path == "/healthz" || path == "/readyz" {
+		return "", fmt.Errorf("invalid metrics value %q (conflicts with health endpoint)", path)
+	}
+	return path, nil
 }
 
 func (configs *ListenerConfigs) Set(value string) error {
@@ -539,6 +578,7 @@ func resolveSystemdListeners(configured ListenerConfigs) ([]listenerConfig, erro
 		if binding, ok := bindings[inherited[i].address]; ok {
 			inherited[i].policy = slices.Clone(binding.policy)
 			inherited[i].trustedAppCapsHeader = binding.trustedAppCapsHeader
+			inherited[i].metricsPath = binding.metricsPath
 			inherited[i].tailscale = binding.tailscale
 			inherited[i].tailscale.acceptAppCaps = slices.Clone(binding.tailscale.acceptAppCaps)
 			inherited[i].raw = binding.raw
@@ -895,6 +935,13 @@ func PrepareListeners(ctx context.Context, configs ListenerConfigs, factory Poli
 	if err != nil {
 		return nil, err
 	}
+	if options.MetricsPath != "" {
+		for i := range resolved {
+			if resolved[i].metricsPath == "" {
+				resolved[i].metricsPath = options.MetricsPath
+			}
+		}
+	}
 	defer func() {
 		if err != nil {
 			closeSystemdFiles(resolved)
@@ -1156,8 +1203,12 @@ func (prepared *PreparedListeners) Serve(ctx context.Context, handler http.Handl
 	servers := make([]*http.Server, 0, len(prepared.listeners))
 	for i := range prepared.listeners {
 		listener := prepared.listeners[i]
+		listenerHandler := handler
+		if listener.config.metricsPath != "" && prepared.options.MetricsHandler != nil {
+			listenerHandler = metricsMountHandler(listener.config.metricsPath, prepared.options.MetricsHandler, handler)
+		}
 		server := &http.Server{
-			Handler:   listenerPolicyHandler(listener.config, listener.reducer, handler),
+			Handler:   listenerPolicyHandler(listener.config, listener.reducer, listenerHandler),
 			ConnState: prepared.options.ConnState,
 			BaseContext: func(net.Listener) context.Context {
 				return requestContext
