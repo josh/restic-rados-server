@@ -19,7 +19,7 @@ import (
 
 var logger *slog.Logger
 
-var version = "0.10.1"
+var version = "0.11.0"
 
 const tailscaleDrainTimeout = 10 * time.Second
 
