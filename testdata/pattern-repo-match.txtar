@@ -23,8 +23,11 @@ stdout '200'
 exec rados --pool $CEPH_POOL_ALPHA --namespace laptop ls
 stdout '^config$'
 
+exec rados --pool $CEPH_POOL_BETA --namespace web01 ls
+stdout '^config$'
+
 exec rados --pool $CEPH_POOL_BETA ls
-stdout '^web01/config$'
+! stdout 'config'
 
 exec rados --pool $CEPH_POOL_GAMMA --namespace other ls
 stdout '^config$'
@@ -47,14 +50,7 @@ kill server
             "pools": {"$CEPH_POOL_ALPHA/{repo_match}": ["*"]}
         },
         "cache-*": {
-            "blob_pools": {
-                "config": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
-                "keys": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
-                "locks": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
-                "snapshots": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
-                "data": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"},
-                "index": {"pool": "$CEPH_POOL_BETA", "prefix": "{repo_match}/"}
-            }
+            "pools": {"$CEPH_POOL_BETA/{repo_match}": ["*"]}
         },
         "*": {
             "pools": {"$CEPH_POOL_GAMMA/{repo}": ["*"]}

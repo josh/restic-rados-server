@@ -335,7 +335,7 @@ different Ceph policies for bulk and metadata objects.
 Use advanced mapping when repositories need separate placement, retention, or
 Ceph authorization policies. The server can map the six restic object
 types—`config`, `keys`, `locks`, `snapshots`, `data`, and `index`—to different
-pools, namespaces, or object prefixes.
+pools or namespaces.
 
 The `default` repository is served at `/`. Named repositories are served at
 their matching path:
@@ -346,7 +346,7 @@ repos.archive  -> rest:https://backup.example.com/archive
 ```
 
 A pool key may include a RADOS namespace as `pool/namespace`. Never point two
-repositories at the same pool, namespace, and prefix: their object names would
+repositories at the same pool and namespace: their object names would
 overlap.
 
 ### One pool

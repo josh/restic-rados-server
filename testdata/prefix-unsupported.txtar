@@ -1,0 +1,39 @@
+! exec restic-rados-server --config config.json
+stderr 'unknown field "prefix"'
+
+! exec restic-rados-server --config layered.json
+stderr 'unknown field "prefix"'
+
+-- config.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "config": {"pool": "my-pool", "prefix": "a/"},
+                "keys": {"pool": "my-pool"},
+                "locks": {"pool": "my-pool"},
+                "snapshots": {"pool": "my-pool"},
+                "data": {"pool": "my-pool"},
+                "index": {"pool": "my-pool"}
+            }
+        }
+    }
+}
+-- layered.json --
+{
+    "repos": {
+        "default": {
+            "blob_pools": {
+                "config": {"pool": "my-pool"},
+                "keys": {"pool": "my-pool"},
+                "locks": {"pool": "my-pool"},
+                "snapshots": {"pool": "my-pool"},
+                "index": {"pool": "my-pool"},
+                "data": {
+                    "upper": {"pool": "my-pool", "namespace": "hot"},
+                    "lower": {"pool": "my-pool", "namespace": "cold", "prefix": "old/"}
+                }
+            }
+        }
+    }
+}

@@ -637,24 +637,22 @@ func expandRepoTokens(s, repo, match string) string {
 type storageLocation struct {
 	pool      string
 	namespace string
-	prefix    string
 }
 
 func blobStorageLocations(bpc BlobPoolConfig) []storageLocation {
 	if bpc.Pool == "" {
 		return nil
 	}
-	locations := []storageLocation{{pool: bpc.Pool, namespace: bpc.Namespace, prefix: bpc.Prefix}}
+	locations := []storageLocation{{pool: bpc.Pool, namespace: bpc.Namespace}}
 	if bpc.Lower != nil {
-		locations = append(locations, storageLocation{pool: bpc.Lower.Pool, namespace: bpc.Lower.Namespace, prefix: bpc.Lower.Prefix})
+		locations = append(locations, storageLocation{pool: bpc.Lower.Pool, namespace: bpc.Lower.Namespace})
 	}
 	return locations
 }
 
 func (loc storageLocation) tokenFree() bool {
 	return !containsRepoToken(loc.pool) &&
-		!containsRepoToken(loc.namespace) &&
-		!containsRepoToken(loc.prefix)
+		!containsRepoToken(loc.namespace)
 }
 
 type storageCollision struct {
@@ -702,11 +700,9 @@ func storageCollisions(repos map[string]*RepoConfig) []storageCollision {
 func (bp *BlobPool) forRepo(repo, match string) *BlobPool {
 	out := *bp
 	out.Namespace = expandRepoTokens(out.Namespace, repo, match)
-	out.Prefix = expandRepoTokens(out.Prefix, repo, match)
 	if bp.Lower != nil {
 		lower := *bp.Lower
 		lower.Namespace = expandRepoTokens(lower.Namespace, repo, match)
-		lower.Prefix = expandRepoTokens(lower.Prefix, repo, match)
 		out.Lower = &lower
 	}
 	return &out
@@ -780,7 +776,6 @@ func (c *Config) normalizeRepos() error {
 type LayerPoolConfig struct {
 	Pool          string `json:"pool"`
 	Namespace     string `json:"namespace,omitempty"`
-	Prefix        string `json:"prefix,omitempty"`
 	Striped       *bool  `json:"striped,omitempty"`
 	MaxObjectSize *int64 `json:"max_object_size,omitempty"`
 }
@@ -788,7 +783,6 @@ type LayerPoolConfig struct {
 type BlobPoolConfig struct {
 	Pool          string           `json:"pool"`
 	Namespace     string           `json:"namespace,omitempty"`
-	Prefix        string           `json:"prefix,omitempty"`
 	Striped       *bool            `json:"striped,omitempty"`
 	MaxObjectSize *int64           `json:"max_object_size,omitempty"`
 	Upper         *LayerPoolConfig `json:"upper,omitempty"`
@@ -814,7 +808,6 @@ type CephConfig struct {
 type BlobPool struct {
 	Pool          string
 	Namespace     string
-	Prefix        string
 	Striped       bool
 	Alignment     uint64
 	MaxObjectSize int64
@@ -853,7 +846,7 @@ func (p *ServerConfigPools) normalizeLayers() error {
 		if bpc.Lower == nil {
 			return fmt.Errorf("blob type %q: upper layer requires a lower layer (use the flat pool form for a single layer)", bt)
 		}
-		if bpc.Pool != "" || bpc.Namespace != "" || bpc.Prefix != "" || bpc.Striped != nil || bpc.MaxObjectSize != nil {
+		if bpc.Pool != "" || bpc.Namespace != "" || bpc.Striped != nil || bpc.MaxObjectSize != nil {
 			return fmt.Errorf("blob type %q: cannot combine pool with upper/lower layers", bt)
 		}
 		if bpc.Upper.Pool == "" {
@@ -862,13 +855,12 @@ func (p *ServerConfigPools) normalizeLayers() error {
 		if bpc.Lower.Pool == "" {
 			return fmt.Errorf("blob type %q: lower pool name cannot be empty", bt)
 		}
-		if bpc.Upper.Pool == bpc.Lower.Pool && bpc.Upper.Namespace == bpc.Lower.Namespace && bpc.Upper.Prefix == bpc.Lower.Prefix {
+		if bpc.Upper.Pool == bpc.Lower.Pool && bpc.Upper.Namespace == bpc.Lower.Namespace {
 			return fmt.Errorf("blob type %q: lower layer must differ from upper layer", bt)
 		}
 
 		bpc.Pool = bpc.Upper.Pool
 		bpc.Namespace = bpc.Upper.Namespace
-		bpc.Prefix = bpc.Upper.Prefix
 		bpc.Striped = bpc.Upper.Striped
 		bpc.MaxObjectSize = bpc.Upper.MaxObjectSize
 		bpc.Upper = nil
@@ -876,12 +868,6 @@ func (p *ServerConfigPools) normalizeLayers() error {
 
 	for i, bt := range AllBlobTypes {
 		bpc := fields[i]
-		if strings.ContainsFunc(bpc.Prefix, unicode.IsControl) {
-			return fmt.Errorf("blob type %q: prefix cannot contain control characters", bt)
-		}
-		if bpc.Lower != nil && strings.ContainsFunc(bpc.Lower.Prefix, unicode.IsControl) {
-			return fmt.Errorf("blob type %q: lower layer prefix cannot contain control characters", bt)
-		}
 		if bpc.MaxObjectSize != nil && *bpc.MaxObjectSize <= 0 {
 			return fmt.Errorf("blob type %q: max_object_size must be positive, got %d", bt, *bpc.MaxObjectSize)
 		}
@@ -904,8 +890,7 @@ func (p *ServerConfigPools) validateRepoTokens(name string) error {
 			return fmt.Errorf("blob type %q: pool name cannot contain %q or %q (dynamic pool names are not supported)", bt, repoNameToken, repoMatchToken)
 		}
 		if !dynamic {
-			if containsRepoToken(bpc.Namespace) || containsRepoToken(bpc.Prefix) ||
-				(bpc.Lower != nil && (containsRepoToken(bpc.Lower.Namespace) || containsRepoToken(bpc.Lower.Prefix))) {
+			if containsRepoToken(bpc.Namespace) || (bpc.Lower != nil && containsRepoToken(bpc.Lower.Namespace)) {
 				return fmt.Errorf("blob type %q: %q and %q are only allowed in repo patterns", bt, repoNameToken, repoMatchToken)
 			}
 		}
