@@ -45,7 +45,7 @@ This path runs one server process on a host with Ceph client connectivity.
 ### 1. Install the server
 
 The host needs the librados runtime. Building from source additionally requires
-Go 1.26.4 or newer and the librados development files:
+Go 1.26.6 or newer and the librados development files:
 
 ```sh
 go build -o restic-rados-server .
