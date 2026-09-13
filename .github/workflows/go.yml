@@ -6,12 +6,16 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-22.04
-
+    name: test (${{ matrix.ceph-release }})
     strategy:
       fail-fast: false
       matrix:
-        ceph-release: [squid, tentacle]
+        include:
+          - ceph-release: squid
+            runner: ubuntu-24.04
+          - ceph-release: tentacle
+            runner: ubuntu-26.04
+    runs-on: ${{ matrix.runner }}
 
     env:
       RESTIC_VERSION: "0.19.0"
@@ -19,15 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Add Ceph repository
-        run: |
-          curl -fsSL https://download.ceph.com/keys/release.asc | sudo gpg --dearmor -o /usr/share/keyrings/ceph-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/ceph-archive-keyring.gpg] https://download.ceph.com/debian-${{ matrix.ceph-release }}/ jammy main" | sudo tee /etc/apt/sources.list.d/ceph.list
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes ceph librados-dev libradosstriper-dev
+          sudo apt-get install --yes --no-install-recommends ceph-mon ceph-osd librados-dev libradosstriper-dev
 
       - name: Print Ceph version
         run: ceph --version
