@@ -1,9 +1,0 @@
-{
-  "build": {
-    "dockerfile": "Dockerfile",
-    "args": {
-      "CEPH_RELEASE": "tentacle"
-    }
-  },
-  "remoteUser": "vscode"
-}
