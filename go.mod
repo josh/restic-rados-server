@@ -6,7 +6,7 @@ require (
 	github.com/ceph/go-ceph v0.41.0
 	github.com/rogpeppe/go-internal v1.16.0
 	golang.org/x/net v0.59.0
-	tailscale.com v1.102.3
+	tailscale.com v1.102.4
 )
 
 require (
