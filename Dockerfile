@@ -1,9 +1,9 @@
-FROM golang:1.27.1-alpine3.23@sha256:0908ac9b9319e09d7c238aabe914e0395c51d63c4e3d0ae8c554fda9158a5769 AS builder
+FROM golang:1.27.1-alpine3.24@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
 
 RUN apk add --no-cache \
-    build-base=0.5-r3 \
-    linux-headers=6.16.12-r0 \
-    ceph19-dev=19.2.3-r3
+    build-base=0.5-r4 \
+    linux-headers=7.0.0-r1 \
+    ceph19-dev=19.2.4-r1
 
 WORKDIR /app
 
