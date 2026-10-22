@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,10 +24,6 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http2"
-	"tailscale.com/client/local"
-	"tailscale.com/ipn"
-	"tailscale.com/paths"
-	"tailscale.com/tailcfg"
 )
 
 type PolicyOrigin uint8
@@ -77,7 +74,10 @@ const (
 	listenerMaxUnixSocketPathLen = 107
 	tailscaleAppCapsHeader       = "Tailscale-App-Capabilities"
 	defaultTailscaleDrainTimeout = 10 * time.Second
+	defaultTailscaledSocket      = "/var/run/tailscale/tailscaled.sock"
 )
+
+var tailscaleServiceLabelPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
 type tailscaleListenerOptions struct {
 	acceptAppCaps  []string
@@ -255,12 +255,11 @@ func parseListenerEndpoint(value string) (listenerConfig, error) {
 		if label == "" {
 			return listenerConfig{}, fmt.Errorf("invalid --listen value %q: missing Tailscale service name", value)
 		}
-		service := tailcfg.AsServiceName("svc:" + label)
-		if service == "" {
+		if !tailscaleServiceLabelPattern.MatchString(label) {
 			return listenerConfig{}, fmt.Errorf("invalid --listen value %q: Tailscale service name must be a DNS label", value)
 		}
 		config.kind = listenerKindTailscale
-		config.serviceName = service.String()
+		config.serviceName = "svc:" + label
 		return config, nil
 	}
 	if strings.HasPrefix(lower, "systemd:") {
@@ -685,63 +684,177 @@ func prepareTailscaleUpstreamPath(config listenerConfig, path string) error {
 	return ensureListenerPrivateDirectory(filepath.Dir(path))
 }
 
-func setServiceAdvertised(ctx context.Context, client *local.Client, service string, advertise bool) (bool, error) {
-	preferences, err := client.GetPrefs(ctx)
+type tailscaleClient struct {
+	Socket string
+	http   *http.Client
+}
+
+func newTailscaleClient(socket string) *tailscaleClient {
+	return &tailscaleClient{
+		Socket: socket,
+		http: &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			},
+		}},
+	}
+}
+
+func (client *tailscaleClient) do(ctx context.Context, method, path string, body any, etag string) ([]byte, http.Header, error) {
+	var reader io.Reader
+	if body != nil {
+		data, _ := json.Marshal(body)
+		reader = bytes.NewReader(data)
+	}
+	request, _ := http.NewRequestWithContext(ctx, method, "http://local-tailscaled.sock"+path, reader)
+	if etag != "" {
+		request.Header.Set("If-Match", etag)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.http.Do(request)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("%s %s: %s: %s", method, path, response.Status, strings.TrimSpace(string(data)))
+	}
+	return data, response.Header, nil
+}
+
+type tailscaleServeConfig struct {
+	fields   map[string]json.RawMessage
+	services map[string]json.RawMessage
+	etag     string
+}
+
+func (client *tailscaleClient) serveConfig(ctx context.Context) (*tailscaleServeConfig, error) {
+	data, header, err := client.do(ctx, http.MethodGet, "/localapi/v0/serve-config", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	config := &tailscaleServeConfig{etag: header.Get("Etag")}
+	config.fields = decodeJSONObject(data, &err)
+	config.services = decodeJSONObject(config.fields["Services"], &err)
+	if err != nil {
+		return nil, fmt.Errorf("invalid serve config JSON: %w", err)
+	}
+	return config, nil
+}
+
+func (client *tailscaleClient) setServeConfig(ctx context.Context, config *tailscaleServeConfig) error {
+	config.fields["Services"], _ = json.Marshal(config.services)
+	_, _, err := client.do(ctx, http.MethodPost, "/localapi/v0/serve-config", config.fields, config.etag)
+	return err
+}
+
+type tailscaleHTTPHandler struct {
+	Proxy         string   `json:",omitempty"`
+	AcceptAppCaps []string `json:",omitempty"`
+}
+
+func decodeJSONObject(raw json.RawMessage, errp *error) map[string]json.RawMessage {
+	object := make(map[string]json.RawMessage)
+	if raw == nil || string(raw) == "null" {
+		return object
+	}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		*errp = errors.Join(*errp, err)
+	}
+	return object
+}
+
+func tailscaleServiceWithWebHandler(existing json.RawMessage, handler tailscaleHTTPHandler, hostPort string, port int, useHTTPS bool) (json.RawMessage, error) {
+	var err error
+	service := decodeJSONObject(existing, &err)
+	ports := decodeJSONObject(service["TCP"], &err)
+	web := decodeJSONObject(service["Web"], &err)
+	server := decodeJSONObject(web[hostPort], &err)
+	handlers := decodeJSONObject(server["Handlers"], &err)
+	if err != nil {
+		return nil, fmt.Errorf("invalid service config: %w", err)
+	}
+	protocol := "HTTP"
+	if useHTTPS {
+		protocol = "HTTPS"
+	}
+	ports[strconv.Itoa(port)], _ = json.Marshal(map[string]bool{protocol: true})
+	handlers["/"], _ = json.Marshal(handler)
+	server["Handlers"], _ = json.Marshal(handlers)
+	web[hostPort], _ = json.Marshal(server)
+	service["TCP"], _ = json.Marshal(ports)
+	service["Web"], _ = json.Marshal(web)
+	return json.Marshal(service)
+}
+
+func equalJSON(left, right json.RawMessage) bool {
+	var leftValue, rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
+}
+
+func setServiceAdvertised(ctx context.Context, client *tailscaleClient, service string, advertise bool) (bool, error) {
+	data, _, err := client.do(ctx, http.MethodGet, "/localapi/v0/prefs", nil, "")
 	if err != nil {
 		return false, err
+	}
+	var preferences struct {
+		AdvertiseServices []string
+	}
+	if err := json.Unmarshal(data, &preferences); err != nil {
+		return false, fmt.Errorf("invalid prefs JSON: %w", err)
 	}
 	hasService := slices.Contains(preferences.AdvertiseServices, service)
 	if advertise == hasService {
 		return false, nil
 	}
-	updated := slices.Clone(preferences.AdvertiseServices)
+	updated := preferences.AdvertiseServices
 	if advertise {
 		updated = append(updated, service)
 	} else {
 		updated = slices.DeleteFunc(updated, func(current string) bool { return current == service })
 	}
-	_, err = client.EditPrefs(ctx, &ipn.MaskedPrefs{
-		AdvertiseServicesSet: true,
-		Prefs:                ipn.Prefs{AdvertiseServices: updated},
-	})
+	_, _, err = client.do(ctx, http.MethodPatch, "/localapi/v0/prefs", struct {
+		AdvertiseServicesSet bool
+		AdvertiseServices    []string
+	}{true, updated}, "")
 	return true, err
 }
 
-func restoreTailscaleService(ctx context.Context, client *local.Client, service string, previous, installed *ipn.ServiceConfig, hadPrevious bool) error {
-	config, err := client.GetServeConfig(ctx)
+func restoreTailscaleService(ctx context.Context, client *tailscaleClient, service string, previous, installed json.RawMessage) error {
+	config, err := client.serveConfig(ctx)
 	if err != nil {
 		return err
 	}
-	if config == nil {
-		if !hadPrevious {
-			return nil
-		}
-		return fmt.Errorf("serve configuration changed while %s was running", service)
-	}
-	serviceName := tailcfg.ServiceName(service)
-	current, exists := config.Services[serviceName]
+	hadPrevious := previous != nil
+	current, exists := config.services[service]
 	switch {
-	case hadPrevious && exists && reflect.DeepEqual(current, previous):
+	case hadPrevious && exists && equalJSON(current, previous):
 		return nil
 	case !hadPrevious && !exists:
 		return nil
-	case !exists || !reflect.DeepEqual(current, installed):
+	case !exists || !equalJSON(current, installed):
 		return fmt.Errorf("serve configuration changed while %s was running", service)
 	}
 	if hadPrevious {
-		config.Services[serviceName] = previous.Clone()
+		config.services[service] = previous
 	} else {
-		delete(config.Services, serviceName)
+		delete(config.services, service)
 	}
-	return client.SetServeConfig(ctx, config)
+	return client.setServeConfig(ctx, config)
 }
 
 type tailscaleRegistration struct {
-	client         *local.Client
+	client         *tailscaleClient
 	service        string
-	previous       *ipn.ServiceConfig
-	installed      *ipn.ServiceConfig
-	hadPrevious    bool
+	previous       json.RawMessage
+	installed      json.RawMessage
 	addedAdvertise bool
 	once           sync.Once
 	err            error
@@ -755,7 +868,7 @@ func (registration *tailscaleRegistration) withdraw(ctx context.Context) error {
 				errs = append(errs, fmt.Errorf("withdraw %s: %w", registration.service, err))
 			}
 		}
-		if err := restoreTailscaleService(ctx, registration.client, registration.service, registration.previous, registration.installed, registration.hadPrevious); err != nil {
+		if err := restoreTailscaleService(ctx, registration.client, registration.service, registration.previous, registration.installed); err != nil {
 			errs = append(errs, fmt.Errorf("restore serve handler %s: %w", registration.service, err))
 		}
 		registration.err = errors.Join(errs...)
@@ -771,7 +884,7 @@ func withdrawTailscaleRegistration(registration *tailscaleRegistration, timeout 
 
 func tailscaleSocket(socket string) string {
 	if socket == "" {
-		socket = paths.DefaultTailscaledSocket()
+		socket = defaultTailscaledSocket
 	}
 	socket = filepath.Clean(socket)
 	if absolute, err := filepath.Abs(socket); err == nil {
@@ -809,12 +922,20 @@ func prepareTailscaleListener(ctx context.Context, config listenerConfig, runtim
 	if err := os.Chmod(upstream, 0o600); err != nil {
 		return fail(fmt.Errorf("tailscale %s: restrict upstream socket permissions: %w", config.serviceName, err))
 	}
-	client := &local.Client{Socket: tailscaleSocket(config.tailscale.socket)}
-	status, err := client.StatusWithoutPeers(ctx)
+	client := newTailscaleClient(tailscaleSocket(config.tailscale.socket))
+	data, _, err := client.do(ctx, http.MethodGet, "/localapi/v0/status?peers=false", nil, "")
 	if err != nil {
 		return fail(fmt.Errorf("tailscale %s: cannot reach tailscaled: %w", config.serviceName, err))
 	}
-	if status.CurrentTailnet == nil {
+	var status struct {
+		CurrentTailnet struct {
+			MagicDNSSuffix string
+		}
+	}
+	if err := json.Unmarshal(data, &status); err != nil {
+		return fail(fmt.Errorf("tailscale %s: invalid status JSON: %w", config.serviceName, err))
+	}
+	if status.CurrentTailnet.MagicDNSSuffix == "" {
 		return fail(fmt.Errorf("tailscale %s: node is not connected to a tailnet", config.serviceName))
 	}
 	useHTTPS := config.tailscale.https == nil || *config.tailscale.https
@@ -825,34 +946,25 @@ func prepareTailscaleListener(ctx context.Context, config listenerConfig, runtim
 	if config.tailscale.port != 0 {
 		port = config.tailscale.port
 	}
-	proxy, err := ipn.ExpandProxyTargetValue("unix:"+upstream, []string{"unix"}, "http")
-	if err != nil {
-		return fail(fmt.Errorf("tailscale %s: %w", config.serviceName, err))
-	}
-	handler := &ipn.HTTPHandler{Proxy: proxy}
-	for _, capability := range config.tailscale.acceptAppCaps {
-		handler.AcceptAppCaps = append(handler.AcceptAppCaps, tailcfg.PeerCapability(capability))
-	}
-	serveConfig, err := client.GetServeConfig(ctx)
+	handler := tailscaleHTTPHandler{Proxy: "unix:" + upstream, AcceptAppCaps: config.tailscale.acceptAppCaps}
+	serveConfig, err := client.serveConfig(ctx)
 	if err != nil {
 		return fail(fmt.Errorf("tailscale %s: get serve config: %w", config.serviceName, err))
 	}
-	if serveConfig == nil {
-		serveConfig = new(ipn.ServeConfig)
+	previous := serveConfig.services[config.serviceName]
+	hostPort := net.JoinHostPort(strings.TrimPrefix(config.serviceName, "svc:")+"."+status.CurrentTailnet.MagicDNSSuffix, strconv.Itoa(port))
+	installed, err := tailscaleServiceWithWebHandler(previous, handler, hostPort, port, useHTTPS)
+	if err != nil {
+		return fail(fmt.Errorf("tailscale %s: %w", config.serviceName, err))
 	}
-	serviceName := tailcfg.ServiceName(config.serviceName)
-	previous, hadPrevious := serveConfig.Services[serviceName]
-	previous = previous.Clone()
-	serveConfig.SetWebHandler(handler, config.serviceName, uint16(port), "/", useHTTPS, status.CurrentTailnet.MagicDNSSuffix)
-	installed := serveConfig.Services[serviceName].Clone()
+	serveConfig.services[config.serviceName] = installed
 	registration = &tailscaleRegistration{
-		client:      client,
-		service:     config.serviceName,
-		previous:    previous,
-		installed:   installed,
-		hadPrevious: hadPrevious,
+		client:    client,
+		service:   config.serviceName,
+		previous:  previous,
+		installed: installed,
 	}
-	if err := client.SetServeConfig(ctx, serveConfig); err != nil {
+	if err := client.setServeConfig(ctx, serveConfig); err != nil {
 		return fail(fmt.Errorf("tailscale %s: set serve config: %w", config.serviceName, err))
 	}
 	addedAdvertise, err := setServiceAdvertised(ctx, client, config.serviceName, true)
@@ -1045,12 +1157,12 @@ func listenerPolicyDocuments(request *http.Request, config listenerConfig) ([]Po
 	if len(value) == 0 || value[0] != '{' {
 		return nil, errors.New("Tailscale app capabilities header must contain a JSON object")
 	}
-	var capabilities tailcfg.PeerCapMap
+	var capabilities map[string][]json.RawMessage
 	if err := json.Unmarshal(value, &capabilities); err != nil {
 		return nil, fmt.Errorf("Tailscale app capabilities header: %w", err)
 	}
 	for _, accepted := range config.tailscale.acceptAppCaps {
-		values, ok := capabilities[tailcfg.PeerCapability(accepted)]
+		values, ok := capabilities[accepted]
 		if !ok {
 			continue
 		}
@@ -1062,7 +1174,7 @@ func listenerPolicyDocuments(request *http.Request, config listenerConfig) ([]Po
 			documents = append(documents, PolicyDocument{
 				Origin:     PolicyOriginTailscale,
 				Capability: accepted,
-				Value:      json.RawMessage(raw),
+				Value:      raw,
 			})
 		}
 	}

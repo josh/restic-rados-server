@@ -1,0 +1,166 @@
+tail-logs
+create-pool
+
+mkdir state
+cp serve-config.json state/serve-config.json
+cp prefs.json state/prefs.json
+fake-tailscaled $WORK/tailscaled.sock state
+
+envsubst config.json.tmpl config.json
+envsubst want-serve-config.json.tmpl want-serve-config.json
+exec restic-rados-server --config config.json &server&
+wait4log 'advertising tailscale service.*svc:restic' $RESTIC_RADOS_SERVER_LOG_FILE
+wait4socket $WORK/upstream.sock
+cmp state/serve-config.json want-serve-config.json
+cmp state/prefs.json want-prefs.json
+kill -INT server
+wait server
+cmp state/serve-config.json serve-config.json
+cmp state/prefs.json prefs.json
+
+cp serve-config-existing.json state/serve-config.json
+envsubst config-port.json.tmpl config-port.json
+envsubst want-serve-config-existing.json.tmpl want-serve-config-existing.json
+exec restic-rados-server --config config-port.json &portserver&
+wait4log 'advertising tailscale service.*port=8443' $RESTIC_RADOS_SERVER_LOG_FILE
+wait4socket $WORK/upstream.sock
+cmp state/serve-config.json want-serve-config-existing.json
+kill -INT portserver
+wait portserver
+cmp state/serve-config.json serve-config-existing.json
+cmp state/prefs.json prefs.json
+
+-- config.json.tmpl --
+{
+    "listen": [{"endpoint": "tailscale+svc:restic", "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"], "socket": "$WORK/tailscaled.sock", "upstream_socket": "$WORK/upstream.sock"}}]
+}
+-- config-port.json.tmpl --
+{
+    "listen": [{"endpoint": "tailscale+svc:restic", "options": {"socket": "$WORK/tailscaled.sock", "upstream_socket": "$WORK/upstream.sock", "https": false, "port": 8443}}]
+}
+-- prefs.json --
+{
+  "AdvertiseServices": [
+    "svc:other"
+  ],
+  "Hostname": "node"
+}
+-- want-prefs.json --
+{
+  "AdvertiseServices": [
+    "svc:other",
+    "svc:restic"
+  ],
+  "Hostname": "node"
+}
+-- serve-config.json --
+{
+  "Foreground": {
+    "session": {
+      "TCP": {
+        "8080": {
+          "HTTP": true
+        }
+      }
+    }
+  },
+  "Services": {
+    "svc:other": {
+      "TCP": {
+        "443": {
+          "HTTPS": true
+        }
+      }
+    }
+  },
+  "TCP": {
+    "22": {
+      "TCPForward": "127.0.0.1:22"
+    }
+  },
+  "UnknownFutureField": true
+}
+-- want-serve-config.json.tmpl --
+{
+  "Foreground": {
+    "session": {
+      "TCP": {
+        "8080": {
+          "HTTP": true
+        }
+      }
+    }
+  },
+  "Services": {
+    "svc:other": {
+      "TCP": {
+        "443": {
+          "HTTPS": true
+        }
+      }
+    },
+    "svc:restic": {
+      "TCP": {
+        "443": {
+          "HTTPS": true
+        }
+      },
+      "Web": {
+        "restic.example.ts.net:443": {
+          "Handlers": {
+            "/": {
+              "AcceptAppCaps": [
+                "github.com/josh/restic-rados-server"
+              ],
+              "Proxy": "unix:$WORK/upstream.sock"
+            }
+          }
+        }
+      }
+    }
+  },
+  "TCP": {
+    "22": {
+      "TCPForward": "127.0.0.1:22"
+    }
+  },
+  "UnknownFutureField": true
+}
+-- serve-config-existing.json --
+{
+  "Services": {
+    "svc:restic": {
+      "TCP": {
+        "443": {
+          "HTTPS": true
+        }
+      },
+      "Tun": true
+    }
+  }
+}
+-- want-serve-config-existing.json.tmpl --
+{
+  "Services": {
+    "svc:restic": {
+      "TCP": {
+        "443": {
+          "HTTPS": true
+        },
+        "8443": {
+          "HTTP": true
+        }
+      },
+      "Tun": true,
+      "Web": {
+        "restic.example.ts.net:8443": {
+          "Handlers": {
+            "/": {
+              "Proxy": "unix:$WORK/upstream.sock"
+            }
+          }
+        }
+      }
+    }
+  }
+}

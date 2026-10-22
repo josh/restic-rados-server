@@ -106,6 +106,7 @@ func TestScript(t *testing.T) {
 					"capture-output":     cmdCaptureOutput,
 					"create-pool":        cmdCreatePool,
 					"envsubst":           cmdEnvsubst,
+					"fake-tailscaled":    cmdFakeTailscaled,
 					"partial-http-post":  cmdPartialHTTPPost,
 					"rados-object-count": cmdRadosObjectCount,
 					"scrubhex":           cmdScrubHex,
@@ -1004,6 +1005,105 @@ func cmdEnvsubst(ts *testscript.TestScript, neg bool, args []string) {
 	if err := os.WriteFile(ts.MkAbs(args[1]), []byte(result), 0o644); err != nil {
 		ts.Fatalf("failed to write output: %v", err)
 	}
+}
+
+func cmdFakeTailscaled(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("unsupported: ! fake-tailscaled")
+	}
+	if len(args) != 2 {
+		ts.Fatalf("usage: fake-tailscaled <socket> <state-dir>")
+	}
+	listener, err := net.Listen("unix", ts.MkAbs(args[0]))
+	ts.Check(err)
+	server := &http.Server{Handler: fakeTailscaledHandler(ts.MkAbs(args[1]))}
+	go func() { _ = server.Serve(listener) }()
+	ts.Defer(func() { _ = server.Close() })
+}
+
+func fakeTailscaledHandler(stateDir string) http.Handler {
+	var mu sync.Mutex
+	servePath := filepath.Join(stateDir, "serve-config.json")
+	prefsPath := filepath.Join(stateDir, "prefs.json")
+	writeCanonical := func(path string, value any) error {
+		data, err := json.MarshalIndent(value, "", "  ")
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, append(data, '\n'), 0o644)
+	}
+	etag := func(data []byte) string {
+		sum := sha256.Sum256(data)
+		return `"` + hex.EncodeToString(sum[:]) + `"`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /localapi/v0/status", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"CurrentTailnet":{"MagicDNSSuffix":"example.ts.net"}}`)
+	})
+	mux.HandleFunc("GET /localapi/v0/prefs", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, prefsPath)
+	})
+	mux.HandleFunc("PATCH /localapi/v0/prefs", func(w http.ResponseWriter, r *http.Request) {
+		var patch struct {
+			AdvertiseServicesSet bool
+			AdvertiseServices    []string
+		}
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil || !patch.AdvertiseServicesSet {
+			http.Error(w, "expected AdvertiseServicesSet", http.StatusBadRequest)
+			return
+		}
+		data, err := os.ReadFile(prefsPath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var prefs map[string]any
+		if err := json.Unmarshal(data, &prefs); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		prefs["AdvertiseServices"] = patch.AdvertiseServices
+		if err := writeCanonical(prefsPath, prefs); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
+	mux.HandleFunc("GET /localapi/v0/serve-config", func(w http.ResponseWriter, r *http.Request) {
+		data, err := os.ReadFile(servePath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Etag", etag(data))
+		_, _ = w.Write(data)
+	})
+	mux.HandleFunc("POST /localapi/v0/serve-config", func(w http.ResponseWriter, r *http.Request) {
+		data, err := os.ReadFile(servePath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if r.Header.Get("If-Match") != etag(data) {
+			http.Error(w, "etag mismatch", http.StatusPreconditionFailed)
+			return
+		}
+		var config any
+		if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := writeCanonical(servePath, config); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "local-tailscaled.sock" {
+			http.Error(w, "not a LocalAPI request", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func cmdRadosObjectCount(ts *testscript.TestScript, neg bool, args []string) {
