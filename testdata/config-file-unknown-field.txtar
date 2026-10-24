@@ -120,5 +120,5 @@ stderr 'invalid access ""'
 }
 -- listener-trust-null.json --
 {
-    "listen": [{"endpoint": "/tmp/restic.sock", "options": {"accept_app_caps": null}}]
+    "listen": [{"endpoint": "/tmp/restic.sock", "accept_app_caps": null}]
 }

@@ -7,9 +7,6 @@ stderr 'unknown field'
 ! exec restic-rados-server --config no-address.json
 stderr 'endpoint.*required'
 
-! exec restic-rados-server --config both.json
-stderr 'unknown field'
-
 envsubst config.json.tmpl config.json
 exec restic-rados-server --config config.json &server&
 wait4socket $WORK/caps.sock
@@ -40,10 +37,6 @@ kill server
 -- no-address.json --
 {
     "listen": [{"trusted_app_caps_header": "X-Restic-Capabilities"}]
-}
--- both.json --
-{
-    "listen": [{"endpoint": "/tmp/x.sock", "options": {"bogus": true}}]
 }
 -- blob-data --
 test blob content

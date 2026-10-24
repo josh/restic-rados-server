@@ -21,8 +21,6 @@ var logger *slog.Logger
 
 var version = "1.0.2"
 
-const tailscaleDrainTimeout = 10 * time.Second
-
 func serveStdio(ctx context.Context, handler http.Handler) error {
 	server := &http2.Server{}
 	stdioConn := &StdioConn{
@@ -175,13 +173,11 @@ func main() {
 	if config.Metrics {
 		metricsPath = defaultMetricsPath
 	}
-	listeners, err := PrepareListeners(ctx, config.Listeners, newResticPolicyReducer, ListenOptions{
-		ShutdownTimeout:       time.Duration(config.ShutdownTimeout),
-		TailscaleDrainTimeout: tailscaleDrainTimeout,
-		RuntimeName:           "restic-rados-server",
-		ConnState:             connState,
-		MetricsHandler:        newMetricsHandler(),
-		MetricsPath:           metricsPath,
+	listeners, err := PrepareListeners(config.Listeners, newResticPolicyReducer, ListenOptions{
+		ShutdownTimeout: time.Duration(config.ShutdownTimeout),
+		ConnState:       connState,
+		MetricsHandler:  newMetricsHandler(),
+		MetricsPath:     metricsPath,
 	})
 	if err != nil {
 		slog.Error("failed to prepare listeners", "error", err)

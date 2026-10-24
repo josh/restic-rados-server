@@ -12,8 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,10 +21,6 @@ import (
 
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http2"
-	"tailscale.com/client/local"
-	"tailscale.com/ipn"
-	"tailscale.com/paths"
-	"tailscale.com/tailcfg"
 )
 
 type PolicyOrigin uint8
@@ -55,12 +49,10 @@ type ListenerInfo struct {
 }
 
 type ListenOptions struct {
-	ShutdownTimeout       time.Duration
-	TailscaleDrainTimeout time.Duration
-	RuntimeName           string
-	ConnState             func(net.Conn, http.ConnState)
-	MetricsHandler        http.Handler
-	MetricsPath           string
+	ShutdownTimeout time.Duration
+	ConnState       func(net.Conn, http.ConnState)
+	MetricsHandler  http.Handler
+	MetricsPath     string
 }
 
 type listenerKind uint8
@@ -69,33 +61,21 @@ const (
 	listenerKindUnix listenerKind = iota
 	listenerKindTCP
 	listenerKindSystemd
-	listenerKindTailscale
 )
 
 const (
-	systemdListenFDStart         = 3
-	listenerMaxUnixSocketPathLen = 107
-	tailscaleAppCapsHeader       = "Tailscale-App-Capabilities"
-	defaultTailscaleDrainTimeout = 10 * time.Second
+	systemdListenFDStart   = 3
+	tailscaleAppCapsHeader = "Tailscale-App-Capabilities"
 )
-
-type tailscaleListenerOptions struct {
-	acceptAppCaps  []string
-	socket         string
-	https          *bool
-	port           int
-	upstreamSocket string
-}
 
 type listenerConfig struct {
 	kind                 listenerKind
 	endpoint             string
 	address              string
-	serviceName          string
 	policy               json.RawMessage
 	trustedAppCapsHeader string
+	acceptAppCaps        []string
 	metricsPath          string
-	tailscale            tailscaleListenerOptions
 	systemdFile          *os.File
 	raw                  string
 }
@@ -107,15 +87,7 @@ type listenerSpec struct {
 	Policy               json.RawMessage `json:"policy"`
 	TrustedAppCapsHeader json.RawMessage `json:"trusted_app_caps_header"`
 	Metrics              json.RawMessage `json:"metrics"`
-	Options              json.RawMessage `json:"options"`
-}
-
-type tailscaleListenerOptionsSpec struct {
-	AcceptAppCaps  json.RawMessage `json:"accept_app_caps"`
-	Socket         json.RawMessage `json:"socket"`
-	HTTPS          json.RawMessage `json:"https"`
-	Port           json.RawMessage `json:"port"`
-	UpstreamSocket json.RawMessage `json:"upstream_socket"`
+	AcceptAppCaps        json.RawMessage `json:"accept_app_caps"`
 }
 
 func decodeListenerJSON(data []byte, value any) error {
@@ -149,67 +121,23 @@ func parseOptionalListenerString(raw json.RawMessage, field string) (string, boo
 	return *value, true, nil
 }
 
-func parseTailscaleListenerOptions(raw json.RawMessage) (tailscaleListenerOptions, error) {
+func parseListenerAcceptAppCaps(raw json.RawMessage) ([]string, error) {
 	if raw == nil {
-		return tailscaleListenerOptions{}, nil
+		return nil, nil
 	}
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return tailscaleListenerOptions{}, errors.New("options cannot be null")
+	if string(raw) == "null" {
+		return nil, errors.New("accept_app_caps cannot be null")
 	}
-	var spec tailscaleListenerOptionsSpec
-	if err := decodeListenerJSON(raw, &spec); err != nil {
-		return tailscaleListenerOptions{}, fmt.Errorf("options: %w", err)
+	var capabilities []string
+	if err := json.Unmarshal(raw, &capabilities); err != nil {
+		return nil, errors.New("accept_app_caps must be an array of strings")
 	}
-	options := tailscaleListenerOptions{}
-	if spec.AcceptAppCaps != nil {
-		if bytes.Equal(bytes.TrimSpace(spec.AcceptAppCaps), []byte("null")) {
-			return tailscaleListenerOptions{}, errors.New("options.accept_app_caps cannot be null")
-		}
-		if err := json.Unmarshal(spec.AcceptAppCaps, &options.acceptAppCaps); err != nil {
-			return tailscaleListenerOptions{}, errors.New("options.accept_app_caps must be an array of strings")
-		}
-		seen := make(map[string]bool, len(options.acceptAppCaps))
-		for _, capability := range options.acceptAppCaps {
-			if capability == "" || strings.TrimSpace(capability) != capability {
-				return tailscaleListenerOptions{}, errors.New("options.accept_app_caps entries must be non-empty strings without surrounding whitespace")
-			}
-			if seen[capability] {
-				return tailscaleListenerOptions{}, fmt.Errorf("options.accept_app_caps contains duplicate capability %q", capability)
-			}
-			seen[capability] = true
+	for _, capability := range capabilities {
+		if capability == "" || strings.TrimSpace(capability) != capability {
+			return nil, errors.New("accept_app_caps entries must be non-empty strings without surrounding whitespace")
 		}
 	}
-	var err error
-	if options.socket, _, err = parseOptionalListenerString(spec.Socket, "options.socket"); err != nil {
-		return tailscaleListenerOptions{}, err
-	}
-	if options.upstreamSocket, _, err = parseOptionalListenerString(spec.UpstreamSocket, "options.upstream_socket"); err != nil {
-		return tailscaleListenerOptions{}, err
-	}
-	if spec.HTTPS != nil {
-		var value *bool
-		if err := json.Unmarshal(spec.HTTPS, &value); err != nil {
-			return tailscaleListenerOptions{}, errors.New("options.https must be a boolean")
-		}
-		if value == nil {
-			return tailscaleListenerOptions{}, errors.New("options.https cannot be null")
-		}
-		options.https = value
-	}
-	if spec.Port != nil {
-		var value *int
-		if err := json.Unmarshal(spec.Port, &value); err != nil {
-			return tailscaleListenerOptions{}, errors.New("options.port must be an integer")
-		}
-		if value == nil {
-			return tailscaleListenerOptions{}, errors.New("options.port cannot be null")
-		}
-		if *value < 1 || *value > 65535 {
-			return tailscaleListenerOptions{}, errors.New("options.port must be between 1 and 65535")
-		}
-		options.port = *value
-	}
-	return options, nil
+	return capabilities, nil
 }
 
 func setListenerTCPAddress(config *listenerConfig, value, original string) error {
@@ -247,22 +175,6 @@ func parseListenerEndpoint(value string) (listenerConfig, error) {
 	config := listenerConfig{endpoint: trimmed, raw: trimmed}
 	working := trimmed
 	lower := strings.ToLower(working)
-	if strings.HasPrefix(lower, "tailscale+svc:") {
-		if strings.Contains(working, "?") {
-			return listenerConfig{}, listenerQueryError(value)
-		}
-		label := working[len("tailscale+svc:"):]
-		if label == "" {
-			return listenerConfig{}, fmt.Errorf("invalid --listen value %q: missing Tailscale service name", value)
-		}
-		service := tailcfg.AsServiceName("svc:" + label)
-		if service == "" {
-			return listenerConfig{}, fmt.Errorf("invalid --listen value %q: Tailscale service name must be a DNS label", value)
-		}
-		config.kind = listenerKindTailscale
-		config.serviceName = service.String()
-		return config, nil
-	}
 	if strings.HasPrefix(lower, "systemd:") {
 		if strings.Contains(working, "?") {
 			return listenerConfig{}, listenerQueryError(value)
@@ -338,9 +250,6 @@ func parseStructuredListener(data []byte) (listenerConfig, error) {
 		if strings.EqualFold(header, tailscaleAppCapsHeader) {
 			return listenerConfig{}, fmt.Errorf("trusted_app_caps_header %q is reserved for Tailscale app capabilities", header)
 		}
-		if config.kind == listenerKindTailscale {
-			return listenerConfig{}, errors.New("trusted_app_caps_header is not supported for tailscale+svc endpoints; use options.accept_app_caps")
-		}
 		config.trustedAppCapsHeader = header
 	}
 	metricsPath, err := parseListenerMetricsPath(spec.Metrics)
@@ -348,14 +257,11 @@ func parseStructuredListener(data []byte) (listenerConfig, error) {
 		return listenerConfig{}, err
 	}
 	config.metricsPath = metricsPath
-	options, err := parseTailscaleListenerOptions(spec.Options)
+	acceptAppCaps, err := parseListenerAcceptAppCaps(spec.AcceptAppCaps)
 	if err != nil {
 		return listenerConfig{}, err
 	}
-	if config.kind != listenerKindTailscale && (options.socket != "" || options.upstreamSocket != "" || options.https != nil || options.port != 0) {
-		return listenerConfig{}, errors.New("socket, https, port, and upstream_socket options are only supported for tailscale+svc endpoints")
-	}
-	config.tailscale = options
+	config.acceptAppCaps = acceptAppCaps
 	return config, nil
 }
 
@@ -451,29 +357,26 @@ func listenerInfo(config listenerConfig) ListenerInfo {
 		Endpoint:             config.endpoint,
 		Policy:               slices.Clone(config.policy),
 		TrustedAppCapsHeader: config.trustedAppCapsHeader,
-		AcceptAppCaps:        slices.Clone(config.tailscale.acceptAppCaps),
+		AcceptAppCaps:        slices.Clone(config.acceptAppCaps),
 	}
 }
 
 type preparedListener struct {
-	config       listenerConfig
-	listener     net.Listener
-	reducer      PolicyReducer
-	registration *tailscaleRegistration
+	config   listenerConfig
+	listener net.Listener
+	reducer  PolicyReducer
 }
 
 type PreparedListeners struct {
-	listeners    []preparedListener
-	options      ListenOptions
-	mu           sync.Mutex
-	servers      []*http.Server
-	serving      bool
-	closed       bool
-	closeNotify  chan struct{}
-	withdrawOnce sync.Once
-	withdrawErr  error
-	closeOnce    sync.Once
-	closeErr     error
+	listeners   []preparedListener
+	options     ListenOptions
+	mu          sync.Mutex
+	servers     []*http.Server
+	serving     bool
+	closed      bool
+	closeNotify chan struct{}
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func (prepared *PreparedListeners) Len() int {
@@ -481,38 +384,6 @@ func (prepared *PreparedListeners) Len() int {
 		return 0
 	}
 	return len(prepared.listeners)
-}
-
-func defaultListenerRuntimeName() string {
-	executable, err := os.Executable()
-	if err == nil {
-		if name := filepath.Base(executable); name != "" && name != "." {
-			return name
-		}
-	}
-	if name := filepath.Base(os.Args[0]); name != "" && name != "." {
-		return name
-	}
-	return "server"
-}
-
-func normalizeListenOptions(options ListenOptions) (ListenOptions, error) {
-	if options.ShutdownTimeout < 0 {
-		return ListenOptions{}, errors.New("shutdown timeout cannot be negative")
-	}
-	if options.TailscaleDrainTimeout < 0 {
-		return ListenOptions{}, errors.New("tailscale drain timeout cannot be negative")
-	}
-	if options.TailscaleDrainTimeout == 0 {
-		options.TailscaleDrainTimeout = defaultTailscaleDrainTimeout
-	}
-	if options.RuntimeName == "" {
-		options.RuntimeName = defaultListenerRuntimeName()
-	}
-	if options.RuntimeName == "." || options.RuntimeName == ".." || filepath.Base(options.RuntimeName) != options.RuntimeName || strings.ContainsAny(options.RuntimeName, `/\`) {
-		return ListenOptions{}, fmt.Errorf("invalid runtime name %q", options.RuntimeName)
-	}
-	return options, nil
 }
 
 func systemdListenerConfigs() []listenerConfig {
@@ -579,8 +450,7 @@ func resolveSystemdListeners(configured ListenerConfigs) ([]listenerConfig, erro
 			inherited[i].policy = slices.Clone(binding.policy)
 			inherited[i].trustedAppCapsHeader = binding.trustedAppCapsHeader
 			inherited[i].metricsPath = binding.metricsPath
-			inherited[i].tailscale = binding.tailscale
-			inherited[i].tailscale.acceptAppCaps = slices.Clone(binding.tailscale.acceptAppCaps)
+			inherited[i].acceptAppCaps = slices.Clone(binding.acceptAppCaps)
 			inherited[i].raw = binding.raw
 			matched[inherited[i].address] = true
 		}
@@ -630,306 +500,52 @@ func prepareListenerUnixSocketPath(path string) error {
 
 func warnIfTrustedHeaderIsExposed(config listenerConfig, listener net.Listener) {
 	address, isTCP := listener.Addr().(*net.TCPAddr)
-	trustsDynamicPolicy := config.trustedAppCapsHeader != "" || len(config.tailscale.acceptAppCaps) != 0
+	trustsDynamicPolicy := config.trustedAppCapsHeader != "" || len(config.acceptAppCaps) != 0
 	if trustsDynamicPolicy && isTCP && !address.IP.IsLoopback() {
-		slog.Warn("capability-trusting listener bound to a non-loopback address; only trust app capability headers behind a proxy that replaces them", "address", listener.Addr().String(), "trusted_app_caps_header", config.trustedAppCapsHeader, "accept_app_caps", config.tailscale.acceptAppCaps)
+		slog.Warn("capability-trusting listener bound to a non-loopback address; only trust app capability headers behind a proxy that replaces them", "address", listener.Addr().String(), "trusted_app_caps_header", config.trustedAppCapsHeader, "accept_app_caps", config.acceptAppCaps)
 	}
 }
 
-func listenerRuntimeBaseDirectory() string {
-	if directory := os.Getenv("RUNTIME_DIRECTORY"); directory != "" {
-		return directory
-	}
-	if directory := os.Getenv("XDG_RUNTIME_DIR"); directory != "" {
-		return directory
-	}
-	return os.TempDir()
-}
-
-func ensureListenerPrivateDirectory(directory string) error {
-	info, err := os.Lstat(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(directory, 0o700); err != nil {
-			return err
-		}
-		return os.Chmod(directory, 0o700)
-	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("upstream socket directory %s is not a directory", directory)
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Getuid() {
-		return fmt.Errorf("upstream socket directory %s is owned by uid %d", directory, stat.Uid)
-	}
-	return os.Chmod(directory, 0o700)
-}
-
-func tailscaleUpstreamPath(config listenerConfig, runtimeName string) (string, error) {
-	path := config.tailscale.upstreamSocket
-	if path == "" {
-		directory := filepath.Join(listenerRuntimeBaseDirectory(), fmt.Sprintf("%s.%d", runtimeName, os.Getuid()))
-		path = filepath.Join(directory, strings.TrimPrefix(config.serviceName, "svc:")+".sock")
-	}
-	if len(path) > listenerMaxUnixSocketPathLen {
-		return "", fmt.Errorf("upstream_socket path too long (%d > %d bytes): %s", len(path), listenerMaxUnixSocketPathLen, path)
-	}
-	return path, nil
-}
-
-func prepareTailscaleUpstreamPath(config listenerConfig, path string) error {
-	if config.tailscale.upstreamSocket != "" {
-		return os.MkdirAll(filepath.Dir(path), 0o700)
-	}
-	return ensureListenerPrivateDirectory(filepath.Dir(path))
-}
-
-func setServiceAdvertised(ctx context.Context, client *local.Client, service string, advertise bool) (bool, error) {
-	preferences, err := client.GetPrefs(ctx)
-	if err != nil {
-		return false, err
-	}
-	hasService := slices.Contains(preferences.AdvertiseServices, service)
-	if advertise == hasService {
-		return false, nil
-	}
-	updated := slices.Clone(preferences.AdvertiseServices)
-	if advertise {
-		updated = append(updated, service)
-	} else {
-		updated = slices.DeleteFunc(updated, func(current string) bool { return current == service })
-	}
-	_, err = client.EditPrefs(ctx, &ipn.MaskedPrefs{
-		AdvertiseServicesSet: true,
-		Prefs:                ipn.Prefs{AdvertiseServices: updated},
-	})
-	return true, err
-}
-
-func restoreTailscaleService(ctx context.Context, client *local.Client, service string, previous, installed *ipn.ServiceConfig, hadPrevious bool) error {
-	config, err := client.GetServeConfig(ctx)
-	if err != nil {
-		return err
-	}
-	if config == nil {
-		if !hadPrevious {
-			return nil
-		}
-		return fmt.Errorf("serve configuration changed while %s was running", service)
-	}
-	serviceName := tailcfg.ServiceName(service)
-	current, exists := config.Services[serviceName]
-	switch {
-	case hadPrevious && exists && reflect.DeepEqual(current, previous):
-		return nil
-	case !hadPrevious && !exists:
-		return nil
-	case !exists || !reflect.DeepEqual(current, installed):
-		return fmt.Errorf("serve configuration changed while %s was running", service)
-	}
-	if hadPrevious {
-		config.Services[serviceName] = previous.Clone()
-	} else {
-		delete(config.Services, serviceName)
-	}
-	return client.SetServeConfig(ctx, config)
-}
-
-type tailscaleRegistration struct {
-	client         *local.Client
-	service        string
-	previous       *ipn.ServiceConfig
-	installed      *ipn.ServiceConfig
-	hadPrevious    bool
-	addedAdvertise bool
-	once           sync.Once
-	err            error
-}
-
-func (registration *tailscaleRegistration) withdraw(ctx context.Context) error {
-	registration.once.Do(func() {
-		var errs []error
-		if registration.addedAdvertise {
-			if _, err := setServiceAdvertised(ctx, registration.client, registration.service, false); err != nil {
-				errs = append(errs, fmt.Errorf("withdraw %s: %w", registration.service, err))
-			}
-		}
-		if err := restoreTailscaleService(ctx, registration.client, registration.service, registration.previous, registration.installed, registration.hadPrevious); err != nil {
-			errs = append(errs, fmt.Errorf("restore serve handler %s: %w", registration.service, err))
-		}
-		registration.err = errors.Join(errs...)
-	})
-	return registration.err
-}
-
-func withdrawTailscaleRegistration(registration *tailscaleRegistration, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	return registration.withdraw(ctx)
-}
-
-func tailscaleSocket(socket string) string {
-	if socket == "" {
-		socket = paths.DefaultTailscaledSocket()
-	}
-	socket = filepath.Clean(socket)
-	if absolute, err := filepath.Abs(socket); err == nil {
-		socket = filepath.Clean(absolute)
-	}
-	if resolved, err := filepath.EvalSymlinks(socket); err == nil {
-		socket = filepath.Clean(resolved)
-	}
-	return socket
-}
-
-func prepareTailscaleListener(ctx context.Context, config listenerConfig, runtimeName string, tailscaleDrainTimeout time.Duration) (net.Listener, *tailscaleRegistration, error) {
-	upstream, err := tailscaleUpstreamPath(config, runtimeName)
-	if err != nil {
-		return nil, nil, fmt.Errorf("tailscale %s: %w", config.serviceName, err)
-	}
-	if err := prepareTailscaleUpstreamPath(config, upstream); err != nil {
-		return nil, nil, fmt.Errorf("tailscale %s: prepare upstream socket path: %w", config.serviceName, err)
-	}
-	if err := prepareListenerUnixSocketPath(upstream); err != nil {
-		return nil, nil, fmt.Errorf("tailscale %s: %w", config.serviceName, err)
-	}
-	listener, err := net.Listen("unix", upstream)
-	if err != nil {
-		return nil, nil, fmt.Errorf("tailscale %s: bind upstream socket: %w", config.serviceName, err)
-	}
-	var registration *tailscaleRegistration
-	fail := func(err error) (net.Listener, *tailscaleRegistration, error) {
-		if registration != nil {
-			err = errors.Join(err, withdrawTailscaleRegistration(registration, tailscaleDrainTimeout))
-		}
-		_ = listener.Close()
-		return nil, nil, err
-	}
-	if err := os.Chmod(upstream, 0o600); err != nil {
-		return fail(fmt.Errorf("tailscale %s: restrict upstream socket permissions: %w", config.serviceName, err))
-	}
-	client := &local.Client{Socket: tailscaleSocket(config.tailscale.socket)}
-	status, err := client.StatusWithoutPeers(ctx)
-	if err != nil {
-		return fail(fmt.Errorf("tailscale %s: cannot reach tailscaled: %w", config.serviceName, err))
-	}
-	if status.CurrentTailnet == nil {
-		return fail(fmt.Errorf("tailscale %s: node is not connected to a tailnet", config.serviceName))
-	}
-	useHTTPS := config.tailscale.https == nil || *config.tailscale.https
-	port := 80
-	if useHTTPS {
-		port = 443
-	}
-	if config.tailscale.port != 0 {
-		port = config.tailscale.port
-	}
-	proxy, err := ipn.ExpandProxyTargetValue("unix:"+upstream, []string{"unix"}, "http")
-	if err != nil {
-		return fail(fmt.Errorf("tailscale %s: %w", config.serviceName, err))
-	}
-	handler := &ipn.HTTPHandler{Proxy: proxy}
-	for _, capability := range config.tailscale.acceptAppCaps {
-		handler.AcceptAppCaps = append(handler.AcceptAppCaps, tailcfg.PeerCapability(capability))
-	}
-	serveConfig, err := client.GetServeConfig(ctx)
-	if err != nil {
-		return fail(fmt.Errorf("tailscale %s: get serve config: %w", config.serviceName, err))
-	}
-	if serveConfig == nil {
-		serveConfig = new(ipn.ServeConfig)
-	}
-	serviceName := tailcfg.ServiceName(config.serviceName)
-	previous, hadPrevious := serveConfig.Services[serviceName]
-	previous = previous.Clone()
-	serveConfig.SetWebHandler(handler, config.serviceName, uint16(port), "/", useHTTPS, status.CurrentTailnet.MagicDNSSuffix)
-	installed := serveConfig.Services[serviceName].Clone()
-	registration = &tailscaleRegistration{
-		client:      client,
-		service:     config.serviceName,
-		previous:    previous,
-		installed:   installed,
-		hadPrevious: hadPrevious,
-	}
-	if err := client.SetServeConfig(ctx, serveConfig); err != nil {
-		return fail(fmt.Errorf("tailscale %s: set serve config: %w", config.serviceName, err))
-	}
-	addedAdvertise, err := setServiceAdvertised(ctx, client, config.serviceName, true)
-	registration.addedAdvertise = addedAdvertise
-	if err != nil {
-		return fail(fmt.Errorf("tailscale %s: advertise service: %w", config.serviceName, err))
-	}
-	slog.Info("advertising tailscale service", "service", config.serviceName, "port", port, "upstream", upstream)
-	return listener, registration, nil
-}
-
-func bindListener(ctx context.Context, config listenerConfig, runtimeName string, tailscaleDrainTimeout time.Duration) (net.Listener, *tailscaleRegistration, error) {
+func bindListener(config listenerConfig) (net.Listener, error) {
 	switch config.kind {
 	case listenerKindUnix:
 		if err := prepareListenerUnixSocketPath(config.address); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		listener, err := net.Listen("unix", config.address)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create Unix socket listener: %w", err)
+			return nil, fmt.Errorf("failed to create Unix socket listener: %w", err)
 		}
-		return listener, nil, nil
+		return listener, nil
 	case listenerKindTCP:
 		listener, err := net.Listen("tcp", config.address)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create TCP listener: %w", err)
+			return nil, fmt.Errorf("failed to create TCP listener: %w", err)
 		}
 		warnIfTrustedHeaderIsExposed(config, listener)
-		return listener, nil, nil
+		return listener, nil
 	case listenerKindSystemd:
 		if config.systemdFile == nil {
-			return nil, nil, fmt.Errorf("systemd listener %s unavailable", config.endpoint)
+			return nil, fmt.Errorf("systemd listener %s unavailable", config.endpoint)
 		}
 		listener, err := net.FileListener(config.systemdFile)
 		_ = config.systemdFile.Close()
 		if err != nil {
-			return nil, nil, fmt.Errorf("systemd listener %s unavailable: %w", config.endpoint, err)
+			return nil, fmt.Errorf("systemd listener %s unavailable: %w", config.endpoint, err)
 		}
 		warnIfTrustedHeaderIsExposed(config, listener)
-		return listener, nil, nil
-	case listenerKindTailscale:
-		return prepareTailscaleListener(ctx, config, runtimeName, tailscaleDrainTimeout)
+		return listener, nil
 	default:
-		return nil, nil, fmt.Errorf("unsupported listener endpoint %q", config.endpoint)
+		return nil, fmt.Errorf("unsupported listener endpoint %q", config.endpoint)
 	}
 }
 
-func preflightTailscale(configs []listenerConfig, runtimeName string) error {
-	services := make(map[string]bool)
-	upstreams := make(map[string]string)
-	for _, config := range configs {
-		if config.kind != listenerKindTailscale {
-			continue
-		}
-		if services[config.serviceName] {
-			return fmt.Errorf("duplicate tailscale service %q", config.serviceName)
-		}
-		services[config.serviceName] = true
-		path, err := tailscaleUpstreamPath(config, runtimeName)
-		if err != nil {
-			return fmt.Errorf("tailscale %s: %w", config.serviceName, err)
-		}
-		if previous, exists := upstreams[path]; exists {
-			return fmt.Errorf("tailscale upstream_socket %q cannot be shared by multiple tailscale services %s and %s", path, previous, config.serviceName)
-		}
-		upstreams[path] = config.serviceName
-	}
-	return nil
-}
-
-func PrepareListeners(ctx context.Context, configs ListenerConfigs, factory PolicyReducerFactory, options ListenOptions) (_ *PreparedListeners, err error) {
+func PrepareListeners(configs ListenerConfigs, factory PolicyReducerFactory, options ListenOptions) (_ *PreparedListeners, err error) {
 	if factory == nil {
 		return nil, errors.New("policy reducer factory is required")
 	}
-	options, err = normalizeListenOptions(options)
-	if err != nil {
-		return nil, err
+	if options.ShutdownTimeout < 0 {
+		return nil, errors.New("shutdown timeout cannot be negative")
 	}
 	resolved, err := resolveSystemdListeners(configs)
 	if err != nil {
@@ -947,9 +563,6 @@ func PrepareListeners(ctx context.Context, configs ListenerConfigs, factory Poli
 			closeSystemdFiles(resolved)
 		}
 	}()
-	if err := preflightTailscale(resolved, options.RuntimeName); err != nil {
-		return nil, err
-	}
 	listeners := make([]preparedListener, 0, len(resolved))
 	for _, config := range resolved {
 		reducer, factoryErr := factory(listenerInfo(config))
@@ -969,12 +582,11 @@ func PrepareListeners(ctx context.Context, configs ListenerConfigs, factory Poli
 	}()
 	for i := range prepared.listeners {
 		candidate := &prepared.listeners[i]
-		listener, registration, bindErr := bindListener(ctx, candidate.config, options.RuntimeName, options.TailscaleDrainTimeout)
+		listener, bindErr := bindListener(candidate.config)
 		if bindErr != nil {
 			return nil, fmt.Errorf("listener %s: %w", candidate.config.endpoint, bindErr)
 		}
 		candidate.listener = listener
-		candidate.registration = registration
 	}
 	return prepared, nil
 }
@@ -1029,7 +641,7 @@ func listenerPolicyDocuments(request *http.Request, config listenerConfig) ([]Po
 		}
 		documents = append(documents, PolicyDocument{Origin: PolicyOriginTrustedHeader, Value: value})
 	}
-	if len(config.tailscale.acceptAppCaps) == 0 {
+	if len(config.acceptAppCaps) == 0 {
 		return documents, nil
 	}
 	if len(tailscaleValues) > 1 {
@@ -1045,12 +657,12 @@ func listenerPolicyDocuments(request *http.Request, config listenerConfig) ([]Po
 	if len(value) == 0 || value[0] != '{' {
 		return nil, errors.New("Tailscale app capabilities header must contain a JSON object")
 	}
-	var capabilities tailcfg.PeerCapMap
+	var capabilities map[string][]json.RawMessage
 	if err := json.Unmarshal(value, &capabilities); err != nil {
 		return nil, fmt.Errorf("Tailscale app capabilities header: %w", err)
 	}
-	for _, accepted := range config.tailscale.acceptAppCaps {
-		values, ok := capabilities[tailcfg.PeerCapability(accepted)]
+	for _, accepted := range config.acceptAppCaps {
+		values, ok := capabilities[accepted]
 		if !ok {
 			continue
 		}
@@ -1062,7 +674,7 @@ func listenerPolicyDocuments(request *http.Request, config listenerConfig) ([]Po
 			documents = append(documents, PolicyDocument{
 				Origin:     PolicyOriginTailscale,
 				Capability: accepted,
-				Value:      json.RawMessage(raw),
+				Value:      raw,
 			})
 		}
 	}
@@ -1085,41 +697,6 @@ func listenerPolicyHandler(config listenerConfig, reducer PolicyReducer, next ht
 	})
 }
 
-func (prepared *PreparedListeners) withdraw() error {
-	if prepared == nil {
-		return nil
-	}
-	prepared.withdrawOnce.Do(func() {
-		groups := make(map[string][]*tailscaleRegistration)
-		for i := range prepared.listeners {
-			registration := prepared.listeners[i].registration
-			if registration != nil {
-				groups[registration.client.Socket] = append(groups[registration.client.Socket], registration)
-			}
-		}
-		errorChannel := make(chan error, len(prepared.listeners))
-		var wait sync.WaitGroup
-		for _, registrations := range groups {
-			registrations := registrations
-			wait.Go(func() {
-				for _, registration := range registrations {
-					if err := withdrawTailscaleRegistration(registration, prepared.options.TailscaleDrainTimeout); err != nil {
-						errorChannel <- err
-					}
-				}
-			})
-		}
-		wait.Wait()
-		close(errorChannel)
-		var errs []error
-		for err := range errorChannel {
-			errs = append(errs, err)
-		}
-		prepared.withdrawErr = errors.Join(errs...)
-	})
-	return prepared.withdrawErr
-}
-
 func (prepared *PreparedListeners) Close() error {
 	if prepared == nil {
 		return nil
@@ -1133,7 +710,7 @@ func (prepared *PreparedListeners) Close() error {
 		close(prepared.closeNotify)
 		servers := slices.Clone(prepared.servers)
 		prepared.mu.Unlock()
-		errs := []error{prepared.withdraw()}
+		var errs []error
 		for _, server := range servers {
 			if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 				errs = append(errs, err)
@@ -1276,7 +853,6 @@ func (prepared *PreparedListeners) Serve(ctx context.Context, handler http.Handl
 			normalShutdown = true
 		}
 	}
-	recordListenerShutdownError(&firstErr, normalShutdown, "listener withdrawal failed during shutdown", prepared.withdraw())
 	recordListenerShutdownError(&firstErr, normalShutdown, "listener shutdown did not complete cleanly", shutdownListenerServers(servers, prepared.options.ShutdownTimeout))
 	for remaining > 0 {
 		<-results
