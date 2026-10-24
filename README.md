@@ -473,7 +473,7 @@ To accept Tailscale application capabilities, list them in the listener's
 {
   "listen": [{
     "endpoint": "/run/restic-rados-server/restic.sock",
-    "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"]}
+    "accept_app_caps": ["github.com/josh/restic-rados-server"]
   }]
 }
 ```
