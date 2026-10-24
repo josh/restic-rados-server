@@ -133,15 +133,10 @@ func parseListenerAcceptAppCaps(raw json.RawMessage) ([]string, error) {
 	if err := json.Unmarshal(raw, &capabilities); err != nil {
 		return nil, errors.New("accept_app_caps must be an array of strings")
 	}
-	seen := make(map[string]bool, len(capabilities))
 	for _, capability := range capabilities {
 		if capability == "" || strings.TrimSpace(capability) != capability {
 			return nil, errors.New("accept_app_caps entries must be non-empty strings without surrounding whitespace")
 		}
-		if seen[capability] {
-			return nil, fmt.Errorf("accept_app_caps contains duplicate capability %q", capability)
-		}
-		seen[capability] = true
 	}
 	return capabilities, nil
 }
