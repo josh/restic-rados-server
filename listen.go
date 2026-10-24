@@ -88,7 +88,7 @@ type listenerSpec struct {
 	Policy               json.RawMessage `json:"policy"`
 	TrustedAppCapsHeader json.RawMessage `json:"trusted_app_caps_header"`
 	Metrics              json.RawMessage `json:"metrics"`
-	Options              json.RawMessage `json:"options"`
+	AcceptAppCaps        json.RawMessage `json:"accept_app_caps"`
 }
 
 func decodeListenerJSON(data []byte, value any) error {
@@ -126,28 +126,20 @@ func parseListenerAcceptAppCaps(raw json.RawMessage) ([]string, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	var spec struct {
-		AcceptAppCaps json.RawMessage `json:"accept_app_caps"`
-	}
-	if err := decodeListenerJSON(raw, &spec); err != nil {
-		return nil, fmt.Errorf("options: %w", err)
-	}
-	if string(spec.AcceptAppCaps) == "null" {
-		return nil, errors.New("options.accept_app_caps cannot be null")
+	if string(raw) == "null" {
+		return nil, errors.New("accept_app_caps cannot be null")
 	}
 	var capabilities []string
-	if spec.AcceptAppCaps != nil {
-		if err := json.Unmarshal(spec.AcceptAppCaps, &capabilities); err != nil {
-			return nil, errors.New("options.accept_app_caps must be an array of strings")
-		}
+	if err := json.Unmarshal(raw, &capabilities); err != nil {
+		return nil, errors.New("accept_app_caps must be an array of strings")
 	}
 	seen := make(map[string]bool, len(capabilities))
 	for _, capability := range capabilities {
 		if capability == "" || strings.TrimSpace(capability) != capability {
-			return nil, errors.New("options.accept_app_caps entries must be non-empty strings without surrounding whitespace")
+			return nil, errors.New("accept_app_caps entries must be non-empty strings without surrounding whitespace")
 		}
 		if seen[capability] {
-			return nil, fmt.Errorf("options.accept_app_caps contains duplicate capability %q", capability)
+			return nil, fmt.Errorf("accept_app_caps contains duplicate capability %q", capability)
 		}
 		seen[capability] = true
 	}
@@ -271,7 +263,7 @@ func parseStructuredListener(data []byte) (listenerConfig, error) {
 		return listenerConfig{}, err
 	}
 	config.metricsPath = metricsPath
-	acceptAppCaps, err := parseListenerAcceptAppCaps(spec.Options)
+	acceptAppCaps, err := parseListenerAcceptAppCaps(spec.AcceptAppCaps)
 	if err != nil {
 		return listenerConfig{}, err
 	}
