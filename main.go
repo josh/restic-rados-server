@@ -124,6 +124,7 @@ func main() {
 		ClientID:        config.ClientID,
 		CephConf:        config.CephConf,
 		WriteBufferSize: config.WriteBufferSize,
+		OSDOpTimeout:    time.Duration(config.IOTimeout),
 	}
 
 	connMgr := NewConnectionManager(cephConfig)

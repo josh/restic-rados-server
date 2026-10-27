@@ -239,6 +239,10 @@ func (m *ConnectionManager) newConfiguredConnection() (*rados.Conn, error) {
 		conn.Shutdown()
 		return nil, err
 	}
+	if err := applyOSDOpTimeout(conn, m.config.OSDOpTimeout); err != nil {
+		conn.Shutdown()
+		return nil, err
+	}
 	return conn, nil
 }
 
@@ -556,6 +560,27 @@ func capConnectionTimeout(conn *rados.Conn) error {
 	if err := conn.SetConfigOption("client_mount_timeout", strconv.FormatFloat(maximumConnectTimeout.Seconds(), 'f', -1, 64)); err != nil {
 		return fmt.Errorf("set client_mount_timeout: %w", err)
 	}
+	return nil
+}
+
+func applyOSDOpTimeout(conn *rados.Conn, timeout time.Duration) error {
+	configured, err := conn.GetConfigOption("rados_osd_op_timeout")
+	if err != nil {
+		return fmt.Errorf("get rados_osd_op_timeout: %w", err)
+	}
+	seconds, parseErr := strconv.ParseFloat(strings.TrimSpace(configured), 64)
+	if parseErr == nil && seconds > 0 {
+		slog.Debug("osd op timeout from ceph configuration", "rados_osd_op_timeout", seconds)
+		return nil
+	}
+	if timeout <= 0 {
+		return nil
+	}
+	value := strconv.FormatFloat(timeout.Seconds(), 'f', -1, 64)
+	if err := conn.SetConfigOption("rados_osd_op_timeout", value); err != nil {
+		return fmt.Errorf("set rados_osd_op_timeout: %w", err)
+	}
+	slog.Debug("osd op timeout from io-timeout", "rados_osd_op_timeout", value)
 	return nil
 }
 

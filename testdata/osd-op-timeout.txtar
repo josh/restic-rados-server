@@ -1,0 +1,15 @@
+tail-logs
+create-pool
+
+exec restic-rados-server --listen 127.0.0.1:$PORT --io-timeout 7s &server&
+wait4socket 127.0.0.1:$PORT
+wait4log 'msg="osd op timeout from io-timeout" rados_osd_op_timeout=7' $RESTIC_RADOS_SERVER_LOG_FILE
+kill -INT server
+wait server
+
+env CEPH_ARGS=--rados-osd-op-timeout=3
+exec restic-rados-server --listen 127.0.0.1:$PORT --io-timeout 7s &server2&
+wait4socket 127.0.0.1:$PORT
+wait4log 'msg="osd op timeout from ceph configuration" rados_osd_op_timeout=3' $RESTIC_RADOS_SERVER_LOG_FILE
+kill -INT server2
+wait server2
