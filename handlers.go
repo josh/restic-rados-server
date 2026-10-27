@@ -1221,28 +1221,40 @@ func (h *Handler) purgeTargetObjects(ctx context.Context, repo string, target *p
 		names := make(chan string, purgeDeleteWorkers)
 		failures := make(chan error, 1)
 		var stopped atomic.Bool
+		fail := func(err error) {
+			stopped.Store(true)
+			select {
+			case failures <- err:
+			default:
+			}
+		}
 		var workers sync.WaitGroup
 		for range purgeDeleteWorkers {
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				for object := range names {
-					if stopped.Load() {
-						continue
+				defer func() {
+					for range names {
 					}
-					slog.Debug("rados.Delete", "object", object)
-					done := radosObserve("remove", radosCalls)
-					err := ioctx.Delete(object)
-					done(err)
-					if err != nil && !errors.Is(err, rados.ErrNotFound) {
-						stopped.Store(true)
-						select {
-						case failures <- fmt.Errorf("delete object %s: %w", object, err):
-						default:
+				}()
+				err := h.withPurgeTarget(target, radosCalls, func(ioctx *rados.IOContext) error {
+					for object := range names {
+						if stopped.Load() {
+							continue
 						}
-						continue
+						removed, err := deleteUnchangedObject(ioctx, object, radosCalls)
+						if err != nil {
+							fail(fmt.Errorf("delete object %s: %w", object, err))
+							continue
+						}
+						if removed {
+							deleted.Add(1)
+						}
 					}
-					deleted.Add(1)
+					return nil
+				})
+				if err != nil {
+					fail(err)
 				}
 			}()
 		}
@@ -1273,6 +1285,40 @@ func (h *Handler) purgeTargetObjects(ctx context.Context, repo string, target *p
 		}
 	})
 	return int(deleted.Load()), foreign, err
+}
+
+func deleteUnchangedObject(ioctx *rados.IOContext, object string, radosCalls *uint64) (bool, error) {
+	slog.Debug("rados.Stat", "object", object)
+	done := radosObserve("stat", radosCalls)
+	_, err := ioctx.Stat(object)
+	done(err)
+	if errors.Is(err, rados.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	version, err := ioctx.GetLastVersion()
+	if err != nil {
+		return false, err
+	}
+
+	op := rados.CreateWriteOp()
+	defer op.Release()
+	op.AssertVersion(version)
+	op.Remove()
+	slog.Debug("rados.Delete", "object", object, "version", version)
+	done = radosObserve("remove", radosCalls)
+	err = op.Operate(ioctx, object, rados.OperationNoFlag)
+	done(err)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, rados.ErrNotFound) || hasRadosErrorCode(err, syscall.ERANGE, syscall.EOVERFLOW) {
+		slog.Debug("object changed during purge", "object", object, "version", version)
+		return false, nil
+	}
+	return false, err
 }
 
 func targetOwns(target *purgeTarget, object string) bool {
