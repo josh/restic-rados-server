@@ -108,6 +108,7 @@ type Config struct {
 	Access          string                 `json:"access,omitempty"`
 	MaxIdleTime     Duration               `json:"max_idle_time,omitempty"`
 	IOTimeout       Duration               `json:"io_timeout,omitempty"`
+	MaxUploads      int                    `json:"max_uploads,omitempty"`
 	LogFile         string                 `json:"log_file,omitempty"`
 	Keyring         string                 `json:"keyring,omitempty"`
 	ClientID        string                 `json:"client_id,omitempty"`
@@ -277,6 +278,7 @@ func bindFlags(c *Config, configFile *string, showVersion *bool, repo *repoFlags
 	fs.StringVar(&c.Access, "access", c.Access, "maximum access level for the server: r/read-only, ra/read-append, rw/read-write")
 	fs.Var(&c.MaxIdleTime, "max-idle-time", "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
 	fs.Var(&c.IOTimeout, "io-timeout", "longest pause allowed while reading a request body or writing a response (0 = disabled)")
+	fs.IntVar(&c.MaxUploads, "max-uploads", c.MaxUploads, "uploads handled at once; the rest wait")
 	fs.StringVar(&c.LogFile, "log-file", c.LogFile, "path to log file (default: stderr)")
 	fs.StringVar(&c.Keyring, "keyring", c.Keyring, "path to Ceph keyring file")
 	fs.StringVar(&c.ClientID, "id", c.ClientID, "Ceph client ID (e.g., 'restic' for client.restic)")
@@ -311,6 +313,7 @@ func defaultConfig() Config {
 	return Config{
 		ShutdownTimeout: Duration(60 * time.Second),
 		IOTimeout:       Duration(30 * time.Second),
+		MaxUploads:      8,
 		Access:          "rw",
 		ReadBufferSize:  defaultReadBufferSize,
 		WriteBufferSize: defaultWriteBufferSize,
@@ -473,6 +476,10 @@ func loadConfig(args []string) (Config, bool, error) {
 
 	if config.IOTimeout < 0 {
 		return Config{}, false, errors.New("io-timeout cannot be negative")
+	}
+
+	if config.MaxUploads <= 0 {
+		return Config{}, false, fmt.Errorf("max-uploads must be positive, got %d", config.MaxUploads)
 	}
 
 	access, err := normalizeAccess(config.Access)
