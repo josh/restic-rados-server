@@ -380,7 +380,7 @@ func (c *Config) applyCommandLine(parsed commandLineConfig) {
 	}
 }
 
-var envPrefixes = []string{"RESTIC_RADOS_SERVER_", "RESTIC_CEPH_SERVER_", "CEPH_RESTIC_SERVER_", "RADOS_RESTIC_SERVER_"}
+var envPrefixes = []string{"RESTIC_RADOS_SERVER_", "CEPH_RESTIC_SERVER_"}
 
 func getPrefixedEnv(suffix string) string {
 	for _, prefix := range envPrefixes {
