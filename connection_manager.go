@@ -588,7 +588,8 @@ func isTransientConnectionError(err error) bool {
 		return false
 	}
 	return coded.ErrorCode() == -int(syscall.ENOTCONN) ||
-		coded.ErrorCode() == -int(syscall.ETIMEDOUT)
+		coded.ErrorCode() == -int(syscall.ETIMEDOUT) ||
+		coded.ErrorCode() == -int(syscall.ESHUTDOWN)
 }
 
 func openNamespaceContext(conn *rados.Conn, pool, namespace string, radosCalls *uint64) (*rados.IOContext, error) {
