@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,15 +173,20 @@ func touchServerLog(t *testing.T, tmpDir string) (string, error) {
 	return logFile, nil
 }
 
+func scriptContext(ts *testscript.TestScript) context.Context {
+	ctx, ok := ts.Value("ctx").(context.Context)
+	if !ok {
+		ts.Fatalf("context not found in testscript Env.Values")
+	}
+	return ctx
+}
+
 func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 	if neg {
 		ts.Fatalf("unsupported: ! tail-logs")
 	}
 
-	ctx, ok := ts.Value("ctx").(context.Context)
-	if !ok {
-		ts.Fatalf("context not found in testscript Env.Values")
-	}
+	ctx := scriptContext(ts)
 
 	logFile := ts.Getenv("RESTIC_RADOS_SERVER_LOG_FILE")
 	if logFile == "" {
@@ -190,9 +194,7 @@ func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	f, err := os.Open(logFile)
-	if err != nil {
-		ts.Fatalf("failed to open log file for reading: %v", err)
-	}
+	ts.Check(err)
 
 	pipeReader, detach := cephDaemonLogs.AttachPipe()
 	serverReader := bufio.NewReader(f)
@@ -284,201 +286,147 @@ func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string,
 		return "", err
 	}
 
-	if err := createECProfile(startupCtx, confPath); err != nil {
+	if err := runCommand(startupCtx, out, "ceph", "--conf", confPath, "osd", "erasure-code-profile", "set", testECProfileName, "k=2", "m=1", "crush-failure-domain=osd"); err != nil {
 		return "", err
 	}
-	if err := createECCrushRule(startupCtx, confPath); err != nil {
+	if err := runCommand(startupCtx, out, "ceph", "--conf", confPath, "osd", "crush", "rule", "create-erasure", testECCrushRuleName, testECProfileName); err != nil {
 		return "", err
 	}
-	if err := createECCrushRuleKeepalivePool(startupCtx, confPath); err != nil {
+	if err := runCommand(startupCtx, out, "ceph", "--conf", confPath, "osd", "pool", "create", testECCrushRuleKeepalivePoolName, "1", "1", "erasure", testECProfileName, testECCrushRuleName); err != nil {
 		return "", err
 	}
 
 	return confPath, nil
 }
 
-func randomUUID() (string, error) {
+func randomUUID() string {
 	uuid := make([]byte, 16)
-	if _, err := rand.Read(uuid); err != nil {
-		return "", err
-	}
+	_, _ = rand.Read(uuid)
 	uuid[6] = (uuid[6] & 0x0f) | 0x40
 	uuid[8] = (uuid[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
+	return fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16])
 }
 
-func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, error) {
-	fsid, err := randomUUID()
-	if err != nil {
-		return "", fmt.Errorf("failed to generate cluster fsid: %w", err)
-	}
+const cephConfTemplate = `[global]
+fsid = %[1]s
+mon_host = v1:%[2]s/0
+public_network = 127.0.0.1/32
+auth_cluster_required = none
+auth_service_required = none
+auth_client_required = none
+auth_allow_insecure_global_id_reclaim = true
+pid_file = %[3]s/$type.$id.pid
+admin_socket = %[3]s/$name.$pid.asok
+crash_dir = %[3]s/crash
+exporter_sock_dir = %[3]s/run
+immutable_object_cache_sock = %[3]s/run/immutable_object_cache.sock
+keyring = /dev/null
+run_dir = %[3]s/run
+log_to_file = false
+log_to_stderr = true
+osd_max_object_size = 33554432
+osd_max_write_size = 16
+osd_pool_default_size = 1
+osd_pool_default_min_size = 1
+osd_crush_chooseleaf_type = 0
+mon_allow_pool_size_one = true
+rados_osd_op_timeout = 60
 
+[mon]
+mon_initial_members = mon1
+mon_data = %[3]s/mon/ceph-$id
+mon_cluster_log_to_file = false
+mon_cluster_log_to_stderr = true
+mon_allow_pool_delete = true
+
+[osd]
+osd_data = %[3]s/osd/ceph-$id
+osd_objectstore = memstore
+osd_class_update_on_start = false
+osd_crush_update_on_start = false
+`
+
+func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, error) {
 	monPort, err := getFreePort()
 	if err != nil {
 		return "", fmt.Errorf("failed to allocate monitor port: %w", err)
 	}
 	monAddr := fmt.Sprintf("127.0.0.1:%d", monPort)
+	fsid := randomUUID()
 
 	confPath := filepath.Join(tmpDir, "ceph.conf")
-
-	cephConfig := map[string]map[string]string{
-		"global": {
-			"fsid":                                  fsid,
-			"mon_host":                              fmt.Sprintf("v1:%s/0", monAddr),
-			"public_network":                        "127.0.0.1/32",
-			"auth_cluster_required":                 "none",
-			"auth_service_required":                 "none",
-			"auth_client_required":                  "none",
-			"auth_allow_insecure_global_id_reclaim": "true",
-			"pid_file":                              filepath.Join(tmpDir, "$type.$id.pid"),
-			"admin_socket":                          filepath.Join(tmpDir, "$name.$pid.asok"),
-			"crash_dir":                             filepath.Join(tmpDir, "crash"),
-			"exporter_sock_dir":                     filepath.Join(tmpDir, "run"),
-			"immutable_object_cache_sock":           filepath.Join(tmpDir, "run", "immutable_object_cache.sock"),
-			"keyring":                               "/dev/null",
-			"run_dir":                               filepath.Join(tmpDir, "run"),
-			"log_to_file":                           "false",
-			"log_to_stderr":                         "true",
-			"osd_max_object_size":                   "33554432", // 32Mi
-			"osd_max_write_size":                    "16",       // 16 MB
-			"osd_pool_default_size":                 "1",
-			"osd_pool_default_min_size":             "1",
-			"osd_crush_chooseleaf_type":             "0",
-			"mon_allow_pool_size_one":               "true",
-			"rados_osd_op_timeout":                  "60",
-		},
-		"mon": {
-			"mon_initial_members":       "mon1",
-			"mon_data":                  filepath.Join(tmpDir, "mon", "ceph-$id"),
-			"mon_cluster_log_to_file":   "false",
-			"mon_cluster_log_to_stderr": "true",
-			"mon_allow_pool_delete":     "true",
-		},
-		"osd": {
-			"osd_data":                  filepath.Join(tmpDir, "osd", "ceph-$id"),
-			"osd_objectstore":           "memstore",
-			"osd_class_update_on_start": "false",
-			"osd_crush_update_on_start": "false",
-		},
-	}
-
-	err = os.MkdirAll(filepath.Join(tmpDir, "mon"), 0o755)
-	if err != nil {
+	if err := os.WriteFile(confPath, []byte(fmt.Sprintf(cephConfTemplate, fsid, monAddr, tmpDir)), 0o644); err != nil {
 		return confPath, err
 	}
 
-	for i := 0; i < 3; i++ {
-		err = os.MkdirAll(filepath.Join(tmpDir, "osd", fmt.Sprintf("ceph-%d", i)), 0o755)
-		if err != nil {
+	for _, dir := range []string{"mon", "osd/ceph-0", "osd/ceph-1", "osd/ceph-2", "run", "crash"} {
+		if err := os.MkdirAll(filepath.Join(tmpDir, dir), 0o755); err != nil {
 			return confPath, err
 		}
 	}
 
-	err = os.MkdirAll(filepath.Join(tmpDir, "run"), 0o755)
-	if err != nil {
-		return confPath, err
-	}
-
-	err = os.MkdirAll(filepath.Join(tmpDir, "crash"), 0o755)
-	if err != nil {
-		return confPath, err
-	}
-
-	confContent := generateINIConfig(cephConfig)
-	err = os.WriteFile(confPath, []byte(confContent), 0o644)
-	if err != nil {
-		return confPath, err
-	}
-
 	monmapPath := filepath.Join(tmpDir, "monmap")
-	cmd := exec.CommandContext(ctx, "monmaptool", "--conf", confPath, monmapPath, "--create", "--fsid", fsid)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Run(); err != nil {
-		return confPath, fmt.Errorf("failed to create monitor map: %w", err)
+	if err := runCommand(ctx, out, "monmaptool", "--conf", confPath, monmapPath, "--create", "--fsid", fsid); err != nil {
+		return confPath, err
 	}
-
-	cmd = exec.CommandContext(ctx, "monmaptool", "--conf", confPath, monmapPath, "--add", "mon1", "v1:"+monAddr)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Run(); err != nil {
-		return confPath, fmt.Errorf("failed to add monitor to map: %w", err)
+	if err := runCommand(ctx, out, "monmaptool", "--conf", confPath, monmapPath, "--add", "mon1", "v1:"+monAddr); err != nil {
+		return confPath, err
 	}
-
-	cmd = exec.CommandContext(ctx, "ceph-mon", "--conf", confPath, "--mkfs", "--id", "mon1", "--monmap", monmapPath)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Run(); err != nil {
-		return confPath, fmt.Errorf("failed to initialize monitor filesystem: %w", err)
-	}
-
-	err = os.Remove(monmapPath)
-	if err != nil {
+	if err := runCommand(ctx, out, "ceph-mon", "--conf", confPath, "--mkfs", "--id", "mon1", "--monmap", monmapPath); err != nil {
 		return confPath, err
 	}
 
-	return confPath, nil
+	return confPath, os.Remove(monmapPath)
 }
 
-func generateINIConfig(config map[string]map[string]string) string {
-	var result strings.Builder
-
-	sections := make([]string, 0, len(config))
-	for section := range config {
-		sections = append(sections, section)
-	}
-	sort.Strings(sections)
-
-	for i, section := range sections {
-		if i > 0 {
-			result.WriteString("\n")
-		}
-		result.WriteString(fmt.Sprintf("[%s]\n", section))
-
-		keys := make([]string, 0, len(config[section]))
-		for key := range config[section] {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-
-		for _, key := range keys {
-			result.WriteString(fmt.Sprintf("%s = %s\n", key, config[section][key]))
-		}
-	}
-
-	return result.String()
-}
-
-func startCephMon(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string, out io.Writer) error {
-	t.Helper()
-	cmd := exec.CommandContext(ctx, "ceph-mon", "--conf", confPath, "--id", "mon1", "--foreground")
+func runCommand(ctx context.Context, out io.Writer, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = out
 	cmd.Stderr = out
-
-	err := cmd.Start()
-	if err != nil {
-		return fmt.Errorf("failed to spawn ceph-mon: %w", err)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
+	return nil
+}
 
+func startDaemon(t *testing.T, ctx context.Context, out io.Writer, name string, args ...string) error {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to spawn %s: %w", name, err)
+	}
 	t.Cleanup(func() {
 		if err := cmd.Wait(); err != nil {
-			t.Logf("ceph-mon exited with error: %v", err)
+			t.Logf("%s %s exited: %v", name, strings.Join(args, " "), err)
 		}
 	})
+	return nil
+}
 
+func waitForCeph(ctx context.Context, confPath string, ready func(cephStatus) bool) error {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-startupCtx.Done():
-			return startupCtx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-ticker.C:
-			if status, err := checkCephStatus(startupCtx, confPath); err == nil && status.Monmap.NumMons > 0 {
+			if status, err := checkCephStatus(ctx, confPath); err == nil && ready(status) {
 				return nil
 			}
 		}
 	}
+}
+
+func startCephMon(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string, out io.Writer) error {
+	t.Helper()
+	if err := startDaemon(t, ctx, out, "ceph-mon", "--conf", confPath, "--id", "mon1", "--foreground"); err != nil {
+		return err
+	}
+	return waitForCeph(startupCtx, confPath, func(status cephStatus) bool { return status.Monmap.NumMons > 0 })
 }
 
 func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context, confPath string, out io.Writer) error {
@@ -486,155 +434,40 @@ func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context,
 
 	for i := 0; i < 3; i++ {
 		osdID := strconv.Itoa(i)
-
-		osdUUID, err := randomUUID()
-		if err != nil {
-			return fmt.Errorf("failed to generate OSD %d uuid: %w", i, err)
+		osdUUID := randomUUID()
+		if err := runCommand(startupCtx, out, "ceph", "--conf", confPath, "osd", "new", osdUUID, osdID); err != nil {
+			return err
 		}
-
-		cmd := exec.CommandContext(startupCtx, "ceph", "--conf", confPath, "osd", "new", osdUUID, osdID)
-		cmd.Stdout = out
-		cmd.Stderr = out
-
-		err = cmd.Run()
-		if err != nil {
-			return fmt.Errorf("failed to register OSD %d: %w", i, err)
+		if err := runCommand(startupCtx, out, "ceph", "--conf", confPath, "osd", "crush", "create-or-move", "osd."+osdID, "1.0", "root=default", "host=localhost"); err != nil {
+			return err
 		}
-
-		cmd = exec.CommandContext(startupCtx, "ceph", "--conf", confPath, "osd", "crush", "create-or-move", "osd."+osdID, "1.0", "root=default", "host=localhost")
-		cmd.Stdout = out
-		cmd.Stderr = out
-
-		err = cmd.Run()
-		if err != nil {
-			return fmt.Errorf("failed to place OSD %d in crush map: %w", i, err)
+		if err := runCommand(ctx, out, "ceph-osd", "--conf", confPath, "--id", osdID, "--mkfs", "--osd-uuid", osdUUID); err != nil {
+			return err
 		}
-
-		cmd = exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", osdID, "--mkfs", "--osd-uuid", osdUUID)
-		cmd.Stdout = out
-		cmd.Stderr = out
-
-		err = cmd.Run()
-		if err != nil {
-			return fmt.Errorf("failed to initialize OSD %d filesystem: %w", i, err)
-		}
-
-		cmd = exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", osdID, "--foreground")
-		cmd.Stdout = out
-		cmd.Stderr = out
-
-		err = cmd.Start()
-		if err != nil {
-			return fmt.Errorf("failed to start OSD %d: %w", i, err)
-		}
-
-		t.Cleanup(func() {
-			if err := cmd.Wait(); err != nil {
-				t.Logf("ceph-osd %d exited: %v", i, err)
-			}
-		})
-	}
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-startupCtx.Done():
-			return startupCtx.Err()
-		case <-ticker.C:
-			if status, err := checkCephStatus(startupCtx, confPath); err == nil && status.Osdmap.NumUpOsds >= 3 {
-				return nil
-			}
+		if err := startDaemon(t, ctx, out, "ceph-osd", "--conf", confPath, "--id", osdID, "--foreground"); err != nil {
+			return err
 		}
 	}
-}
 
-func createECProfile(ctx context.Context, confPath string) error {
-	cmd := exec.CommandContext(ctx,
-		"ceph", "--conf", confPath,
-		"osd", "erasure-code-profile", "set", testECProfileName,
-		"k=2", "m=1", "crush-failure-domain=osd")
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to create EC profile %s: %w, output: %s", testECProfileName, err, output)
-	}
-
-	return nil
-}
-
-func createECCrushRule(ctx context.Context, confPath string) error {
-	cmd := exec.CommandContext(ctx,
-		"ceph", "--conf", confPath,
-		"osd", "crush", "rule", "create-erasure", testECCrushRuleName, testECProfileName)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to create EC CRUSH rule %s: %w, output: %s", testECCrushRuleName, err, output)
-	}
-
-	return nil
-}
-
-// createECCrushRuleKeepalivePool creates the empty pool that keeps the shared
-// erasure CRUSH rule in use while testscript creates temporary pools.
-func createECCrushRuleKeepalivePool(ctx context.Context, confPath string) error {
-	cmd := exec.CommandContext(ctx,
-		"ceph", "--conf", confPath,
-		"osd", "pool", "create", testECCrushRuleKeepalivePoolName, "1", "1", "erasure", testECProfileName, testECCrushRuleName)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to create EC CRUSH rule keepalive pool %s: %w, output: %s", testECCrushRuleKeepalivePoolName, err, output)
-	}
-
-	return nil
+	return waitForCeph(startupCtx, confPath, func(status cephStatus) bool { return status.Osdmap.NumUpOsds >= 3 })
 }
 
 type cephStatus struct {
-	Health cephStatusHealth `json:"health"`
-	Pgmap  cephStatusPgmap  `json:"pgmap"`
-	Monmap cephStatusMonmap `json:"monmap"`
-	Osdmap cephStatusOsdmap `json:"osdmap"`
-}
-
-type cephStatusHealth struct {
-	Status string `json:"status"`
-}
-
-type cephStatusPgmap struct {
-	PgsByState []cephStatusPgState `json:"pgs_by_state"`
-	NumPgs     int                 `json:"num_pgs"`
-}
-
-type cephStatusPgState struct {
-	StateName string `json:"state_name"`
-	Count     int    `json:"count"`
-}
-
-type cephStatusMonmap struct {
-	NumMons int `json:"num_mons"`
-}
-
-type cephStatusOsdmap struct {
-	NumUpOsds int `json:"num_up_osds"`
+	Monmap struct {
+		NumMons int `json:"num_mons"`
+	} `json:"monmap"`
+	Osdmap struct {
+		NumUpOsds int `json:"num_up_osds"`
+	} `json:"osdmap"`
 }
 
 func checkCephStatus(ctx context.Context, confPath string) (cephStatus, error) {
-	statusCmd := exec.CommandContext(ctx, "ceph", "--conf", confPath, "status", "--format", "json")
-	output, err := statusCmd.Output()
+	output, err := exec.CommandContext(ctx, "ceph", "--conf", confPath, "status", "--format", "json").Output()
 	if err != nil {
 		return cephStatus{}, err
 	}
-
 	var status cephStatus
-	err = json.Unmarshal(output, &status)
-	if err != nil {
-		return cephStatus{}, err
-	}
-
-	return status, err
+	return status, json.Unmarshal(output, &status)
 }
 
 type LogDemux struct {
@@ -733,10 +566,7 @@ func TestLogDemuxConcurrentWrites(t *testing.T) {
 }
 
 func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
-	ctx, ok := ts.Value("ctx").(context.Context)
-	if !ok {
-		ts.Fatalf("context not found in testscript Env.Values")
-	}
+	ctx := scriptContext(ts)
 
 	if len(args) < 1 {
 		ts.Fatalf("usage: wait4socket <endpoint> [<endpoint>...]")
@@ -790,10 +620,7 @@ func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
 }
 
 func cmdWait4Exit(ts *testscript.TestScript, neg bool, args []string) {
-	ctx, ok := ts.Value("ctx").(context.Context)
-	if !ok {
-		ts.Fatalf("context not found in testscript Env.Values")
-	}
+	ctx := scriptContext(ts)
 
 	if neg {
 		ts.Fatalf("unsupported: ! wait4exit")
@@ -803,9 +630,7 @@ func cmdWait4Exit(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	timeout, err := time.ParseDuration(args[0])
-	if err != nil {
-		ts.Fatalf("invalid timeout: %v", err)
-	}
+	ts.Check(err)
 	if timeout <= 0 {
 		ts.Fatalf("timeout must be positive")
 	}
@@ -825,9 +650,7 @@ func cmdWait4Exit(ts *testscript.TestScript, neg bool, args []string) {
 		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
 			return
 		}
-		if err != nil {
-			ts.Fatalf("failed to inspect background process: %v", err)
-		}
+		ts.Check(err)
 
 		select {
 		case <-ctx.Done():
@@ -840,10 +663,7 @@ func cmdWait4Exit(ts *testscript.TestScript, neg bool, args []string) {
 }
 
 func cmdWait4log(ts *testscript.TestScript, neg bool, args []string) {
-	ctx, ok := ts.Value("ctx").(context.Context)
-	if !ok {
-		ts.Fatalf("context not found in testscript Env.Values")
-	}
+	ctx := scriptContext(ts)
 
 	if neg {
 		ts.Fatalf("unsupported: ! wait4log")
@@ -853,9 +673,7 @@ func cmdWait4log(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	pattern, err := regexp.Compile(args[0])
-	if err != nil {
-		ts.Fatalf("invalid pattern: %v", err)
-	}
+	ts.Check(err)
 	path := ts.MkAbs(args[1])
 
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -878,10 +696,7 @@ func cmdWait4log(ts *testscript.TestScript, neg bool, args []string) {
 }
 
 func cmdWait4HTTP(ts *testscript.TestScript, neg bool, args []string) {
-	ctx, ok := ts.Value("ctx").(context.Context)
-	if !ok {
-		ts.Fatalf("context not found in testscript Env.Values")
-	}
+	ctx := scriptContext(ts)
 
 	if neg {
 		ts.Fatalf("unsupported: ! wait4http")
@@ -891,9 +706,7 @@ func cmdWait4HTTP(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	expected, err := strconv.Atoi(args[0])
-	if err != nil {
-		ts.Fatalf("invalid expected status: %v", err)
-	}
+	ts.Check(err)
 	endpoint := args[1]
 	urlPath := args[2]
 
@@ -939,10 +752,7 @@ func cmdWait4HTTP(ts *testscript.TestScript, neg bool, args []string) {
 }
 
 func cmdPartialHTTPPost(ts *testscript.TestScript, neg bool, args []string) {
-	ctx, ok := ts.Value("ctx").(context.Context)
-	if !ok {
-		ts.Fatalf("context not found in testscript Env.Values")
-	}
+	ctx := scriptContext(ts)
 
 	if neg {
 		ts.Fatalf("unsupported: ! partial-http-post")
@@ -958,9 +768,7 @@ func cmdPartialHTTPPost(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	declaredLength, err := strconv.ParseInt(args[2], 10, 64)
-	if err != nil {
-		ts.Fatalf("invalid declared length: %v", err)
-	}
+	ts.Check(err)
 	if declaredLength <= int64(len(args[3])) {
 		ts.Fatalf("declared length must exceed body length")
 	}
@@ -1016,9 +824,7 @@ func cmdEnvsubst(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	data, err := os.ReadFile(ts.MkAbs(args[0]))
-	if err != nil {
-		ts.Fatalf("failed to read input: %v", err)
-	}
+	ts.Check(err)
 
 	result := os.Expand(string(data), ts.Getenv)
 
@@ -1028,10 +834,7 @@ func cmdEnvsubst(ts *testscript.TestScript, neg bool, args []string) {
 }
 
 func cmdRadosObjectCount(ts *testscript.TestScript, neg bool, args []string) {
-	ctx, ok := ts.Value("ctx").(context.Context)
-	if !ok {
-		ts.Fatalf("context not found in testscript Env.Values")
-	}
+	ctx := scriptContext(ts)
 
 	if neg {
 		ts.Fatalf("unsupported: ! rados-object-count")
@@ -1099,9 +902,7 @@ func cmdScrubHex(ts *testscript.TestScript, neg bool, args []string) {
 		input = []byte(ts.ReadFile("stderr"))
 	default:
 		input, err = os.ReadFile(ts.MkAbs(inputPath))
-		if err != nil {
-			ts.Fatalf("failed to read input file: %v", err)
-		}
+		ts.Check(err)
 	}
 
 	quotedHexPattern := regexp.MustCompile(`"[0-9a-f]{8,}"`)
@@ -1117,9 +918,7 @@ func cmdScrubHex(ts *testscript.TestScript, neg bool, args []string) {
 		_, _ = ts.Stderr().Write(output)
 	default:
 		err = os.WriteFile(ts.MkAbs(outputPath), output, 0o644)
-		if err != nil {
-			ts.Fatalf("failed to write output file: %v", err)
-		}
+		ts.Check(err)
 	}
 }
 
@@ -1140,18 +939,14 @@ func cmdBinFile(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	size, err := strconv.ParseInt(sizeStr, 10, 64)
-	if err != nil {
-		ts.Fatalf("invalid size: %v", err)
-	}
+	ts.Check(err)
 
 	if size < 0 {
 		ts.Fatalf("size must be non-negative")
 	}
 
 	file, err := os.Create(ts.MkAbs(path))
-	if err != nil {
-		ts.Fatalf("failed to create file: %v", err)
-	}
+	ts.Check(err)
 	defer func() { _ = file.Close() }()
 
 	var reader io.Reader
@@ -1165,9 +960,7 @@ func cmdBinFile(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	_, err = io.Copy(file, reader)
-	if err != nil {
-		ts.Fatalf("failed to write file: %v", err)
-	}
+	ts.Check(err)
 }
 
 type zeroReader struct{}
@@ -1199,9 +992,7 @@ func cmdSHA256(ts *testscript.TestScript, neg bool, args []string) {
 	path := ts.MkAbs(args[0])
 
 	data, err := os.ReadFile(path)
-	if err != nil {
-		ts.Fatalf("failed to read file: %v", err)
-	}
+	ts.Check(err)
 
 	hash := sha256.Sum256(data)
 	hashStr := hex.EncodeToString(hash[:])
@@ -1295,10 +1086,7 @@ func cmdBinCmp(ts *testscript.TestScript, neg bool, args []string) {
 }
 
 func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
-	ctx, ok := ts.Value("ctx").(context.Context)
-	if !ok {
-		ts.Fatalf("context not found in testscript Env.Values")
-	}
+	ctx := scriptContext(ts)
 
 	if neg {
 		ts.Fatalf("unsupported: ! create-pool")
@@ -1333,9 +1121,7 @@ func cmdCreatePool(ts *testscript.TestScript, neg bool, args []string) {
 
 	randBytes := make([]byte, 4)
 	_, err := rand.Read(randBytes)
-	if err != nil {
-		ts.Fatalf("failed to generate pool name: %v", err)
-	}
+	ts.Check(err)
 	poolName := "test-" + hex.EncodeToString(randBytes)
 
 	const maxAttempts = 3
@@ -1428,9 +1214,7 @@ func cmdByteCount(ts *testscript.TestScript, neg bool, args []string) {
 	}
 
 	data, err := os.ReadFile(ts.MkAbs(args[0]))
-	if err != nil {
-		ts.Fatalf("failed to read file: %v", err)
-	}
+	ts.Check(err)
 
 	_, _ = fmt.Fprintf(ts.Stdout(), "%d\n", len(data))
 }
