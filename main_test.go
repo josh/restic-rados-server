@@ -345,6 +345,7 @@ func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, er
 			"osd_pool_default_min_size":             "1",
 			"osd_crush_chooseleaf_type":             "0",
 			"mon_allow_pool_size_one":               "true",
+			"rados_osd_op_timeout":                  "60",
 		},
 		"mon": {
 			"mon_initial_members":       "mon1",
@@ -354,8 +355,10 @@ func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, er
 			"mon_allow_pool_delete":     "true",
 		},
 		"osd": {
-			"osd_data":        filepath.Join(tmpDir, "osd", "ceph-$id"),
-			"osd_objectstore": "memstore",
+			"osd_data":                  filepath.Join(tmpDir, "osd", "ceph-$id"),
+			"osd_objectstore":           "memstore",
+			"osd_class_update_on_start": "false",
+			"osd_crush_update_on_start": "false",
 		},
 	}
 
@@ -489,7 +492,25 @@ func startCephOsd(t *testing.T, ctx context.Context, startupCtx context.Context,
 			return fmt.Errorf("failed to generate OSD %d uuid: %w", i, err)
 		}
 
-		cmd := exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", osdID, "--mkfs", "--osd-uuid", osdUUID)
+		cmd := exec.CommandContext(startupCtx, "ceph", "--conf", confPath, "osd", "new", osdUUID, osdID)
+		cmd.Stdout = out
+		cmd.Stderr = out
+
+		err = cmd.Run()
+		if err != nil {
+			return fmt.Errorf("failed to register OSD %d: %w", i, err)
+		}
+
+		cmd = exec.CommandContext(startupCtx, "ceph", "--conf", confPath, "osd", "crush", "create-or-move", "osd."+osdID, "1.0", "root=default", "host=localhost")
+		cmd.Stdout = out
+		cmd.Stderr = out
+
+		err = cmd.Run()
+		if err != nil {
+			return fmt.Errorf("failed to place OSD %d in crush map: %w", i, err)
+		}
+
+		cmd = exec.CommandContext(ctx, "ceph-osd", "--conf", confPath, "--id", osdID, "--mkfs", "--osd-uuid", osdUUID)
 		cmd.Stdout = out
 		cmd.Stderr = out
 
