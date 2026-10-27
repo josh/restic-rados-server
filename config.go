@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 type BlobType string
@@ -599,10 +599,13 @@ func containsRepoToken(s string) bool {
 	return strings.Contains(s, repoNameToken) || strings.Contains(s, repoMatchToken)
 }
 
+var (
+	repoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	repoKeyPattern  = regexp.MustCompile(`^[A-Za-z0-9._*-]+$`)
+)
+
 func isValidRepoName(name string) bool {
-	return name != "" && name != "." && name != ".." &&
-		!strings.ContainsAny(name, "/{}* ") &&
-		!strings.ContainsFunc(name, unicode.IsControl)
+	return name != "." && name != ".." && repoNamePattern.MatchString(name)
 }
 
 type repoPattern struct {
@@ -721,8 +724,8 @@ func (bp *BlobPool) forRepo(repo, match string) *BlobPool {
 
 func (c *Config) normalizeRepos() error {
 	for name, repo := range c.Repos {
-		if name == "" || strings.ContainsAny(name, "/{} ") || strings.ContainsFunc(name, unicode.IsControl) {
-			return fmt.Errorf("invalid repo name %q (must not be empty or contain '/', '{', '}', spaces, or control characters)", name)
+		if !repoKeyPattern.MatchString(name) {
+			return fmt.Errorf("invalid repo name %q (may contain only letters, digits, '.', '_', '-', and one '*')", name)
 		}
 		if name == "." || name == ".." {
 			return fmt.Errorf("invalid repo name %q (must not be \".\" or \"..\")", name)
