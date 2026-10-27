@@ -250,30 +250,14 @@ func (c *Config) defaultRepo() *RepoConfig {
 	return c.Repos["default"]
 }
 
-type commandLineConfig struct {
-	showVersion     bool
-	configFile      string
-	verbose         bool
-	listeners       ListenerConfigs
-	useStdio        bool
-	metrics         bool
-	shutdownTimeout time.Duration
-	access          string
-	maxIdleTime     time.Duration
-	ioTimeout       time.Duration
-	logFile         string
-	keyringPath     string
-	clientID        string
-	poolSpecs       poolFlags
-	cephConf        string
-	striper         bool
-	readBufferSize  int64
-	writeBufferSize int64
-	maxObjectSize   int64
-	set             map[string]bool
+type repoFlags struct {
+	listeners     ListenerConfigs
+	poolSpecs     poolFlags
+	striper       bool
+	maxObjectSize int64
 }
 
-func parseCommandLine(args []string) (commandLineConfig, error) {
+func bindFlags(c *Config, configFile *string, showVersion *bool, repo *repoFlags) *flag.FlagSet {
 	fs := flag.NewFlagSet("restic-rados-server", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -282,107 +266,54 @@ func parseCommandLine(args []string) (commandLineConfig, error) {
 		fs.PrintDefaults()
 	}
 
-	var parsed commandLineConfig
-	fs.BoolVar(&parsed.showVersion, "version", false, "print version and exit")
-	fs.StringVar(&parsed.configFile, "config", "", "path to JSON configuration file")
-	fs.BoolVar(&parsed.verbose, "v", false, "enable verbose logging")
-	fs.BoolVar(&parsed.verbose, "verbose", false, "enable verbose logging")
-	fs.Var(&parsed.listeners, "listen", "Listener endpoint, repeatable")
-	fs.BoolVar(&parsed.useStdio, "stdio", false, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
-	fs.BoolVar(&parsed.metrics, "metrics", false, "serve Prometheus metrics at /metrics on every listener")
-	fs.DurationVar(&parsed.shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
-	fs.StringVar(&parsed.access, "access", "", "maximum access level for the server: r/read-only, ra/read-append, rw/read-write")
-	fs.DurationVar(&parsed.maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
-	fs.DurationVar(&parsed.ioTimeout, "io-timeout", 30*time.Second, "longest pause allowed while reading a request body or writing a response (0 = disabled)")
-	fs.StringVar(&parsed.logFile, "log-file", "", "path to log file (default: stderr)")
-	fs.StringVar(&parsed.keyringPath, "keyring", "", "path to Ceph keyring file")
-	fs.StringVar(&parsed.clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
-	fs.Var(&parsed.poolSpecs, "pool", "Pool specification: 'pool[/namespace][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
-	fs.StringVar(&parsed.cephConf, "ceph-conf", "", "path to ceph.conf file")
-	fs.BoolVar(&parsed.striper, "striper", true, "enable librados striper for large objects")
-	fs.Int64Var(&parsed.readBufferSize, "read-buffer-size", defaultReadBufferSize, "buffer size for reading objects in bytes")
-	fs.Int64Var(&parsed.writeBufferSize, "write-buffer-size", defaultWriteBufferSize, "buffer size for writing objects in bytes")
-	fs.Int64Var(&parsed.maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
-
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fs.SetOutput(os.Stderr)
-			fs.Usage()
-		}
-		return commandLineConfig{}, err
-	}
-
-	parsed.set = make(map[string]bool)
-	fs.Visit(func(f *flag.Flag) {
-		parsed.set[f.Name] = true
-	})
-	if parsed.set["access"] {
-		access, err := normalizeAccess(parsed.access)
-		if err != nil {
-			return commandLineConfig{}, err
-		}
-		parsed.access = access
-	}
-	return parsed, nil
+	fs.BoolVar(showVersion, "version", false, "print version and exit")
+	fs.StringVar(configFile, "config", "", "path to JSON configuration file")
+	fs.BoolVar(&c.Verbose, "v", c.Verbose, "enable verbose logging")
+	fs.BoolVar(&c.Verbose, "verbose", c.Verbose, "enable verbose logging")
+	fs.Var(&repo.listeners, "listen", "Listener endpoint, repeatable")
+	fs.BoolVar(&c.Stdio, "stdio", c.Stdio, "use HTTP/2 over stdin/stdout (default when no listeners specified)")
+	fs.BoolVar(&c.Metrics, "metrics", c.Metrics, "serve Prometheus metrics at /metrics on every listener")
+	fs.Var(&c.ShutdownTimeout, "shutdown-timeout", "graceful shutdown timeout for listeners")
+	fs.StringVar(&c.Access, "access", c.Access, "maximum access level for the server: r/read-only, ra/read-append, rw/read-write")
+	fs.Var(&c.MaxIdleTime, "max-idle-time", "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
+	fs.Var(&c.IOTimeout, "io-timeout", "longest pause allowed while reading a request body or writing a response (0 = disabled)")
+	fs.StringVar(&c.LogFile, "log-file", c.LogFile, "path to log file (default: stderr)")
+	fs.StringVar(&c.Keyring, "keyring", c.Keyring, "path to Ceph keyring file")
+	fs.StringVar(&c.ClientID, "id", c.ClientID, "Ceph client ID (e.g., 'restic' for client.restic)")
+	fs.Var(&repo.poolSpecs, "pool", "Pool specification: 'pool[/namespace][:types]' where types is '*' or comma-separated list (repeatable, or semicolon-separated)")
+	fs.StringVar(&c.CephConf, "ceph-conf", c.CephConf, "path to ceph.conf file")
+	fs.BoolVar(&repo.striper, "striper", true, "enable librados striper for large objects")
+	fs.Int64Var(&c.ReadBufferSize, "read-buffer-size", c.ReadBufferSize, "buffer size for reading objects in bytes")
+	fs.Int64Var(&c.WriteBufferSize, "write-buffer-size", c.WriteBufferSize, "buffer size for writing objects in bytes")
+	fs.Int64Var(&repo.maxObjectSize, "max-object-size", 0, "max object size override (0 = use cluster config or 128MB default)")
+	return fs
 }
 
-func (c *Config) applyCommandLine(parsed commandLineConfig) {
-	if parsed.set["verbose"] || parsed.set["v"] {
-		c.Verbose = parsed.verbose
-	}
-	if parsed.set["listen"] {
-		c.Listeners = parsed.listeners
-	}
-	if parsed.set["stdio"] {
-		c.Stdio = parsed.useStdio
-	}
-	if parsed.set["metrics"] {
-		c.Metrics = parsed.metrics
-	}
-	if parsed.set["shutdown-timeout"] {
-		c.ShutdownTimeout = Duration(parsed.shutdownTimeout)
-	}
-	if parsed.set["access"] {
-		c.Access = parsed.access
-	}
-	if parsed.set["max-idle-time"] {
-		c.MaxIdleTime = Duration(parsed.maxIdleTime)
-	}
-	if parsed.set["io-timeout"] {
-		c.IOTimeout = Duration(parsed.ioTimeout)
-	}
-	if parsed.set["log-file"] {
-		c.LogFile = parsed.logFile
-	}
-	if parsed.set["keyring"] {
-		c.Keyring = parsed.keyringPath
-	}
-	if parsed.set["id"] {
-		c.ClientID = parsed.clientID
-	}
-	if parsed.set["ceph-conf"] {
-		c.CephConf = parsed.cephConf
-	}
-	if parsed.set["read-buffer-size"] {
-		c.ReadBufferSize = parsed.readBufferSize
-	}
-	if parsed.set["write-buffer-size"] {
-		c.WriteBufferSize = parsed.writeBufferSize
-	}
-
-	if parsed.set["pool"] || parsed.set["striper"] || parsed.set["max-object-size"] {
-		def := c.defaultRepo()
-		if parsed.set["pool"] {
-			def.poolSpecs = parsed.poolSpecs
+func (c *Config) applyRepoFlags(fs *flag.FlagSet, repo *repoFlags) {
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "listen":
+			c.Listeners = repo.listeners
+		case "pool":
+			def := c.defaultRepo()
+			def.poolSpecs = repo.poolSpecs
 			def.Pools = nil
 			def.BlobPools = nil
+		case "striper":
+			c.defaultRepo().Striper = &repo.striper
+		case "max-object-size":
+			c.defaultRepo().MaxObjectSize = repo.maxObjectSize
 		}
-		if parsed.set["striper"] {
-			def.Striper = &parsed.striper
-		}
-		if parsed.set["max-object-size"] {
-			def.MaxObjectSize = parsed.maxObjectSize
-		}
+	})
+}
+
+func defaultConfig() Config {
+	return Config{
+		ShutdownTimeout: Duration(60 * time.Second),
+		IOTimeout:       Duration(30 * time.Second),
+		Access:          "rw",
+		ReadBufferSize:  defaultReadBufferSize,
+		WriteBufferSize: defaultWriteBufferSize,
 	}
 }
 
@@ -490,28 +421,27 @@ func (c *Config) loadFromEnv() error {
 }
 
 func loadConfig(args []string) (Config, bool, error) {
-	config := Config{
-		ShutdownTimeout: Duration(60 * time.Second),
-		IOTimeout:       Duration(30 * time.Second),
-		Access:          "rw",
-		ReadBufferSize:  defaultReadBufferSize,
-		WriteBufferSize: defaultWriteBufferSize,
-	}
-
-	commandLine, err := parseCommandLine(args)
-	if err != nil {
+	var configFile string
+	var showVersion bool
+	scratch := defaultConfig()
+	fs := bindFlags(&scratch, &configFile, &showVersion, &repoFlags{})
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(os.Stderr)
+			fs.Usage()
+		}
 		return Config{}, false, err
 	}
 
-	if commandLine.showVersion {
+	if showVersion {
 		return Config{}, true, nil
 	}
 
-	configFile := commandLine.configFile
 	if configFile == "" {
 		configFile = getPrefixedEnv("CONFIG")
 	}
 
+	config := defaultConfig()
 	if configFile != "" {
 		if err := config.loadFromFile(configFile); err != nil {
 			return Config{}, false, fmt.Errorf("failed to load config file %s: %w", configFile, err)
@@ -521,7 +451,13 @@ func loadConfig(args []string) (Config, bool, error) {
 	if err := config.loadFromEnv(); err != nil {
 		return Config{}, false, err
 	}
-	config.applyCommandLine(commandLine)
+
+	var repo repoFlags
+	fs = bindFlags(&config, &configFile, &showVersion, &repo)
+	if err := fs.Parse(args); err != nil {
+		return Config{}, false, err
+	}
+	config.applyRepoFlags(fs, &repo)
 
 	if config.Metrics && config.Stdio {
 		return Config{}, false, errors.New("--metrics is not supported in stdio mode")
