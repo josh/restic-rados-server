@@ -107,6 +107,7 @@ type Config struct {
 	ShutdownTimeout Duration               `json:"shutdown_timeout,omitempty"`
 	Access          string                 `json:"access,omitempty"`
 	MaxIdleTime     Duration               `json:"max_idle_time,omitempty"`
+	IOTimeout       Duration               `json:"io_timeout,omitempty"`
 	LogFile         string                 `json:"log_file,omitempty"`
 	Keyring         string                 `json:"keyring,omitempty"`
 	ClientID        string                 `json:"client_id,omitempty"`
@@ -259,6 +260,7 @@ type commandLineConfig struct {
 	shutdownTimeout time.Duration
 	access          string
 	maxIdleTime     time.Duration
+	ioTimeout       time.Duration
 	logFile         string
 	keyringPath     string
 	clientID        string
@@ -291,6 +293,7 @@ func parseCommandLine(args []string) (commandLineConfig, error) {
 	fs.DurationVar(&parsed.shutdownTimeout, "shutdown-timeout", 60*time.Second, "graceful shutdown timeout for listeners")
 	fs.StringVar(&parsed.access, "access", "", "maximum access level for the server: r/read-only, ra/read-append, rw/read-write")
 	fs.DurationVar(&parsed.maxIdleTime, "max-idle-time", 0, "exit after duration with no active connections (e.g., 30s, 5m; 0 = disabled)")
+	fs.DurationVar(&parsed.ioTimeout, "io-timeout", 30*time.Second, "longest pause allowed while reading a request body or writing a response (0 = disabled)")
 	fs.StringVar(&parsed.logFile, "log-file", "", "path to log file (default: stderr)")
 	fs.StringVar(&parsed.keyringPath, "keyring", "", "path to Ceph keyring file")
 	fs.StringVar(&parsed.clientID, "id", "", "Ceph client ID (e.g., 'restic' for client.restic)")
@@ -344,6 +347,9 @@ func (c *Config) applyCommandLine(parsed commandLineConfig) {
 	}
 	if parsed.set["max-idle-time"] {
 		c.MaxIdleTime = Duration(parsed.maxIdleTime)
+	}
+	if parsed.set["io-timeout"] {
+		c.IOTimeout = Duration(parsed.ioTimeout)
 	}
 	if parsed.set["log-file"] {
 		c.LogFile = parsed.logFile
@@ -486,6 +492,7 @@ func (c *Config) loadFromEnv() error {
 func loadConfig(args []string) (Config, bool, error) {
 	config := Config{
 		ShutdownTimeout: Duration(60 * time.Second),
+		IOTimeout:       Duration(30 * time.Second),
 		Access:          "rw",
 		ReadBufferSize:  defaultReadBufferSize,
 		WriteBufferSize: defaultWriteBufferSize,
@@ -526,6 +533,10 @@ func loadConfig(args []string) (Config, bool, error) {
 
 	if config.WriteBufferSize <= 0 {
 		return Config{}, false, fmt.Errorf("write-buffer-size must be positive, got %d", config.WriteBufferSize)
+	}
+
+	if config.IOTimeout < 0 {
+		return Config{}, false, errors.New("io-timeout cannot be negative")
 	}
 
 	access, err := normalizeAccess(config.Access)

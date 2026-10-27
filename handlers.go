@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,10 +48,13 @@ type Handler struct {
 	access      Access
 	readPool    *BufferPool
 	writePool   *BufferPool
+	ioTimeout   time.Duration
 }
 
 type responseWriter struct {
 	http.ResponseWriter
+	controller    *http.ResponseController
+	timeout       time.Duration
 	statusCode    int
 	bytesWritten  int64
 	headerWritten bool
@@ -77,6 +81,9 @@ func (w *responseWriter) Write(data []byte) (int, error) {
 	if w.firstByte.IsZero() {
 		w.firstByte = time.Now()
 	}
+	if w.timeout > 0 {
+		_ = w.controller.SetWriteDeadline(time.Now().Add(w.timeout))
+	}
 	n, err := w.ResponseWriter.Write(data)
 	w.bytesWritten += int64(n)
 	return n, err
@@ -88,12 +95,19 @@ func (w *responseWriter) Unwrap() http.ResponseWriter {
 
 type countingBody struct {
 	io.ReadCloser
+	rw        *responseWriter
 	bytesRead int64
 }
 
 func (b *countingBody) Read(p []byte) (int, error) {
+	if b.rw.timeout > 0 {
+		_ = b.rw.controller.SetReadDeadline(time.Now().Add(b.rw.timeout))
+	}
 	n, err := b.ReadCloser.Read(p)
 	b.bytesRead += int64(n)
+	if err == io.EOF && b.rw.timeout > 0 {
+		_ = b.rw.controller.SetReadDeadline(time.Time{})
+	}
 	return n, err
 }
 
@@ -101,7 +115,7 @@ func (w *responseWriter) FlushError() error {
 	if !w.headerWritten {
 		w.WriteHeader(http.StatusOK)
 	}
-	return http.NewResponseController(w.ResponseWriter).Flush()
+	return w.controller.Flush()
 }
 
 type repositoryRoute struct {
@@ -181,7 +195,7 @@ type purgeTargetKey struct {
 	namespace string
 }
 
-func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos map[string]*RepoConfig, access Access, readPool, writePool *BufferPool) {
+func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos map[string]*RepoConfig, access Access, readPool, writePool *BufferPool, ioTimeout time.Duration) {
 	mux.Handle("/", &Handler{
 		connections: connections,
 		repos:       repos,
@@ -189,6 +203,7 @@ func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos ma
 		access:      access,
 		readPool:    readPool,
 		writePool:   writePool,
+		ioTimeout:   ioTimeout,
 	})
 }
 
@@ -208,7 +223,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	rw := &responseWriter{ResponseWriter: w, controller: http.NewResponseController(w), timeout: h.ioTimeout, statusCode: http.StatusOK}
 	var radosCalls uint64
 	h.serveRequest(rw, r, path, &radosCalls)
 }
@@ -217,7 +232,7 @@ func (h *Handler) serveRequest(w *responseWriter, r *http.Request, path string, 
 	started := time.Now()
 	repoName := ""
 	logPath := r.URL.Path
-	body := &countingBody{ReadCloser: r.Body}
+	body := &countingBody{ReadCloser: r.Body, rw: w}
 	r.Body = body
 
 	repo, ok := h.resolveRepository(path)
@@ -922,7 +937,7 @@ func (h *Handler) writeObject(r *http.Request, repo string, blobType BlobType, o
 		if !errors.Is(err, errObjectExists) {
 			h.cleanupWrite(hctx, backend, name, repo, blobType, err)
 		}
-		if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+		if !errors.Is(err, os.ErrDeadlineExceeded) && (errors.Is(err, context.Canceled) || r.Context().Err() != nil) {
 			return errClientAborted
 		}
 		return fmt.Errorf("write object %s: %w", name, err)
@@ -1350,6 +1365,8 @@ func (h *Handler) respondError(w *responseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errHashMismatch):
 		http.Error(w, "hash mismatch", http.StatusBadRequest)
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		http.Error(w, "request timeout", http.StatusRequestTimeout)
 	case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, errClientAborted):
 		http.Error(w, "client aborted request", http.StatusBadRequest)
 	case errors.Is(err, errContentTooLarge), hasRadosErrorCode(err, syscall.EFBIG):

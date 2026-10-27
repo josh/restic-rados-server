@@ -1,0 +1,28 @@
+tail-logs
+create-pool
+
+! exec restic-rados-server --io-timeout=-1s --listen 127.0.0.1:$PORT
+stderr 'io-timeout cannot be negative'
+
+exec restic-rados-server --listen 127.0.0.1:$PORT --io-timeout 1s --max-object-size 65536 &server&
+wait4socket 127.0.0.1:$PORT
+
+exec curl --silent --request POST 'http://127.0.0.1:'$PORT'/?create=true'
+
+partial-http-post --hold-open 127.0.0.1:$PORT /data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a 100000 partial
+
+wait4log 'path=/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a status=408' $RESTIC_RADOS_SERVER_LOG_FILE
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'data/'
+
+exec curl --silent --write-out '%{http_code}' --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://127.0.0.1:'$PORT'/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stdout '200'
+
+exec curl --silent 'http://127.0.0.1:'$PORT'/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output downloaded
+cmp downloaded blob-data
+
+kill server
+
+-- blob-data --
+test blob content
