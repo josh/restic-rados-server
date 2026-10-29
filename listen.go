@@ -56,6 +56,7 @@ type ListenerInfo struct {
 
 type ListenOptions struct {
 	ShutdownTimeout       time.Duration
+	IOTimeout             time.Duration
 	TailscaleDrainTimeout time.Duration
 	RuntimeName           string
 	ConnState             func(net.Conn, http.ConnState)
@@ -1208,8 +1209,10 @@ func (prepared *PreparedListeners) Serve(ctx context.Context, handler http.Handl
 			listenerHandler = metricsMountHandler(listener.config.metricsPath, prepared.options.MetricsHandler, handler)
 		}
 		server := &http.Server{
-			Handler:   listenerPolicyHandler(listener.config, listener.reducer, listenerHandler),
-			ConnState: prepared.options.ConnState,
+			Handler:           listenerPolicyHandler(listener.config, listener.reducer, listenerHandler),
+			ReadHeaderTimeout: prepared.options.IOTimeout,
+			IdleTimeout:       prepared.options.IOTimeout,
+			ConnState:         prepared.options.ConnState,
 			BaseContext: func(net.Listener) context.Context {
 				return requestContext
 			},

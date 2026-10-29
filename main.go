@@ -146,7 +146,7 @@ func main() {
 	defer cancel()
 
 	mux := http.NewServeMux()
-	setupAllRoutes(mux, connMgr, config.Repos, ParseAccess(config.Access), readPool, writePool)
+	setupAllRoutes(mux, connMgr, config.Repos, ParseAccess(config.Access), readPool, writePool, time.Duration(config.IOTimeout))
 
 	var monitor *idleMonitor
 	var connState func(net.Conn, http.ConnState)
@@ -177,6 +177,7 @@ func main() {
 	}
 	listeners, err := PrepareListeners(ctx, config.Listeners, newResticPolicyReducer, ListenOptions{
 		ShutdownTimeout:       time.Duration(config.ShutdownTimeout),
+		IOTimeout:             time.Duration(config.IOTimeout),
 		TailscaleDrainTimeout: tailscaleDrainTimeout,
 		RuntimeName:           "restic-rados-server",
 		ConnState:             connState,

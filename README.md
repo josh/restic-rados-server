@@ -506,6 +506,7 @@ Run `restic-rados-server --help` for all flags. Common flags include:
 --config PATH       JSON configuration file
 --listen ENDPOINT   listener endpoint; repeatable
 --metrics           serve Prometheus metrics at /metrics on every listener
+--io-timeout DUR    longest pause allowed while reading a request body or writing a response (default 30s, 0 = off)
 --pool SPEC         pool[/namespace]:types mapping for the default repository
 --access LEVEL      r, ra, or rw maximum access level for the server
 --ceph-conf PATH    Ceph configuration file
