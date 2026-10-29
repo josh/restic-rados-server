@@ -1,9 +1,7 @@
 create-pool
 
 env RESTIC_RADOS_SERVER_VERBOSE=
-env RESTIC_CEPH_SERVER_VERBOSE=
 env CEPH_RESTIC_SERVER_VERBOSE=
-env RADOS_RESTIC_SERVER_VERBOSE=
 
 exec restic-rados-server -v --log-file $WORK/verbose.log --listen $WORK/restic.sock &server&
 wait4socket $WORK/restic.sock

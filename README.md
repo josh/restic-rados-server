@@ -516,10 +516,15 @@ Run `restic-rados-server --help` for all flags. Common flags include:
 ```
 
 For equivalent settings, command-line values override environment values, and
-environment values override JSON configuration. `--access` sets the maximum
-access level for the server; options such as `--pool` remain shortcuts for
-configuring the default repository. Flags are sufficient for a single
-repository, as shown in the systemd guide. Use JSON for multiple repositories
-or advanced mapping; the Helm chart renders that configuration automatically.
+environment values override JSON configuration. Environment variables use the
+`RESTIC_RADOS_SERVER_` prefix; `CEPH_RESTIC_SERVER_` is accepted as well
+because restic removes every `RESTIC_*` variable from the environment of an
+`rclone.program` it launches.
+
+`--access` sets the maximum access level for the server; options such as
+`--pool` remain shortcuts for configuring the default repository. Flags are
+sufficient for a single repository, as shown in the systemd guide. Use JSON for
+multiple repositories or advanced mapping; the Helm chart renders that
+configuration automatically.
 
 The project is licensed under the [MIT License](LICENSE).
