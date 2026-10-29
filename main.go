@@ -13,8 +13,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
-	"golang.org/x/net/http2"
 )
 
 var logger *slog.Logger
@@ -22,24 +20,26 @@ var logger *slog.Logger
 var version = "1.0.2"
 
 func serveStdio(ctx context.Context, handler http.Handler) error {
-	server := &http2.Server{}
-	stdioConn := &StdioConn{
-		stdin:  os.Stdin,
-		stdout: os.Stdout,
+	listener := &stdioListener{conn: make(chan net.Conn, 1)}
+	listener.conn <- &StdioConn{stdin: os.Stdin, stdout: os.Stdout}
+	server := &http.Server{
+		Handler:   handler,
+		Protocols: new(http.Protocols),
+		BaseContext: func(net.Listener) context.Context {
+			return ctx
+		},
 	}
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = stdioConn.Close()
-		case <-done:
+	server.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			_ = server.Close()
 		}
-	}()
-	server.ServeConn(stdioConn, &http2.ServeConnOpts{
-		Context: ctx,
-		Handler: handler,
-	})
+	}
+	server.Protocols.SetUnencryptedHTTP2(true)
+	stop := context.AfterFunc(ctx, func() { _ = server.Close() })
+	defer stop()
+	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
 	return nil
 }
 
