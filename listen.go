@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"golang.org/x/net/http/httpguts"
-	"golang.org/x/net/http2"
 )
 
 type PolicyOrigin uint8
@@ -646,21 +645,21 @@ func listenerPolicyDocuments(request *http.Request, config listenerConfig) ([]Po
 		return documents, nil
 	}
 	if len(tailscaleValues) > 1 {
-		return nil, errors.New("Tailscale app capabilities header appears more than once")
+		return nil, errors.New("tailscale app capabilities header appears more than once")
 	}
 	if len(tailscaleValues) == 0 {
 		return documents, nil
 	}
 	value, err := decodeTailscaleHeaderValue(tailscaleValues[0])
 	if err != nil {
-		return nil, fmt.Errorf("Tailscale app capabilities header: %w", err)
+		return nil, fmt.Errorf("tailscale app capabilities header: %w", err)
 	}
 	if len(value) == 0 || value[0] != '{' {
-		return nil, errors.New("Tailscale app capabilities header must contain a JSON object")
+		return nil, errors.New("tailscale app capabilities header must contain a JSON object")
 	}
 	var capabilities map[string][]json.RawMessage
 	if err := json.Unmarshal(value, &capabilities); err != nil {
-		return nil, fmt.Errorf("Tailscale app capabilities header: %w", err)
+		return nil, fmt.Errorf("tailscale app capabilities header: %w", err)
 	}
 	for _, accepted := range config.acceptAppCaps {
 		values, ok := capabilities[accepted]
@@ -793,9 +792,6 @@ func (prepared *PreparedListeners) Serve(ctx context.Context, handler http.Handl
 			BaseContext: func(net.Listener) context.Context {
 				return requestContext
 			},
-		}
-		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
-			return fmt.Errorf("configure HTTP/2 for %s: %w", listener.config.endpoint, err)
 		}
 		servers = append(servers, server)
 	}
