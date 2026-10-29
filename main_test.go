@@ -68,17 +68,7 @@ func TestScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cephLog.Close() })
-	var confPath string
-	for attempt := 1; attempt <= 2; attempt++ {
-		attemptCtx, attemptCancel := context.WithCancel(ctx)
-		confPath, err = startCephCluster(t, attemptCtx, cephLog)
-		if err == nil {
-			t.Cleanup(attemptCancel)
-			break
-		}
-		attemptCancel()
-		t.Logf("ceph cluster startup attempt %d failed: %v", attempt, err)
-	}
+	confPath, err := startCephCluster(t, ctx, cephLog)
 	if err != nil {
 		data, _ := os.ReadFile(cephLogPath)
 		t.Log("=== Ceph cluster setup logs ===")
