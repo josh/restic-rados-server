@@ -14,7 +14,7 @@ endpoint, from a single server process to a replicated Kubernetes deployment.
 - Multiple named repositories on one endpoint.
 - Read-only, read-append, and read-write access levels.
 - Multiple server replicas sharing the same Ceph-backed repositories.
-- TCP, Unix socket, systemd socket activation, and Tailscale service listeners.
+- TCP, Unix socket, and systemd socket activation listeners.
 - Liveness and connection-state readiness endpoints.
 
 ## Requirements
@@ -462,20 +462,34 @@ process serve separate read-only and read-write TCP ports:
 Listener `policy.access` accepts `r`, `ra`, or `rw`. Omitting it adds no
 listener-specific limit.
 
-## Optional Tailscale service listener
+## Running behind `tailscale serve`
 
-The server can listen on a Tailscale service endpoint such as
-`tailscale+svc:restic`. To accept Tailscale application capabilities, use a
-listener object in the JSON configuration:
+To publish the server on a tailnet, run `tailscale serve` in front of a
+local listener. Tailscale terminates TLS and proxies requests to the server.
+To accept Tailscale application capabilities, list them in the listener's
+`accept_app_caps` option:
 
 ```json
 {
   "listen": [{
-    "endpoint": "tailscale+svc:restic",
-    "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"]}
+    "endpoint": "/run/restic-rados-server/restic.sock",
+    "accept_app_caps": ["github.com/josh/restic-rados-server"]
   }]
 }
 ```
+
+Then forward a Tailscale service to that socket and pass the capability
+through:
+
+```sh
+tailscale serve --service=svc:restic --https=443 \
+  --accept-app-caps=github.com/josh/restic-rados-server \
+  unix:/run/restic-rados-server/restic.sock
+```
+
+A listener with `accept_app_caps` trusts the `Tailscale-App-Capabilities`
+header. Expose it only to `tailscale serve`, for example through a Unix socket
+that other users cannot reach.
 
 The application-capability grant must target the serving node's tag, not the
 service. Reachability still targets the service:

@@ -19,7 +19,7 @@ kill server
 
 -- config.json.tmpl --
 {
-    "listen": [{"endpoint": "$WORK/restic.sock", "options": {"accept_app_caps": ["github.com/josh/restic-rados-server"]}}]
+    "listen": [{"endpoint": "$WORK/restic.sock", "accept_app_caps": ["github.com/josh/restic-rados-server"]}]
 }
 -- blob-data --
 test blob content
