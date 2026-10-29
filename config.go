@@ -814,6 +814,7 @@ type CephConfig struct {
 	ClientID        string
 	CephConf        string
 	WriteBufferSize int64
+	OSDOpTimeout    time.Duration
 }
 
 type BlobPool struct {
