@@ -62,3 +62,23 @@ func (s *StdioConn) SetReadDeadline(t time.Time) error {
 func (s *StdioConn) SetWriteDeadline(t time.Time) error {
 	return s.stdout.SetWriteDeadline(t)
 }
+
+type stdioListener struct {
+	conn chan net.Conn
+}
+
+func (l *stdioListener) Accept() (net.Conn, error) {
+	if conn, ok := <-l.conn; ok {
+		return conn, nil
+	}
+	return nil, net.ErrClosed
+}
+
+func (l *stdioListener) Close() error {
+	close(l.conn)
+	return nil
+}
+
+func (l *stdioListener) Addr() net.Addr {
+	return Addr{}
+}
