@@ -318,9 +318,8 @@ func classifyRequestRoute(resolved bool, repo repositoryRoute) (repoKey, op, blo
 }
 
 func requestRoutePath(r *http.Request) (string, bool) {
-	escaped := r.URL.EscapedPath()
-	for i := 0; i+2 < len(escaped); i++ {
-		if escaped[i] == '%' && escaped[i+1] == '2' && (escaped[i+2] == 'f' || escaped[i+2] == 'F') {
+	for segment := range strings.SplitSeq(strings.TrimPrefix(r.URL.EscapedPath(), "/"), "/") {
+		if segment != "" && !repoNamePattern.MatchString(segment) {
 			return "", false
 		}
 	}

@@ -22,6 +22,9 @@ stderr 'invalid repo name'
 ! exec restic-rados-server --config tab-name.json
 stderr 'invalid repo name'
 
+! exec restic-rados-server --config colon-name.json
+stderr 'invalid repo name "repo:x"'
+
 -- slash-name.json --
 {
     "repos": {
@@ -68,5 +71,11 @@ stderr 'invalid repo name'
 {
     "repos": {
         "repo\ttab": {"pools": {"pool": ["*"]}}
+    }
+}
+-- colon-name.json --
+{
+    "repos": {
+        "repo:x": {"pools": {"pool": ["*"]}}
     }
 }

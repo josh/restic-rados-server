@@ -338,7 +338,7 @@ types—`config`, `keys`, `locks`, `snapshots`, `data`, and `index`—to differe
 pools or namespaces.
 
 The `default` repository is served at `/`. Named repositories are served at
-their matching path:
+their matching path and may contain only letters, digits, `.`, `_`, and `-`:
 
 ```text
 repos.default  -> rest:https://backup.example.com/
