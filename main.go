@@ -147,7 +147,7 @@ func main() {
 	defer cancel()
 
 	mux := http.NewServeMux()
-	setupAllRoutes(mux, connMgr, config.Repos, ParseAccess(config.Access), readPool, writePool, time.Duration(config.IOTimeout))
+	setupAllRoutes(mux, connMgr, config.Repos, ParseAccess(config.Access), readPool, writePool, time.Duration(config.IOTimeout), config.MaxUploads)
 
 	var monitor *idleMonitor
 	var connState func(net.Conn, http.ConnState)

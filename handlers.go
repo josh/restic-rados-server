@@ -49,6 +49,7 @@ type Handler struct {
 	readPool    *BufferPool
 	writePool   *BufferPool
 	ioTimeout   time.Duration
+	uploads     chan struct{}
 }
 
 type responseWriter struct {
@@ -195,7 +196,7 @@ type purgeTargetKey struct {
 	namespace string
 }
 
-func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos map[string]*RepoConfig, access Access, readPool, writePool *BufferPool, ioTimeout time.Duration) {
+func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos map[string]*RepoConfig, access Access, readPool, writePool *BufferPool, ioTimeout time.Duration, maxUploads int) {
 	mux.Handle("/", &Handler{
 		connections: connections,
 		repos:       repos,
@@ -204,6 +205,7 @@ func setupAllRoutes(mux *http.ServeMux, connections *ConnectionManager, repos ma
 		readPool:    readPool,
 		writePool:   writePool,
 		ioTimeout:   ioTimeout,
+		uploads:     make(chan struct{}, maxUploads),
 	})
 }
 
@@ -877,6 +879,12 @@ func parseRange(values []string, size int64) (byteRange, error) {
 }
 
 func (h *Handler) writeObject(r *http.Request, repo string, blobType BlobType, objectID string, radosCalls *uint64) error {
+	select {
+	case h.uploads <- struct{}{}:
+	case <-r.Context().Done():
+		return errClientAborted
+	}
+	defer func() { <-h.uploads }()
 	writeBufPtr := h.writePool.Get()
 	defer h.writePool.Put(writeBufPtr)
 

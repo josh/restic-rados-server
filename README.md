@@ -309,10 +309,10 @@ restic backup /path/to/data
 - Multiple replicas are safe: they share state through Ceph, while restic's
   repository locks coordinate client operations. Use anti-affinity or other
   placement rules so a single node failure does not remove every replica.
-- The server allocates a 16 MiB read buffer and a 16 MiB write buffer for each
-  in-flight transfer by default. Account for concurrency when setting pod
-  memory limits, or tune `config.read_buffer_size` and
-  `config.write_buffer_size`.
+- Each in-flight upload holds a 16 MiB write buffer, capped at
+  `config.max_uploads` concurrent uploads (default 8, 128 MiB); each in-flight
+  download holds a 16 MiB read buffer. Tune the buffer sizes or
+  `config.max_uploads` to fit pod memory limits.
 - `/healthz` is the liveness endpoint. `/readyz` reports cached Ceph connection
   state rather than actively probing the cluster. The chart configures both
   probes.
@@ -507,6 +507,7 @@ Run `restic-rados-server --help` for all flags. Common flags include:
 --listen ENDPOINT   listener endpoint; repeatable
 --metrics           serve Prometheus metrics at /metrics on every listener
 --io-timeout DUR    longest pause allowed while reading a request body or writing a response (default 30s, 0 = off)
+--max-uploads N     uploads handled at once; the rest wait (default 8)
 --pool SPEC         pool[/namespace]:types mapping for the default repository
 --access LEVEL      r, ra, or rw maximum access level for the server
 --ceph-conf PATH    Ceph configuration file

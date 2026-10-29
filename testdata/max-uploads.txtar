@@ -1,0 +1,27 @@
+tail-logs
+create-pool
+
+! exec restic-rados-server --max-uploads 0 --listen 127.0.0.1:$PORT
+stderr 'max-uploads must be positive, got 0'
+
+exec restic-rados-server --listen 127.0.0.1:$PORT --max-uploads 1 &server&
+wait4socket 127.0.0.1:$PORT
+
+exec curl --silent --request POST 'http://127.0.0.1:'$PORT'/?create=true'
+
+partial-http-post --hold-open 127.0.0.1:$PORT /data/0000000000000000000000000000000000000000000000000000000000000000 1000000 partial
+wait4log 'rados.CreateWriteOp object=data/0000000000000000000000000000000000000000000000000000000000000000' $RESTIC_RADOS_SERVER_LOG_FILE
+
+! exec curl --silent --show-error --max-time 2 --request POST --header 'Content-Type: application/octet-stream' --data-binary @blob-data 'http://127.0.0.1:'$PORT'/data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a' --output /dev/null
+stderr 'curl: \(28\)'
+
+exec curl --silent --write-out '%{http_code}' 'http://127.0.0.1:'$PORT'/keys/' --output /dev/null
+stdout '200'
+
+exec rados --pool $RESTIC_RADOS_SERVER_POOL ls
+! stdout 'data/abd9a2bf47af3416b041796843b9f9a7a5e987356da7ccfc750816219f0a075a'
+
+kill server
+
+-- blob-data --
+test blob content
