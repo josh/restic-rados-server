@@ -20,7 +20,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -28,7 +27,7 @@ import (
 	"github.com/rogpeppe/go-internal/testscript"
 )
 
-var cephDaemonLogs *LogDemux
+var cephLogPath string
 
 func TestMain(m *testing.M) {
 	testscript.Main(m, map[string]func(){
@@ -63,15 +62,16 @@ func TestScript(t *testing.T) {
 		t.Cleanup(cancel)
 	}
 
-	cephDaemonLogs = &LogDemux{}
-
-	var setupBuffer bytes.Buffer
-	detachSetup := cephDaemonLogs.Attach(&setupBuffer)
+	cephLogPath = filepath.Join(t.TempDir(), "ceph.log")
+	cephLog, err := os.OpenFile(cephLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cephLog.Close() })
 	var confPath string
-	var err error
 	for attempt := 1; attempt <= 2; attempt++ {
 		attemptCtx, attemptCancel := context.WithCancel(ctx)
-		confPath, err = startCephCluster(t, attemptCtx, cephDaemonLogs)
+		confPath, err = startCephCluster(t, attemptCtx, cephLog)
 		if err == nil {
 			t.Cleanup(attemptCancel)
 			break
@@ -80,12 +80,11 @@ func TestScript(t *testing.T) {
 		t.Logf("ceph cluster startup attempt %d failed: %v", attempt, err)
 	}
 	if err != nil {
-		detachSetup()
+		data, _ := os.ReadFile(cephLogPath)
 		t.Log("=== Ceph cluster setup logs ===")
-		_, _ = io.Copy(t.Output(), &setupBuffer)
+		_, _ = t.Output().Write(data)
 		t.Fatal(err)
 	}
-	detachSetup()
 
 	updateScripts, _ := strconv.ParseBool(os.Getenv("UPDATE_SCRIPTS"))
 
@@ -186,84 +185,28 @@ func cmdTailLogs(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("unsupported: ! tail-logs")
 	}
 
-	ctx := scriptContext(ts)
-
 	logFile := ts.Getenv("RESTIC_RADOS_SERVER_LOG_FILE")
 	if logFile == "" {
 		ts.Fatalf("RESTIC_RADOS_SERVER_LOG_FILE not set")
 	}
 
-	f, err := os.Open(logFile)
+	cephLog, err := os.Open(cephLogPath)
+	ts.Check(err)
+	_, err = cephLog.Seek(0, io.SeekEnd)
 	ts.Check(err)
 
-	pipeReader, detach := cephDaemonLogs.AttachPipe()
-	serverReader := bufio.NewReader(f)
-	cephReader := bufio.NewReader(pipeReader)
-	tailCtx, cancel := context.WithCancel(ctx)
-
-	var output bytes.Buffer
-	tailOutput := &LogDemux{}
-	detachOutput := tailOutput.Attach(&output)
-
-	var tailers sync.WaitGroup
-	tailers.Add(2)
 	ts.Defer(func() {
-		cancel()
-		_ = f.Close()
-		_ = pipeReader.Close()
-		detach()
-		tailers.Wait()
-		detachOutput()
-		if output.Len() > 0 {
-			ts.Logf("%s", strings.TrimSuffix(output.String(), "\n"))
+		defer func() { _ = cephLog.Close() }()
+		logLines := func(prefix string, data []byte) {
+			if len(data) > 0 {
+				ts.Logf("%s %s", prefix, strings.ReplaceAll(strings.TrimSuffix(string(data), "\n"), "\n", "\n"+prefix+" "))
+			}
 		}
+		data, _ := os.ReadFile(logFile)
+		logLines("[restic-rados-server]", data)
+		data, _ = io.ReadAll(cephLog)
+		logLines("[ceph]", data[max(0, len(data)-32<<10):])
 	})
-
-	go func() {
-		defer tailers.Done()
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-tailCtx.Done():
-				return
-			case <-ticker.C:
-				line, err := serverReader.ReadString('\n')
-				if err != nil {
-					if err == io.EOF {
-						continue
-					}
-					_, _ = fmt.Fprintf(tailOutput, "tail-server-log: error: %v\n", err)
-					return
-				}
-				_, _ = fmt.Fprintf(tailOutput, "[restic-rados-server] %s\n", strings.TrimRight(line, "\n"))
-			}
-		}
-	}()
-
-	go func() {
-		defer tailers.Done()
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-tailCtx.Done():
-				return
-			case <-ticker.C:
-				line, err := cephReader.ReadString('\n')
-				if err != nil {
-					if err == io.EOF {
-						continue
-					}
-					if !errors.Is(err, io.ErrClosedPipe) {
-						_, _ = fmt.Fprintf(tailOutput, "tail-ceph-log: error: %v\n", err)
-					}
-					return
-				}
-				_, _ = fmt.Fprintf(tailOutput, "[ceph] %s\n", strings.TrimRight(line, "\n"))
-			}
-		}
-	}()
 }
 
 func startCephCluster(t *testing.T, ctx context.Context, out io.Writer) (string, error) {
@@ -468,101 +411,6 @@ func checkCephStatus(ctx context.Context, confPath string) (cephStatus, error) {
 	}
 	var status cephStatus
 	return status, json.Unmarshal(output, &status)
-}
-
-type LogDemux struct {
-	mu   sync.Mutex
-	outs map[io.Writer]struct{}
-}
-
-func (ld *LogDemux) Write(p []byte) (n int, err error) {
-	ld.mu.Lock()
-	defer ld.mu.Unlock()
-
-	for writer := range ld.outs {
-		written, err := writer.Write(p)
-		if err != nil {
-			return 0, err
-		}
-		if written != len(p) {
-			return 0, fmt.Errorf("short write: expected %d, got %d", len(p), written)
-		}
-	}
-
-	return len(p), nil
-}
-
-func (ld *LogDemux) Attach(writer io.Writer) func() {
-	ld.mu.Lock()
-	if ld.outs == nil {
-		ld.outs = make(map[io.Writer]struct{})
-	}
-	ld.outs[writer] = struct{}{}
-	ld.mu.Unlock()
-
-	return func() {
-		ld.mu.Lock()
-		delete(ld.outs, writer)
-		ld.mu.Unlock()
-	}
-}
-
-func (ld *LogDemux) AttachPipe() (*io.PipeReader, func()) {
-	pr, pw := io.Pipe()
-	ld.mu.Lock()
-	if ld.outs == nil {
-		ld.outs = make(map[io.Writer]struct{})
-	}
-	ld.outs[pw] = struct{}{}
-	ld.mu.Unlock()
-
-	return pr, func() {
-		ld.mu.Lock()
-		defer ld.mu.Unlock()
-		delete(ld.outs, pw)
-		_ = pw.Close()
-	}
-}
-
-func TestLogDemuxConcurrentWrites(t *testing.T) {
-	var output bytes.Buffer
-	logs := &LogDemux{}
-	detach := logs.Attach(&output)
-
-	const writerCount = 32
-	const writesPerWriter = 100
-	payload := []byte("ceph daemon log line\n")
-
-	start := make(chan struct{})
-	errs := make(chan error, writerCount)
-	var writers sync.WaitGroup
-	for range writerCount {
-		writers.Add(1)
-		go func() {
-			defer writers.Done()
-			<-start
-			for range writesPerWriter {
-				if _, err := logs.Write(payload); err != nil {
-					errs <- err
-					return
-				}
-			}
-		}()
-	}
-
-	close(start)
-	writers.Wait()
-	close(errs)
-	detach()
-
-	for err := range errs {
-		t.Errorf("write failed: %v", err)
-	}
-
-	want := writerCount * writesPerWriter * len(payload)
-	if output.Len() != want {
-		t.Fatalf("unexpected output length: got %d, want %d", output.Len(), want)
-	}
 }
 
 func cmdWait4socket(ts *testscript.TestScript, neg bool, args []string) {
