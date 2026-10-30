@@ -17,7 +17,7 @@ import (
 
 var logger *slog.Logger
 
-var version = "1.0.2"
+var version = "1.1.0"
 
 func serveStdio(ctx context.Context, handler http.Handler) error {
 	listener := &stdioListener{conn: make(chan net.Conn, 1)}
