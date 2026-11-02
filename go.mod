@@ -3,7 +3,7 @@ module github.com/josh/restic-rados-server
 go 1.26.6
 
 require (
-	github.com/ceph/go-ceph v0.42.0
+	github.com/ceph/go-ceph v0.42.1
 	github.com/rogpeppe/go-internal v1.16.0
 	golang.org/x/net v0.61.0
 )
