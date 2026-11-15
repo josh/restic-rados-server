@@ -1,0 +1,58 @@
+name: Go
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.ceph }}, linux/${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        ceph:
+          - umbrella
+          - tentacle
+          - squid
+        arch:
+          - amd64
+          - arm64
+    runs-on: ceph-${{ matrix.ceph }}-${{ matrix.arch }}
+
+    env:
+      # renovate: datasource=github-releases depName=restic/restic extractVersion=^v(?<version>.+)$
+      RESTIC_VERSION: "0.19.0"
+      ARCH: ${{ matrix.arch }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Print Ceph version
+        run: ceph --version
+
+      - name: Install bzip2
+        run: dnf install --assumeyes --setopt=install_weak_deps=False bzip2
+
+      - name: Install restic
+        run: |
+          set -o xtrace
+          curl --fail --location --retry 5 --retry-all-errors https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_${ARCH}.bz2 --output restic.bz2
+          bunzip2 restic.bz2
+          chmod +x restic
+          mv restic /usr/local/bin/restic
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: |
+          go build
+
+      - name: Test
+        timeout-minutes: 25
+        run: |
+          go test -timeout 20m
