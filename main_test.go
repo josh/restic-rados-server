@@ -242,7 +242,7 @@ func randomUUID() string {
 
 const cephConfTemplate = `[global]
 fsid = %[1]s
-mon_host = v1:%[2]s/0
+mon_host = v2:%[2]s/0
 public_network = 127.0.0.1/32
 auth_cluster_required = none
 auth_service_required = none
@@ -302,7 +302,7 @@ func setupCephDir(ctx context.Context, tmpDir string, out io.Writer) (string, er
 	if err := runCommand(ctx, out, "monmaptool", "--conf", confPath, monmapPath, "--create", "--fsid", fsid); err != nil {
 		return confPath, err
 	}
-	if err := runCommand(ctx, out, "monmaptool", "--conf", confPath, monmapPath, "--add", "mon1", "v1:"+monAddr); err != nil {
+	if err := runCommand(ctx, out, "monmaptool", "--conf", confPath, monmapPath, "--add", "mon1", "v2:"+monAddr); err != nil {
 		return confPath, err
 	}
 	if err := runCommand(ctx, out, "ceph-mon", "--conf", confPath, "--mkfs", "--id", "mon1", "--monmap", monmapPath); err != nil {
