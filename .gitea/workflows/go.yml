@@ -26,7 +26,7 @@ jobs:
 
     env:
       # renovate: datasource=github-releases depName=restic/restic extractVersion=^v(?<version>.+)$
-      RESTIC_VERSION: "0.19.1"
+      RESTIC_VERSION: "0.20.0"
       ARCH: ${{ matrix.arch }}
 
     steps:
