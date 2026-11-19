@@ -19,7 +19,9 @@ jobs:
           - squid
         arch:
           - amd64
-          - arm64
+        include:
+          - ceph: tentacle
+            arch: arm64
     runs-on: ceph-${{ matrix.ceph }}-${{ matrix.arch }}
 
     env:
