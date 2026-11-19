@@ -719,7 +719,7 @@ mon_host = {{ join "," .Values.ceph.monitors }}
 {{- end -}}
 {{- range $name, $repo := .Values.config.repos -}}
 {{- if not (or $repo.pools $repo.blob_pools) -}}
-{{- fail (printf "repo %q has no pools configured (set config.repos.%s.pools, or remove the repo by setting it to null)" $name $name) -}}
+{{- fail (printf "repo %q has no pools configured (set config.repos.%s.pools)" $name $name) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
